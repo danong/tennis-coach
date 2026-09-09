@@ -21,7 +21,7 @@ Default worker yield: summary, changed files, checks/results, deviations, and re
 | Leaf | Status | Tau run | Integrated revision | Notes |
 | --- | --- | --- | --- | --- |
 | Foundation | done | direct | initial base | mise/uv/CLI scaffold |
-| M1.1 | done | `9caa1fad-e7b3-4deb-9a95-c91caef22e19` | `5f2645fa4757` | reviewed/integrated; cleanup blocked (recorded P2) |
+| M1.1 | done | `9caa1fad-e7b3-4deb-9a95-c91caef22e19` | `5f2645fa4757` | reviewed, integrated, and released after topology repair |
 | M1.2 | not started | — | — | — |
 | M1.3 | not started | — | — | — |
 | M1.4 | not started | — | — | — |
