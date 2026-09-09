@@ -1,0 +1,23 @@
+[project]
+name = "serve-review"
+version = "0.1.0"
+description = "Offline tennis serve detection and video extraction"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = []
+
+[project.scripts]
+serve-review = "serve_review.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<9",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

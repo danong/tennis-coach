@@ -1,0 +1,25 @@
+min_version = "2026.9.1"
+
+[tools]
+python = "3.11.16"
+uv = "0.12.9"
+
+[tasks.setup]
+description = "Create the locked Python environment"
+run = "uv sync --locked --all-groups"
+
+[tasks.doctor]
+description = "Check Python, FFmpeg, and project prerequisites"
+run = "uv run --locked serve-review doctor"
+
+[tasks.test]
+description = "Run the offline pipeline tests"
+run = "uv run --locked pytest"
+
+[tasks.check]
+description = "Run diagnostics and tests"
+depends = ["doctor", "test"]
+
+[tasks.cut]
+description = "Detect serves and export clips or a compilation (pipeline milestone)"
+run = "uv run --locked serve-review cut"

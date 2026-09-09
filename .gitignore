@@ -1,0 +1,38 @@
+# macOS
+.DS_Store
+
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# mise local state and overrides
+.mise.local.toml
+.mise.local.*.toml
+
+# Tau controller/session state (workspaces must also live outside this checkout)
+.tau/
+
+# Local reference material and private/high-volume footage
+# Keep these outside version control until an explicit fixture policy is chosen.
+refs/
+NeuraSkill.html
+private-footage/
+
+# Downloaded models, inference caches, and generated results
+models/*
+!models/.gitkeep
+.cache/
+output/*
+!output/.gitkeep
+reports/
+
+# Local manifests may contain private paths or annotations
+manifests/local/
