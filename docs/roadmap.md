@@ -28,7 +28,7 @@ Default worker yield: summary, changed files, checks/results, deviations, and re
 | M1.5 | accepting | `447ec8e3-d675-4a39-b2f2-d2575d198169` | — | reviewed compilation exporter and manual export CLI |
 | M2.1 | not started | — | — | — |
 | M2.2 | not started | — | — | — |
-| M2.3 | not started | — | — | — |
+| M2.3 | deferred | — | — | reproducible downloader deferred; local approved Heavy artifact is present |
 | M2.4 | not started | — | — | — |
 | M2.5 | not started | — | — | — |
 | M2.6 | not started | — | — | — |
@@ -135,7 +135,7 @@ Goal: produce cached body observations from timestamped frames without coupling 
 ### M2.4 — MediaPipe Pose Landmarker adapter
 
 - **Objective:** Run the approved local Pose Landmarker `.task` model and map its 33 landmarks to portable normalized observations.
-- **Dependency:** M2.3 integrated and the manifest-approved artifact is available locally.
+- **Dependency:** M2.2 integrated and the approved local Heavy artifact is available at `models/pose_landmarker_heavy.task`; M2.3 downloader work is deferred.
 - **Allowed:** `src/serve_review/pose/backend.py`, `src/serve_review/pose/mediapipe.py`, `tests/test_mediapipe_pose.py`, sanitized tiny fixtures.
 - **Forbidden:** serve rules, CLI, model downloads, model/license changes, private frames, new dependencies.
 - **Behavior:** Use ordered `VIDEO` calls; retain canonical source time separately from integer MediaPipe milliseconds; serialize calls to one landmarker; expose no-person/missing landmarks honestly.
