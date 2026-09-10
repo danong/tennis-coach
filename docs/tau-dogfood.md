@@ -35,7 +35,7 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 - **Environment:** macOS/Apple Silicon; JJ 0.45.1; mise Python 3.11.16; uv 0.12.9; model `opencode/muse-spark-1.3-contributor-free`.
 - **Allocation/result:** 75 turns / 20 minutes allowed; observed 28 turns; verified.
 - **Evidence:** candidate changed only the five allowed M1.2 files; stored verifier and binding passed. Exact review confirmed argument-array ffprobe invocation, rational metadata parsing, atomic source JSON writing, and explicit direct/tag/Display-Matrix rotation precedence. Tests cover positive/negative/malformed/unsupported/conflicting `side_data_list` values.
-- **Review/lifecycle:** approved by orchestrator; `tau accept --target main` pending. Human acceptance unavailable.
-- **Cleanup:** candidate/workspace retained until accept result.
+- **Review/lifecycle:** approved by orchestrator; `tau accept --target main` accepted candidate `4bb98f3bbe28`. The local empty working-copy child was rebased onto accepted `main` before the integrated retest. Human acceptance unavailable.
+- **Cleanup:** accepted worker workspace released; `jj workspace list` contains only the default workspace.
 - **Cost/attention:** unavailable.
-- **Finding:** requiring `integration_verification` and using Tau acceptance avoids the prior manual JJ topology manipulation. Next action: inspect Tau acceptance result and verify `main` plus workspace cleanup.
+- **Finding:** requiring `integration_verification` and using Tau acceptance avoided manual candidate topology manipulation. Tau moved `main` correctly with the approval-journal commit as its ancestor; the caller still must rebase its empty default working-copy child to `main` before local commands test the accepted tree.
