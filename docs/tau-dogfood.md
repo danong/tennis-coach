@@ -18,13 +18,24 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 - **Cost/attention:** measured inference cost unavailable; one integration-command targeting error was caught because the first integrated check collected only four tests, then corrected before acceptance.
 - **Finding:** JJ duplicate creates a sibling revision; target the emitted duplicate revision, not `@-`, when describing/moving a bookmark. Its descendant rewrite also blocked Tau cleanup; restoring the workspace successor to Tau's recorded candidate enabled safe release. Next action: dispatch M1.2 from the current `main` and use a topology-preserving adoption flow.
 
-### 2026-09-09 — M1.2 ffprobe adapter and probe command (parent)
+### 2026-09-09 — M1.2 ffprobe adapter and probe command (rejected parent)
 
 - **Identity:** run `2788cd7f-cea8-4914-97e9-6af38c75ef34`; Tau revision unavailable; base `202f1034`; captured candidate `fe71af158949`; repair task stored outside the app.
 - **Environment:** macOS/Apple Silicon; JJ 0.45.1; mise Python 3.11.16; uv 0.12.9; model `opencode/muse-spark-1.3-contributor-free`.
-- **Allocation/result:** 75 turns / 20 minutes allowed; observed 21 turns; verified, then rejected for repair.
+- **Allocation/result:** 75 turns / 20 minutes allowed; observed 21 turns; verified, then rejected.
 - **Evidence:** candidate changed only the five allowed M1.2 files; stored verifier passed and binding was valid. Exact review found that rotation parsing accepts direct/tag fields but does not parse ffprobe MOV Display Matrix data in `side_data_list`.
-- **Review/lifecycle:** rejected by orchestrator. `tau repair` was attempted with the narrow rotation task but returned `cannot repair: parent current candidate is not inspectable`; no child was created. Integration/human acceptance unavailable.
-- **Cleanup:** parent is being rejected through Tau before a fresh retry.
+- **Review/lifecycle:** rejected by orchestrator. `tau repair` was attempted with the narrow rotation task but returned `cannot repair: parent current candidate is not inspectable`; no child was created. Tau `reject` then safely disposed the candidate and run-owned workspace. Integration/human acceptance unavailable.
+- **Cleanup:** released by `tau reject`.
 - **Cost/attention:** unavailable.
-- **Finding:** a verified candidate can have a meaningful media-metadata gap despite broad unit coverage; repair must test ffprobe's actual alternate metadata shape. Repair is unavailable for this pre-upgrade parent record, so the safe fallback is reject/release then a fresh leaf retry.
+- **Finding:** a verified candidate can have a meaningful media-metadata gap despite broad unit coverage; repair must test ffprobe's actual alternate metadata shape. Repair was unavailable for this pre-upgrade parent record, so the safe fallback was reject then a fresh retry.
+
+### 2026-09-09 — M1.2 ffprobe adapter and probe command (retry)
+
+- **Identity:** run `99203706-0a25-4975-a8b3-9954f5d4243e`; Tau revision unavailable; base `fcfa9af2`; captured candidate `5b3edc2d8b24`; task stored outside the app.
+- **Environment:** macOS/Apple Silicon; JJ 0.45.1; mise Python 3.11.16; uv 0.12.9; model `opencode/muse-spark-1.3-contributor-free`.
+- **Allocation/result:** 75 turns / 20 minutes allowed; observed 28 turns; verified.
+- **Evidence:** candidate changed only the five allowed M1.2 files; stored verifier and binding passed. Exact review confirmed argument-array ffprobe invocation, rational metadata parsing, atomic source JSON writing, and explicit direct/tag/Display-Matrix rotation precedence. Tests cover positive/negative/malformed/unsupported/conflicting `side_data_list` values.
+- **Review/lifecycle:** approved by orchestrator; `tau accept --target main` pending. Human acceptance unavailable.
+- **Cleanup:** candidate/workspace retained until accept result.
+- **Cost/attention:** unavailable.
+- **Finding:** requiring `integration_verification` and using Tau acceptance avoids the prior manual JJ topology manipulation. Next action: inspect Tau acceptance result and verify `main` plus workspace cleanup.
