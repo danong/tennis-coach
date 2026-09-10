@@ -25,7 +25,7 @@ Default worker yield: summary, changed files, checks/results, deviations, and re
 | M1.2 | done | `99203706-0a25-4975-a8b3-9954f5d4243e` | `4bb98f3bbe28` | accepted; Display Matrix rotation coverage and integrated check passed |
 | M1.3 | accepting | `0356c0d0-15f5-4cfb-81e8-0e2c3bb7fbcb` | — | reviewed synthetic fixture generator |
 | M1.4 | accepting | `eb2adaa8-2201-4dfb-9a42-c672c7f56e07` | — | reviewed individual clip exporter |
-| M1.5 | not started | — | — | — |
+| M1.5 | accepting | `447ec8e3-d675-4a39-b2f2-d2575d198169` | — | reviewed compilation exporter and manual export CLI |
 | M2.1 | not started | — | — | — |
 | M2.2 | not started | — | — | — |
 | M2.3 | not started | — | — | — |
