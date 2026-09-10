@@ -364,8 +364,13 @@ def build_rawvideo_decode_args(
     """Build the FFmpeg argument array decoding stored frames to ``rgb24``.
 
     Uses ``-fps_mode passthrough`` so exactly one output frame exists per
-    source frame in decode order. The same inputs always produce the same
-    array; no shell interpolation is used.
+    source frame in decode order. ``-noautorotate`` (input option, before
+    ``-i``) disables FFmpeg's automatic display-rotation so the pipe
+    always carries stored-orientation ``rgb24`` bytes; the caller then
+    applies the single manual upright rotation. Without it, rotated
+    phone footage would arrive pre-rotated and a second manual rotation
+    would double-rotate/garble the pose input. The same inputs always
+    produce the same array; no shell interpolation is used.
     """
     executable = _check_executable("ffmpeg", ffmpeg)
     source = str(video)
@@ -376,6 +381,7 @@ def build_rawvideo_decode_args(
         "-hide_banner",
         "-loglevel",
         "error",
+        "-noautorotate",
         "-i",
         source,
         "-map",
@@ -589,10 +595,15 @@ def _run_selected(
                 )
             if index not in wanted:
                 continue
-            stored = np.frombuffer(raw, dtype=np.uint8).reshape(
-                (stored_height, stored_width, 3)
+            # ``raw`` is a fresh immutable bytes object per frame; copy
+            # into an owned array so each yielded image owns its pixels
+            # and no mutable/reused buffer is shared across outputs.
+            stored = (
+                np.frombuffer(raw, dtype=np.uint8)
+                .reshape((stored_height, stored_width, 3))
+                .copy()
             )
-            upright = rotate_rgb_frame(np.array(stored, copy=True), rotation)
+            upright = rotate_rgb_frame(stored, rotation)
             moment = frame_times[index]
             yield SampledFrame(
                 time_seconds=moment,

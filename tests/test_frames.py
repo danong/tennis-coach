@@ -319,6 +319,176 @@ def test_bounded_streaming_holds_one_frame_at_a_time(tmp_path: Path) -> None:
     assert all(frame.nbytes == 320 * 240 * 3 for frame in rest)
 
 
+def test_decode_args_use_stored_rgb_without_autorotate() -> None:
+    """Regression: decode must carry stored-orientation RGB bytes.
+
+    FFmpeg auto-rotates display-matrix footage by default; without
+    ``-noautorotate`` a portrait phone clip would arrive pre-rotated and
+    the sampler's single manual upright rotation would double-rotate
+    (garbled stride/pixels) so the VIDEO landmarker sees no pose. The
+    sampler contract is therefore: ``-noautorotate`` before ``-i`` plus
+    ``rgb24``/``passthrough`` with no seek. Fails on the prior arg
+    array that omitted the flag.
+    """
+    args = build_rawvideo_decode_args("/tmp/src.mov")
+    assert "-noautorotate" in args
+    assert args.index("-noautorotate") < args.index("-i")
+    assert args[args.index("-pix_fmt") + 1] == "rgb24"
+    assert args[args.index("-fps_mode") + 1] == "passthrough"
+    assert "-ss" not in args
+
+
+def test_sampler_upright_rgb_contract_accepted_by_pose_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: synthetic stored frames yield upright RGB accepted by pose.
+
+    Uses fake ffprobe/Popen bytes (no private footage, no binaries) to
+    isolate the representation/transform contract: stored-orientation
+    ``rgb24`` bytes plus a 90-degree clockwise display rotation must
+    yield exactly one manual CW rotation into upright display-oriented,
+    contiguous ``uint8`` ``H x W x 3`` frames with canonical timestamps
+    and independently owned pixel buffers. Every yielded frame is then
+    fed through a fake contract-compatible pose boundary that enforces
+    the same checks as ``MediaPipePoseBackend.infer`` (``uint8`` RGB,
+    ``(H, W, 3)``, positive dims, contiguous SRGB-suitable buffer, and
+    strictly increasing ``timestamp_ms``). A channel swap, double
+    rotation, non-contiguous/reused buffer, or timestamp disorder would
+    fail loudly here instead of surfacing as zero downstream poses.
+    """
+    from types import SimpleNamespace
+    import io
+    import subprocess as subprocess_module
+
+    stored_width, stored_height = 4, 2
+    rotation = 90
+    frame_times = [0.0, 1 / 30.0, 2 / 30.0]
+
+    def _stored_frame(index: int) -> np.ndarray:
+        base = np.empty((stored_height, stored_width, 3), dtype=np.uint8)
+        for y in range(stored_height):
+            for x in range(stored_width):
+                for c in range(3):
+                    base[y, x, c] = (x * 17 + y * 31 + c * 47 + index * 53) % 256
+        return base
+
+    stored_frames = [_stored_frame(i) for i in range(len(frame_times))]
+    payload = b"".join(frame.tobytes(order="C") for frame in stored_frames)
+
+    captured_args: list[list[str]] = []
+
+    class _FakeStdout(io.BytesIO):
+        def close(self) -> None:  # keep BytesIO readable semantics
+            pass
+
+    class _FakeStderr:
+        def read(self, *args: object, **kwargs: object) -> bytes:
+            return b""
+
+        def close(self) -> None:
+            pass
+
+    class _FakeProc:
+        def __init__(self, args: list[str]) -> None:
+            captured_args.append(list(args))
+            self.stdout: object = _FakeStdout(payload)
+            self.stderr: object = _FakeStderr()
+
+        def poll(self) -> int | None:
+            return None
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    video = tmp_path / "clip.mov"
+    video.write_bytes(b"fake-video-bytes")
+    metadata = SimpleNamespace(
+        duration_seconds=1.0,
+        width=stored_width,
+        height=stored_height,
+        rotation_degrees=0,
+        fingerprint="sha256:fake",
+    )
+    monkeypatch.setattr(
+        frames_module, "_resolve_metadata", lambda *a, **k: metadata
+    )
+    monkeypatch.setattr(
+        frames_module, "_decode_frame_times", lambda *a, **k: list(frame_times)
+    )
+    monkeypatch.setattr(frames_module, "_ensure_tool", lambda *a, **k: None)
+    monkeypatch.setattr(
+        subprocess_module, "Popen", lambda args, **k: _FakeProc(list(args))
+    )
+
+    schedule = tuple(frame_times)
+    frames = list(
+        iter_sampled_frames(video, schedule, rotation_degrees=rotation)
+    )
+    assert len(frames) == len(frame_times)
+    # Decode used the stored-RGB contract (fails prior: flag missing).
+    assert captured_args, "expected one ffmpeg invocation"
+    used = captured_args[0]
+    assert "-noautorotate" in used
+    assert used.index("-noautorotate") < used.index("-i")
+    assert used[used.index("-pix_fmt") + 1] == "rgb24"
+    # Upright display orientation: 90 CW swaps stored (W=4,H=2) to (W=2,H=4).
+    for index, frame in enumerate(frames):
+        expected = np.ascontiguousarray(np.rot90(stored_frames[index], k=3))
+        assert frame.width == stored_height
+        assert frame.height == stored_width
+        assert frame.image.dtype == np.uint8
+        assert frame.image.ndim == 3 and frame.image.shape[2] == 3
+        assert frame.image.shape == (stored_width, stored_height, 3)
+        assert frame.image.flags["C_CONTIGUOUS"]
+        assert np.array_equal(frame.image, expected)
+        assert frame.time_seconds == frame_times[index]
+        assert frame.timestamp_ms == int(round(frame_times[index] * 1000))
+    times = [frame.time_seconds for frame in frames]
+    assert all(later > earlier for earlier, later in zip(times, times[1:]))
+    # Independently owned buffers: mutating one frame never corrupts another.
+    assert not np.shares_memory(frames[0].image, frames[1].image)
+    assert not np.shares_memory(frames[1].image, frames[2].image)
+    before = frames[1].image.copy()
+    frames[0].image[0, 0, 0] ^= 0xFF
+    assert np.array_equal(frames[1].image, before)
+
+    # Fake contract-compatible pose boundary (mirrors the adapter checks).
+    class _ContractPoseBoundary:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+            self._last_ms: int | None = None
+
+        def infer(self, image: np.ndarray, time_seconds: float) -> SimpleNamespace:
+            if not isinstance(image, np.ndarray):
+                raise AssertionError("pose boundary requires np.ndarray")
+            if image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
+                raise AssertionError(f"bad SRGB buffer {image.dtype} {image.shape}")
+            if image.shape[0] <= 0 or image.shape[1] <= 0:
+                raise AssertionError("bad dims")
+            if not image.flags["C_CONTIGUOUS"]:
+                raise AssertionError("pose boundary requires C-contiguous SRGB")
+            wrapped = np.ascontiguousarray(image, dtype=np.uint8)  # mp.Image(SRGB)
+            assert wrapped.shape == image.shape
+            stamp_ms = int(round(float(time_seconds) * 1000))
+            if self._last_ms is not None and not stamp_ms > self._last_ms:
+                raise AssertionError("VIDEO stamps must strictly increase")
+            self._last_ms = stamp_ms
+            self.calls.append(stamp_ms)
+            return SimpleNamespace(time_seconds=float(time_seconds), persons=(object(),))
+
+    boundary = _ContractPoseBoundary()
+    accepted = [boundary.infer(frame.image, frame.time_seconds) for frame in frames]
+    assert len(accepted) == len(frames)  # 3/3 detections, not 0/N
+    assert boundary.calls == sorted(boundary.calls)
+    assert len(set(boundary.calls)) == len(frames)
+
+
 @NEEDS_TOOLS
 def test_errors_are_actionable(tmp_path: Path) -> None:
     with pytest.raises(FrameError, match="does not exist"):
