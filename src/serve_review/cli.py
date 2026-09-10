@@ -74,6 +74,135 @@ def probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def export_cmd(args: argparse.Namespace) -> int:
+    import json
+
+    from serve_review.domain import DomainError, ExportPlan, MediaRange
+    from serve_review.media import export as export_module
+    from serve_review.media.probe import ProbeError, probe_source
+
+    source = args.video.expanduser()
+    if not source.is_file():
+        print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
+        return 2
+    ranges_path = args.ranges.expanduser()
+    if not ranges_path.is_file():
+        print(f"ERROR: ranges file does not exist: {ranges_path}", file=sys.stderr)
+        return 2
+    try:
+        metadata = probe_source(source, ffprobe=args.ffprobe)
+    except ProbeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    try:
+        raw_text = ranges_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"ERROR: could not read ranges file {ranges_path}: {exc}.", file=sys.stderr)
+        return 2
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: invalid ranges JSON in {ranges_path}: {exc}.", file=sys.stderr)
+        return 2
+    try:
+        plan = _parse_manual_ranges(payload, metadata)  # type: ignore[arg-type]
+    except DomainError as exc:
+        print(f"ERROR: invalid ranges: {exc}.", file=sys.stderr)
+        return 2
+    base_dir = args.output_dir.expanduser() / source.stem
+    try:
+        results = export_module.export_outputs(
+            source,
+            plan,
+            base_dir,
+            mode=args.output,
+            source=metadata,
+            ffmpeg=args.ffmpeg,
+            ffprobe=args.ffprobe,
+            overwrite=args.overwrite,
+        )
+    except export_module.ExportCollisionError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    except export_module.ExportError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    compilation = results.get("compilation")
+    clips = results.get("clips", [])
+    assert isinstance(clips, list)
+    if compilation is not None:
+        print(str(compilation))
+    for clip in clips:
+        print(str(clip))
+    return 0
+
+
+def _parse_manual_ranges(payload: object, metadata) -> object:
+    """Parse a manual ranges JSON payload into a validated ExportPlan."""
+    from serve_review.domain import ExportPlan, MediaRange
+
+    # Full export-plan document: validate strictly, then check identity.
+    if isinstance(payload, dict) and {"ranges", "source_fingerprint"} <= set(payload):
+        plan = ExportPlan.from_dict(payload)  # type: ignore[arg-type]
+        if plan.source_fingerprint != metadata.fingerprint:
+            raise plan_error(
+                "export plan fingerprint does not match the source video; "
+                "re-probe the source and rebuild the plan from its metadata."
+            )
+        import math as _math
+
+        if abs(plan.source_duration_seconds - metadata.duration_seconds) > 1e-6:
+            raise plan_error(
+                "export plan duration does not match the source video; "
+                "re-probe the source and rebuild the plan from its metadata."
+            )
+        void = _math  # keep import local and explicit
+        del void
+        return plan
+    if isinstance(payload, dict) and "ranges" in payload:
+        raw_ranges = payload["ranges"]
+    elif isinstance(payload, list):
+        raw_ranges = payload
+    else:
+        raise plan_error(
+            "ranges file must be a JSON list of ranges or an object "
+            'with a "ranges" list.'
+        )
+    if not isinstance(raw_ranges, list):
+        raise plan_error('"ranges" must be a JSON list.')
+    if not raw_ranges:
+        raise plan_error("at least one range is required; an empty plan would produce no output.")
+    parsed: list[MediaRange] = []
+    for entry in raw_ranges:
+        parsed.append(_parse_manual_range(entry))
+    return ExportPlan.for_source(metadata, parsed)
+
+
+def _parse_manual_range(entry: object) -> object:
+    from serve_review.domain import MediaRange
+
+    if not isinstance(entry, dict):
+        raise plan_error(f"invalid range entry {entry!r}; expected an object.")
+    if "start_seconds" not in entry or "end_seconds" not in entry:
+        raise plan_error(f"invalid range entry {entry!r}; expected start_seconds/end_seconds.")
+    known = {"start_seconds", "end_seconds", "schema_version"}
+    unknown = sorted(set(entry) - known)
+    if unknown:
+        raise plan_error(f"invalid range entry {entry!r}; unknown keys {unknown!r}.")
+    values: dict[str, object] = {
+        "start_seconds": entry["start_seconds"],
+        "end_seconds": entry["end_seconds"],
+        "schema_version": entry.get("schema_version", 1),
+    }
+    return MediaRange.from_dict(values)  # type: ignore[arg-type]
+
+
+def plan_error(message: str) -> Exception:
+    from serve_review.domain import ExportPlanError
+
+    return ExportPlanError(message)
+
+
 def cut(args: argparse.Namespace) -> int:
     source = args.video.expanduser()
     if not source.is_file():
@@ -148,6 +277,56 @@ def build_parser() -> argparse.ArgumentParser:
         help="generated output directory (default: output)",
     )
     cut_parser.set_defaults(handler=cut)
+
+    export_parser = subparsers.add_parser(
+        "export",
+        help="export manual ranges as clips and/or a compilation",
+        description=(
+            "Concatenate validated manual source ranges without dead-time gaps. "
+            "Ranges are read from a JSON file (a list of "
+            "{start_seconds, end_seconds} objects or a full export-plan document) "
+            "and exported from the original source samples with filter-based "
+            "re-encoding."
+        ),
+    )
+    export_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
+    export_parser.add_argument(
+        "--ranges",
+        type=Path,
+        required=True,
+        metavar="RANGES_JSON",
+        help="JSON file with manual ranges to export",
+    )
+    export_parser.add_argument(
+        "--output",
+        choices=("compilation", "clips", "both"),
+        default="compilation",
+        help="output form (default: compilation)",
+    )
+    export_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("output"),
+        help="generated output directory (default: output)",
+    )
+    export_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace existing outputs (default: fail on collision)",
+    )
+    export_parser.add_argument(
+        "--ffmpeg",
+        default="ffmpeg",
+        metavar="EXE",
+        help="ffmpeg executable (default: ffmpeg)",
+    )
+    export_parser.add_argument(
+        "--ffprobe",
+        default="ffprobe",
+        metavar="EXE",
+        help="ffprobe executable (default: ffprobe)",
+    )
+    export_parser.set_defaults(handler=export_cmd)
     return parser
 
 

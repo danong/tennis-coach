@@ -1,0 +1,474 @@
+"""Tests for the compilation exporter and multi-mode export (M1.5).
+
+All media is generated synthetically in temporary directories with
+``tests/media_factory.py``; no private footage or network access is used.
+Real FFmpeg/ffprobe run the integration paths; unit paths check command
+shape and failure cleanup without media.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from serve_review.domain import ExportPlan, ExportPlanError, MediaRange, SourceMetadata
+from serve_review.media import export as export_module
+from serve_review.media.export import (
+    CLIPS_SUBDIR,
+    COMPILATION_FILENAME,
+    DEFAULT_VIDEO_ENCODER,
+    EXPORT_MODES,
+    ExportCancelled,
+    ExportCollisionError,
+    ExportError,
+    build_compilation_ffmpeg_args,
+    export_compilation,
+    export_outputs,
+)
+from serve_review.media.probe import probe_source
+from media_factory import (
+    extract_frame_bytes,
+    ffmpeg_available,
+    generate_fixture,
+    landscape_spec,
+    portrait_spec,
+)
+
+NEEDS_TOOLS = pytest.mark.skipif(
+    not ffmpeg_available() or shutil.which("ffprobe") is None,
+    reason="FFmpeg and ffprobe are required for export integration tests",
+)
+
+
+def _make_source(
+    tmp_path: Path,
+    *,
+    orientation: str = "landscape",
+    duration_seconds: float = 2.0,
+    fps: int = 30,
+    name: str = "source.mov",
+) -> tuple[Path, SourceMetadata]:
+    spec = (
+        landscape_spec(duration_seconds=duration_seconds, fps=fps)
+        if orientation == "landscape"
+        else portrait_spec(duration_seconds=duration_seconds, fps=fps)
+    )
+    video = generate_fixture(tmp_path / name, spec)
+    return video, probe_source(video)
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _sample_tolerance(meta: SourceMetadata) -> float:
+    return 1.0 / meta.frames_per_second + 0.02
+
+
+def _tmp_leftovers(directory: Path) -> list[Path]:
+    found: list[Path] = []
+    if directory.is_dir():
+        for child in directory.rglob("*"):
+            if ".tmp-" in child.name:
+                found.append(child)
+    return sorted(found)
+
+
+def _mean_abs_diff(first: bytes, second: bytes) -> float:
+    count = min(len(first), len(second))
+    assert count > 0
+    total = sum(abs(a - b) for a, b in zip(first[:count], second[:count]))
+    return total / count
+
+
+# --- Constants and command construction (no media required) ---
+
+
+def test_export_modes_and_filenames() -> None:
+    assert EXPORT_MODES == ("compilation", "clips", "both")
+    assert COMPILATION_FILENAME == "serves.mov"
+    assert CLIPS_SUBDIR == "clips"
+
+
+def test_build_compilation_args_concatenates_in_order_without_gaps() -> None:
+    args = build_compilation_ffmpeg_args(
+        "src.mov",
+        [MediaRange(0.2, 0.7), MediaRange(1.2, 1.8)],
+        "out.mov",
+    )
+    assert isinstance(args, list)
+    assert all(isinstance(part, str) for part in args)
+    assert args[0] == "ffmpeg"
+    assert "-filter_complex" in args
+    script = args[args.index("-filter_complex") + 1]
+    assert "trim=start=0.200000:end=0.700000" in script
+    assert "trim=start=1.200000:end=1.800000" in script
+    # First segment appears before the second: source order preserved.
+    assert script.index("0.200000") < script.index("1.200000")
+    assert "setpts=PTS-STARTPTS" in script
+    assert "concat=n=2:v=1:a=0" in script
+    # No seek flags, no artificial gaps/padding, no stream copy.
+    assert "-ss" not in args
+    assert "copy" not in args
+    assert "adelay" not in script and "aevalsrc" not in script
+    assert args[args.index("-c:v") + 1] == DEFAULT_VIDEO_ENCODER
+    assert "-an" in args
+    assert args[-1] == "out.mov"
+
+
+def test_build_compilation_args_is_deterministic() -> None:
+    ranges = [MediaRange(0.0, 0.4), MediaRange(1.0, 1.4)]
+    first = build_compilation_ffmpeg_args("a.mov", ranges, "t.mov")
+    second = build_compilation_ffmpeg_args("a.mov", ranges, "t.mov")
+    assert first == second
+    other = build_compilation_ffmpeg_args("a.mov", [MediaRange(0.0, 0.5)], "t.mov")
+    assert other != first
+
+
+def test_build_compilation_args_audio_variant() -> None:
+    args = build_compilation_ffmpeg_args(
+        "a.mov",
+        [MediaRange(0.0, 0.5), MediaRange(1.0, 1.5)],
+        "t.mov",
+        include_audio=True,
+    )
+    script = args[args.index("-filter_complex") + 1]
+    assert "atrim=start=0.000000:end=0.500000" in script
+    assert "asetpts=PTS-STARTPTS" in script
+    assert "concat=n=2:v=0:a=1" in script
+    assert "-an" not in args
+    assert args[args.index("-c:a") + 1] == "aac"
+
+
+def test_build_compilation_args_rejects_stream_copy_and_blank_encoder() -> None:
+    with pytest.raises(ExportError, match="stream copy"):
+        build_compilation_ffmpeg_args(
+            "a.mov", [MediaRange(0.0, 0.5)], "t.mov", video_encoder="copy"
+        )
+    with pytest.raises(ExportError, match="video_encoder"):
+        build_compilation_ffmpeg_args(
+            "a.mov", [MediaRange(0.0, 0.5)], "t.mov", video_encoder="  "
+        )
+
+
+def test_build_compilation_args_rejects_empty_and_invalid_ranges() -> None:
+    with pytest.raises(ExportError, match="at least one range"):
+        build_compilation_ffmpeg_args("a.mov", [], "t.mov")
+    with pytest.raises(ExportError, match="MediaRange"):
+        build_compilation_ffmpeg_args("a.mov", ["x"], "t.mov")  # type: ignore[list-item]
+
+
+def test_export_compilation_rejects_non_plan_and_missing_source(tmp_path: Path) -> None:
+    with pytest.raises(ExportError, match="ExportPlan"):
+        export_compilation(tmp_path / "missing.mov", "nope", tmp_path / "out.mov")  # type: ignore[arg-type]
+    meta = SourceMetadata(
+        fingerprint="sha256:" + "0" * 64,
+        duration_seconds=1.0,
+        width=64,
+        height=48,
+        frame_rate_num=30,
+        frame_rate_den=1,
+        video_codec="h264",
+        rotation_degrees=0,
+    )
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5)])
+    with pytest.raises(ExportError, match="does not exist"):
+        export_compilation(tmp_path / "missing.mov", plan, tmp_path / "out.mov")
+
+
+def test_export_outputs_rejects_bad_mode(tmp_path: Path) -> None:
+    meta = SourceMetadata(
+        fingerprint="sha256:" + "0" * 64,
+        duration_seconds=1.0,
+        width=64,
+        height=48,
+        frame_rate_num=30,
+        frame_rate_den=1,
+        video_codec="h264",
+        rotation_degrees=0,
+    )
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5)])
+    with pytest.raises(ExportError, match="output mode"):
+        export_outputs(tmp_path / "missing.mov", plan, tmp_path / "out", mode="dvd")  # type: ignore[arg-type]
+
+
+# --- Integration: real FFmpeg on generated fixtures ---
+
+
+@NEEDS_TOOLS
+def test_compilation_duration_is_sum_of_ranges_with_no_gaps(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    ranges = [MediaRange(0.2, 0.7), MediaRange(1.2, 1.8)]
+    plan = ExportPlan.for_source(meta, ranges)
+    out = export_compilation(video, plan, tmp_path / "serves.mov", source=meta)
+    assert out.is_file()
+    probed = probe_source(out)
+    expected = sum(r.duration_seconds for r in ranges)
+    assert probed.duration_seconds == pytest.approx(expected, abs=_sample_tolerance(meta))
+    assert plan.total_duration_seconds == pytest.approx(expected)
+
+
+@NEEDS_TOOLS
+def test_compilation_preserves_segment_identity_and_order(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    # Two non-adjacent ranges from distinct source times.
+    plan = ExportPlan.for_source(meta, [MediaRange(0.2, 0.7), MediaRange(1.2, 1.8)])
+    out = export_compilation(video, plan, tmp_path / "serves.mov", source=meta)
+    src_early = extract_frame_bytes(video, 0.3)
+    src_late = extract_frame_bytes(video, 1.5)
+    # Sanity: source times are visibly distinct.
+    assert _mean_abs_diff(src_early, src_late) > 1.0
+    comp_first = extract_frame_bytes(out, 0.1)
+    comp_second = extract_frame_bytes(out, 0.8)
+    assert _mean_abs_diff(comp_first, comp_second) > 1.0
+    # Nearest-neighbor identity: each compilation position matches its source range.
+    assert _mean_abs_diff(comp_first, src_early) < _mean_abs_diff(comp_first, src_late)
+    assert _mean_abs_diff(comp_second, src_late) < _mean_abs_diff(comp_second, src_early)
+
+
+@NEEDS_TOOLS
+def test_compilation_preserves_dimensions(tmp_path: Path) -> None:
+    for orientation in ("landscape", "portrait"):
+        video, meta = _make_source(
+            tmp_path, orientation=orientation, name=f"{orientation}.mov"
+        )
+        plan = ExportPlan.for_source(meta, [MediaRange(0.1, 0.6), MediaRange(1.0, 1.5)])
+        out = export_compilation(
+            video, plan, tmp_path / f"serves-{orientation}.mov", source=meta
+        )
+        probed = probe_source(out)
+        assert (probed.width, probed.height) == (meta.width, meta.height)
+        assert probed.rotation_degrees == meta.rotation_degrees
+
+
+@NEEDS_TOOLS
+def test_compilation_adjacent_ranges_concatenate(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    ranges = [MediaRange(0.0, 0.5), MediaRange(0.5, 1.0)]
+    plan = ExportPlan.for_source(meta, ranges)  # adjacency is allowed
+    out = export_compilation(video, plan, tmp_path / "serves.mov", source=meta)
+    assert probe_source(out).duration_seconds == pytest.approx(
+        1.0, abs=_sample_tolerance(meta)
+    )
+
+
+@NEEDS_TOOLS
+def test_export_outputs_all_modes(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    ranges = [MediaRange(0.2, 0.7), MediaRange(1.2, 1.8)]
+    plan = ExportPlan.for_source(meta, ranges)
+
+    only_comp = export_outputs(
+        video, plan, tmp_path / "only-comp", mode="compilation", source=meta
+    )
+    assert isinstance(only_comp["compilation"], Path)
+    assert only_comp["compilation"].is_file()
+    assert only_comp["clips"] == []
+    assert not (tmp_path / "only-comp" / CLIPS_SUBDIR).exists()
+    assert probe_source(only_comp["compilation"]).duration_seconds == pytest.approx(
+        plan.total_duration_seconds, abs=_sample_tolerance(meta)
+    )
+
+    only_clips = export_outputs(
+        video, plan, tmp_path / "only-clips", mode="clips", source=meta
+    )
+    assert only_clips["compilation"] is None
+    assert [p.name for p in only_clips["clips"]] == ["serve-001.mov", "serve-002.mov"]
+    assert all(p.is_file() for p in only_clips["clips"])
+    assert not (tmp_path / "only-clips" / COMPILATION_FILENAME).exists()
+
+    both = export_outputs(video, plan, tmp_path / "both", mode="both", source=meta)
+    assert isinstance(both["compilation"], Path) and both["compilation"].is_file()
+    assert [p.name for p in both["clips"]] == ["serve-001.mov", "serve-002.mov"]
+    assert both["compilation"].parent == tmp_path / "both"
+    assert both["clips"][0].parent == tmp_path / "both" / CLIPS_SUBDIR
+
+
+@NEEDS_TOOLS
+def test_source_file_is_not_modified_by_compilation(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    before_hash = _sha256(video)
+    before_mtime = video.stat().st_mtime_ns
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5), MediaRange(1.0, 1.5)])
+    export_outputs(video, plan, tmp_path / "out", mode="both", source=meta)
+    assert _sha256(video) == before_hash
+    assert video.stat().st_mtime_ns == before_mtime
+
+
+@NEEDS_TOOLS
+def test_no_tmp_leftovers_after_compilation_success(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    out_dir = tmp_path / "out"
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5), MediaRange(1.0, 1.5)])
+    export_outputs(video, plan, out_dir, mode="both", source=meta)
+    assert _tmp_leftovers(out_dir) == []
+    assert _tmp_leftovers(tmp_path) == []
+
+
+@NEEDS_TOOLS
+def test_invalid_and_empty_plans_rejected_without_ffmpeg(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path, duration_seconds=2.0)
+    with pytest.raises(ExportPlanError):
+        ExportPlan.for_source(meta, [])
+    with pytest.raises(ExportPlanError):
+        ExportPlan.for_source(meta, [MediaRange(0.0, 0.6), MediaRange(0.4, 1.0)])
+    with pytest.raises(ExportPlanError):
+        ExportPlan.for_source(meta, [MediaRange(1.5, 5.0)])
+    with pytest.raises(ExportPlanError):
+        ExportPlan.for_source(meta, [MediaRange(0.8, 1.0), MediaRange(0.1, 0.3)])
+
+
+@NEEDS_TOOLS
+def test_fingerprint_mismatch_rejected_for_compilation(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    foreign = ExportPlan(
+        source_fingerprint="sha256:" + "f" * 64,
+        source_duration_seconds=meta.duration_seconds,
+        ranges=(MediaRange(0.0, 0.5),),
+    )
+    with pytest.raises(ExportError, match="fingerprint"):
+        export_compilation(video, foreign, tmp_path / "serves.mov", source=meta)
+    with pytest.raises(ExportError, match="fingerprint"):
+        export_outputs(video, foreign, tmp_path / "out", mode="both", source=meta)
+
+
+@NEEDS_TOOLS
+def test_collision_without_overwrite_raises_before_any_work(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    sentinel = out_dir / COMPILATION_FILENAME
+    sentinel.write_bytes(b"sentinel-do-not-touch")
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5), MediaRange(1.0, 1.5)])
+    with pytest.raises(ExportCollisionError, match="collision"):
+        export_outputs(video, plan, out_dir, mode="both", source=meta)
+    assert sentinel.read_bytes() == b"sentinel-do-not-touch"
+    assert not (out_dir / CLIPS_SUBDIR / "serve-001.mov").exists()
+    assert _tmp_leftovers(out_dir) == []
+
+
+@NEEDS_TOOLS
+def test_overwrite_replaces_compilation_explicitly(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / COMPILATION_FILENAME).write_bytes(b"stale")
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5)])
+    out = export_compilation(video, plan, out_dir / COMPILATION_FILENAME, source=meta, overwrite=True)
+    assert out.read_bytes() != b"stale"
+    assert probe_source(out).duration_seconds == pytest.approx(
+        0.5, abs=_sample_tolerance(meta)
+    )
+
+
+@NEEDS_TOOLS
+def test_no_partial_final_file_when_compilation_ffmpeg_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video, meta = _make_source(tmp_path)
+    out_dir = tmp_path / "out"
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5), MediaRange(1.0, 1.5)])
+    real_run = subprocess.run
+
+    def _flaky(args, **kwargs):
+        if str(args[0]).endswith("ffprobe"):
+            return real_run(args, **kwargs)
+        return subprocess.CompletedProcess(
+            args=args, returncode=1, stdout="", stderr="boom"
+        )
+
+    monkeypatch.setattr(export_module.subprocess, "run", _flaky)
+    with pytest.raises(ExportError, match="ffmpeg failed.*compilation"):
+        export_compilation(video, plan, out_dir / COMPILATION_FILENAME, source=meta)
+    assert not (out_dir / COMPILATION_FILENAME).exists()
+    assert _tmp_leftovers(out_dir) == []
+
+
+@NEEDS_TOOLS
+def test_no_partial_files_when_both_mode_ffmpeg_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video, meta = _make_source(tmp_path)
+    out_dir = tmp_path / "out"
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5)])
+    real_run = subprocess.run
+    calls = {"count": 0}
+
+    def _flaky(args, **kwargs):
+        if str(args[0]).endswith("ffprobe"):
+            return real_run(args, **kwargs)
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return real_run(args, **kwargs)
+        return subprocess.CompletedProcess(
+            args=args, returncode=1, stdout="", stderr="boom"
+        )
+
+    monkeypatch.setattr(export_module.subprocess, "run", _flaky)
+    with pytest.raises(ExportError, match="ffmpeg failed"):
+        export_outputs(video, plan, out_dir, mode="both", source=meta)
+    assert (out_dir / COMPILATION_FILENAME).is_file()
+    assert not (out_dir / CLIPS_SUBDIR / "serve-001.mov").exists()
+    assert _tmp_leftovers(out_dir) == []
+
+
+@NEEDS_TOOLS
+def test_cancellation_before_compilation_cleans_up(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5)])
+    with pytest.raises(ExportCancelled, match="cancelled"):
+        export_compilation(
+            video,
+            plan,
+            tmp_path / "out" / COMPILATION_FILENAME,
+            source=meta,
+            is_cancelled=lambda: True,
+        )
+    assert not (tmp_path / "out" / COMPILATION_FILENAME).exists()
+    assert _tmp_leftovers(tmp_path) == []
+
+
+@NEEDS_TOOLS
+def test_keyboard_interrupt_cleans_compilation_temp(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video, meta = _make_source(tmp_path)
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5)])
+
+    def _interrupted(args, **kwargs):
+        raise KeyboardInterrupt("simulated cancel")
+
+    monkeypatch.setattr(export_module.subprocess, "run", _interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        export_compilation(video, plan, tmp_path / "out" / COMPILATION_FILENAME, source=meta)
+    assert not (tmp_path / "out" / COMPILATION_FILENAME).exists()
+    assert _tmp_leftovers(tmp_path) == []
+
+
+@NEEDS_TOOLS
+def test_explicit_encoder_selection_reaches_compilation_ffmpeg(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video, meta = _make_source(tmp_path, duration_seconds=1.0)
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.4)])
+    captured: dict = {}
+    real_run = subprocess.run
+
+    def _spy(args, **kwargs):
+        captured["args"] = list(args)
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(export_module.subprocess, "run", _spy)
+    export_compilation(
+        video, plan, tmp_path / "serves.mov", source=meta, video_encoder="libx264"
+    )
+    args = captured["args"]
+    assert args[args.index("-c:v") + 1] == "libx264"
+    assert "copy" not in args
+    assert "-filter_complex" in args
+    script = args[args.index("-filter_complex") + 1]
+    assert "concat=" in script

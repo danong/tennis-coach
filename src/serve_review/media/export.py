@@ -40,20 +40,32 @@ from serve_review.media import probe as probe_module
 from serve_review.media.probe import ProbeError
 
 __all__ = [
+    "CLIPS_SUBDIR",
+    "COMPILATION_FILENAME",
     "DEFAULT_AUDIO_ENCODER",
     "DEFAULT_VIDEO_ENCODER",
+    "EXPORT_MODES",
     "ExportCancelled",
     "ExportCollisionError",
     "ExportError",
+    "build_compilation_ffmpeg_args",
     "build_ffmpeg_args",
     "clip_filename",
     "export_clips",
+    "export_compilation",
+    "export_outputs",
 ]
 
 #: Explicit default video encoder. Always re-encoded; never stream-copied.
 DEFAULT_VIDEO_ENCODER = "libx264"
 #: Explicit audio encoder used only when the source has an audio stream.
 DEFAULT_AUDIO_ENCODER = "aac"
+#: Compilation file name written inside an output directory.
+COMPILATION_FILENAME = "serves.mov"
+#: Subdirectory holding per-range clips under an output directory.
+CLIPS_SUBDIR = "clips"
+#: Supported output modes for :func:`export_outputs` and the export CLI.
+EXPORT_MODES = ("compilation", "clips", "both")
 
 _DURATION_TOLERANCE_SECONDS = 1e-6
 
@@ -473,3 +485,487 @@ def export_clips(
             raise
         completed.append(dest)
     return completed
+
+
+def _check_ranges_sequence(ranges: object) -> list:
+    from serve_review.domain import MediaRange as _MediaRange
+
+    if isinstance(ranges, _MediaRange) or not isinstance(ranges, (list, tuple)):
+        raise ExportError(
+            "invalid compilation ranges: expected a non-empty list/tuple "
+            f"of MediaRange, got {type(ranges).__name__}."
+        )
+    items = list(ranges)
+    if not items:
+        raise ExportError(
+            "invalid compilation ranges: at least one range is required; "
+            "an empty plan would produce an empty compilation."
+        )
+    for entry in items:
+        if not isinstance(entry, _MediaRange):
+            raise ExportError(
+                "invalid compilation range: expected MediaRange, "
+                f"got {type(entry).__name__}."
+            )
+    return items
+
+
+def build_compilation_ffmpeg_args(
+    source_video: Path | str,
+    ranges: list | tuple,
+    temp_output: Path | str,
+    *,
+    ffmpeg: str = "ffmpeg",
+    video_encoder: str = DEFAULT_VIDEO_ENCODER,
+    audio_encoder: str = DEFAULT_AUDIO_ENCODER,
+    include_audio: bool = False,
+) -> list[str]:
+    """Build the deterministic FFmpeg argument array for one compilation.
+
+    Each range is trimmed with the ``trim``/``atrim`` filters, timestamps
+    are reset with ``setpts``/``asetpts``, and the segments are joined with
+    the ``concat`` filter in the given (plan) order. Segments are placed
+    back-to-back with no artificial gaps or padding. Stream copy is never
+    used; video (and optional audio) are always re-encoded with explicit
+    encoders. The same inputs always produce the same array.
+    """
+    import math
+
+    if not isinstance(ffmpeg, str) or not ffmpeg.strip():
+        raise ExportError(
+            f"invalid ffmpeg executable: {ffmpeg!r}; expected a non-blank string."
+        )
+    encoder = _check_encoder("video_encoder", video_encoder)
+    if include_audio:
+        _check_encoder("audio_encoder", audio_encoder)
+    items = _check_ranges_sequence(ranges)
+    for entry in items:
+        for key in ("start_seconds", "end_seconds"):
+            value = getattr(entry, key)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise ExportError(
+                    f"invalid {key}: {value!r}; expected a finite number of seconds."
+                )
+        if not 0 <= float(entry.start_seconds) < float(entry.end_seconds):
+            raise ExportError(
+                f"invalid compilation range: [{entry.start_seconds!r}, "
+                f"{entry.end_seconds!r}); expected 0 <= start < end."
+            )
+    source = str(source_video)
+    dest = str(temp_output)
+    if not source:
+        raise ExportError("invalid source_video: expected a non-blank path.")
+    if not dest:
+        raise ExportError("invalid temp_output: expected a non-blank path.")
+    video_chains: list[str] = []
+    audio_chains: list[str] = []
+    for index, entry in enumerate(items):
+        start = _format_seconds(float(entry.start_seconds))
+        end = _format_seconds(float(entry.end_seconds))
+        video_chains.append(
+            f"[0:v]trim=start={start}:end={end},setpts=PTS-STARTPTS[v{index}]"
+        )
+        if include_audio:
+            audio_chains.append(
+                f"[0:a]atrim=start={start}:end={end},"
+                f"asetpts=PTS-STARTPTS[a{index}]"
+            )
+    video_inputs = "".join(f"[v{index}]" for index in range(len(items)))
+    filter_parts = list(video_chains)
+    filter_parts.append(
+        f"{video_inputs}concat=n={len(items)}:v=1:a=0[outv]"
+    )
+    if include_audio:
+        audio_inputs = "".join(f"[a{index}]" for index in range(len(items)))
+        filter_parts.extend(audio_chains)
+        filter_parts.append(
+            f"{audio_inputs}concat=n={len(items)}:v=0:a=1[outa]"
+        )
+    filter_complex = ";".join(filter_parts)
+    args = [
+        ffmpeg.strip(),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        source,
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[outv]",
+        "-c:v",
+        encoder,
+        "-preset",
+        "veryfast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+    ]
+    if include_audio:
+        args.extend(
+            ["-map", "[outa]", "-c:a", str(audio_encoder).strip()]
+        )
+    else:
+        args.append("-an")
+    args.append(dest)
+    return args
+
+
+def _resolve_plan_source(
+    source_path: Path,
+    plan: ExportPlan,
+    source: SourceMetadata | None,
+    ffprobe: str,
+) -> tuple[SourceMetadata, dict | None]:
+    """Validate fingerprint/duration and detect audio for export paths."""
+    fingerprint = _fingerprint_or_raise(source_path)
+    if fingerprint != plan.source_fingerprint:
+        raise ExportError(
+            "export plan fingerprint does not match the source video; "
+            "re-probe the source and rebuild the plan from its metadata."
+        )
+    audio_payload: dict | None = None
+    if source is None:
+        try:
+            audio_payload = probe_module.run_ffprobe(source_path, ffprobe=ffprobe.strip())
+            metadata = probe_module.parse_ffprobe_payload(audio_payload, fingerprint)
+        except ProbeError as exc:
+            raise ExportError(
+                f"could not probe source video {source_path}: {exc}."
+            ) from exc
+        if abs(metadata.duration_seconds - plan.source_duration_seconds) > _DURATION_TOLERANCE_SECONDS:
+            raise ExportError(
+                "export plan duration does not match the source video; "
+                "re-probe the source and rebuild the plan from its metadata."
+            )
+    else:
+        if not isinstance(source, SourceMetadata):
+            raise ExportError(
+                "invalid source metadata: "
+                f"expected SourceMetadata, got {type(source).__name__}."
+            )
+        if source.fingerprint != fingerprint or source.fingerprint != plan.source_fingerprint:
+            raise ExportError(
+                "export plan fingerprint does not match the source video; "
+                "re-probe the source and rebuild the plan from its metadata."
+            )
+        if abs(source.duration_seconds - plan.source_duration_seconds) > _DURATION_TOLERANCE_SECONDS:
+            raise ExportError(
+                "export plan duration does not match the source metadata; "
+                "re-probe the source and rebuild the plan from its metadata."
+            )
+        metadata = source
+    return metadata, audio_payload
+
+
+def _decide_audio(
+    source_path: Path,
+    ffprobe: str,
+    audio_payload: dict | None,
+    include_audio: bool | None,
+    audio_encoder: str,
+) -> bool:
+    if include_audio is None:
+        try:
+            if audio_payload is None:
+                audio_payload = probe_module.run_ffprobe(source_path, ffprobe=ffprobe.strip())
+            return _audio_present(audio_payload)
+        except ProbeError:
+            return False
+    if not isinstance(include_audio, bool):
+        raise ExportError(
+            f"invalid include_audio: {include_audio!r}; "
+            "expected True, False, or None."
+        )
+    if include_audio:
+        _check_encoder("audio_encoder", audio_encoder)
+    return bool(include_audio)
+
+
+def _run_ffmpeg_for_output(
+    args: list[str],
+    ffmpeg_exe: str,
+    tmp_path: str,
+    dest: Path,
+    label: str,
+    timeout_seconds: float,
+) -> None:
+    try:
+        finished = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=float(timeout_seconds),
+        )
+    except FileNotFoundError as exc:
+        raise _missing_tool_error(ffmpeg_exe) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ExportError(
+            f"ffmpeg timed out {label} after {timeout_seconds}s."
+        ) from exc
+    except OSError as exc:
+        raise ExportError(
+            f"could not run ffmpeg as {ffmpeg_exe!r}: {exc}."
+        ) from exc
+    if finished.returncode != 0:
+        detail = ((finished.stderr or "").strip() or (finished.stdout or "").strip())
+        suffix = f": {detail}" if detail else ": no output"
+        raise ExportError(
+            f"ffmpeg failed {label} (exit {finished.returncode}){suffix}."
+        )
+    if not Path(tmp_path).is_file() or Path(tmp_path).stat().st_size == 0:
+        raise ExportError(f"ffmpeg did not produce output {label}.")
+    try:
+        os.replace(tmp_path, dest)
+    except OSError as exc:
+        raise ExportError(
+            f"could not move finished output into place at {dest}: {exc}."
+        ) from exc
+
+
+def export_compilation(
+    source_video: Path | str,
+    plan: ExportPlan,
+    dest: Path | str,
+    *,
+    source: SourceMetadata | None = None,
+    ffmpeg: str = "ffmpeg",
+    ffprobe: str = "ffprobe",
+    video_encoder: str = DEFAULT_VIDEO_ENCODER,
+    audio_encoder: str = DEFAULT_AUDIO_ENCODER,
+    include_audio: bool | None = None,
+    overwrite: bool = False,
+    is_cancelled: Callable[[], bool] | None = None,
+    timeout_seconds: float = 300.0,
+) -> Path:
+    """Concatenate plan ranges into one gapless compilation, in plan order.
+
+    Segments are trimmed from the original source samples with exact
+    filter-based trims and joined back-to-back with the ``concat`` filter:
+    no dead-time gaps are inserted. The output is always re-encoded with
+    an explicit video encoder; stream copy is never used.
+
+    Args:
+        source_video: Original source video; read only, never modified.
+        plan: Validated :class:`ExportPlan` in source order. Overlap and
+            empty plans are rejected by the domain plan itself; this
+            function never reorders or merges ranges.
+        dest: Final ``serves.mov``-style output file path.
+        source: Optional already-probed metadata; fingerprint/duration
+            must agree with ``plan`` and the file.
+        include_audio: ``True`` forces trimmed audio, ``False`` forces
+            video-only output, ``None`` (default) auto-detects from ffprobe.
+        overwrite: When false (default), a pre-existing ``dest`` raises
+            :class:`ExportCollisionError` before any FFmpeg work.
+        is_cancelled: Optional hook; a true return raises
+            :class:`ExportCancelled`.
+        timeout_seconds: FFmpeg timeout for the compilation job.
+
+    Returns:
+        The final compilation path.
+    """
+    import math
+
+    if not isinstance(plan, ExportPlan):
+        raise ExportError(
+            "invalid export plan: "
+            f"expected ExportPlan, got {type(plan).__name__}."
+        )
+    source_path = Path(source_video).expanduser()
+    if not source_path.is_file():
+        raise ExportError(f"input video does not exist: {source_path}.")
+    destination = Path(dest).expanduser()
+    encoder = _check_encoder("video_encoder", video_encoder)
+    if include_audio is True:
+        _check_encoder("audio_encoder", audio_encoder)
+    elif include_audio is not None and not isinstance(include_audio, bool):
+        raise ExportError(
+            f"invalid include_audio: {include_audio!r}; "
+            "expected True, False, or None."
+        )
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(float(timeout_seconds))
+        or float(timeout_seconds) <= 0
+    ):
+        raise ExportError(
+            f"invalid timeout_seconds: {timeout_seconds!r}; "
+            "expected a finite number greater than zero."
+        )
+    if is_cancelled is not None and not callable(is_cancelled):
+        raise ExportError(
+            f"invalid is_cancelled: {is_cancelled!r}; expected a callable or None."
+        )
+    _ensure_ffmpeg(ffmpeg.strip() if isinstance(ffmpeg, str) else ffmpeg)  # type: ignore[arg-type]
+    if not isinstance(ffprobe, str) or not ffprobe.strip():
+        raise ExportError(
+            f"invalid ffprobe executable: {ffprobe!r}; expected a non-blank string."
+        )
+    _, audio_payload = _resolve_plan_source(source_path, plan, source, ffprobe.strip())
+    want_audio = _decide_audio(
+        source_path, ffprobe.strip(), audio_payload, include_audio, audio_encoder
+    )
+    # NOTE: _resolve_plan_source already validated fingerprint/duration;
+    if want_audio:
+        _check_encoder("audio_encoder", audio_encoder)
+    parent = destination.parent
+    if str(parent) not in ("", "."):
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ExportError(
+                f"could not create output directory {parent}: {exc}."
+            ) from exc
+    if not overwrite and destination.exists():
+        raise ExportCollisionError(
+            f"output collision: {destination} already exists; "
+            "pass overwrite=True to replace explicitly."
+        )
+    if is_cancelled is not None and is_cancelled():
+        raise ExportCancelled("compilation export was cancelled before starting.")
+    ffmpeg_exe = ffmpeg.strip()
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=str(parent) if str(parent) not in ("", ".") else None,
+            prefix=destination.name + ".tmp-",
+            suffix=".mov",
+            delete=False,
+        ) as handle:
+            tmp_path = handle.name
+        args = build_compilation_ffmpeg_args(
+            source_path,
+            list(plan.ranges),
+            tmp_path,
+            ffmpeg=ffmpeg_exe,
+            video_encoder=encoder,
+            audio_encoder=audio_encoder,
+            include_audio=want_audio,
+        )
+        label = (
+            f"exporting compilation of {len(plan)} range(s) "
+            f"[{plan.ranges[0].start_seconds}, ..., {plan.ranges[-1].end_seconds}s)"
+        )
+        _run_ffmpeg_for_output(args, ffmpeg_exe, tmp_path, destination, label, float(timeout_seconds))
+        tmp_path = None
+    except BaseException:
+        _remove_quietly(tmp_path)
+        raise
+    return destination
+
+
+def export_outputs(
+    source_video: Path | str,
+    plan: ExportPlan,
+    output_dir: Path | str,
+    *,
+    mode: str = "compilation",
+    source: SourceMetadata | None = None,
+    ffmpeg: str = "ffmpeg",
+    ffprobe: str = "ffprobe",
+    video_encoder: str = DEFAULT_VIDEO_ENCODER,
+    audio_encoder: str = DEFAULT_AUDIO_ENCODER,
+    include_audio: bool | None = None,
+    overwrite: bool = False,
+    is_cancelled: Callable[[], bool] | None = None,
+    timeout_seconds: float = 300.0,
+) -> dict[str, object]:
+    """Export ``mode`` (``compilation``/``clips``/``both``) for ``plan``.
+
+    Layout inside ``output_dir``::
+
+        serves.mov            # compilation/both
+        clips/serve-001.mov   # clips/both
+
+    Ranges keep plan (source) order; the compilation concatenates them
+    back-to-back with no artificial gaps. All destinations are checked
+    for collisions before any FFmpeg work runs. Temporary files are
+    written beside each final result and atomically renamed; they are
+    removed on failure, timeout, or cancellation.
+
+    Returns:
+        ``{"compilation": Path | None, "clips": list[Path]}``.
+    """
+    if not isinstance(plan, ExportPlan):
+        raise ExportError(
+            "invalid export plan: "
+            f"expected ExportPlan, got {type(plan).__name__}."
+        )
+    if mode not in EXPORT_MODES:
+        raise ExportError(
+            f"invalid output mode: {mode!r}; expected one of {list(EXPORT_MODES)}."
+        )
+    source_path = Path(source_video).expanduser()
+    if not source_path.is_file():
+        raise ExportError(f"input video does not exist: {source_path}.")
+    out_dir = Path(output_dir).expanduser()
+    compilation_dest = out_dir / COMPILATION_FILENAME
+    clips_dir = out_dir / CLIPS_SUBDIR
+    want_compilation = mode in ("compilation", "both")
+    want_clips = mode in ("clips", "both")
+    # Collision pre-check before any FFmpeg work.
+    if not overwrite:
+        collisions: list[Path] = []
+        if want_compilation and compilation_dest.exists():
+            collisions.append(compilation_dest)
+        if want_clips:
+            for number in range(1, len(plan) + 1):
+                candidate = clips_dir / clip_filename(number)
+                if candidate.exists():
+                    collisions.append(candidate)
+        if collisions:
+            listing = ", ".join(str(path) for path in collisions)
+            raise ExportCollisionError(
+                f"output collision: {listing} already exists; "
+                "pass overwrite=True to replace explicitly."
+            )
+    if is_cancelled is not None and not callable(is_cancelled):
+        raise ExportError(
+            f"invalid is_cancelled: {is_cancelled!r}; expected a callable or None."
+        )
+    if is_cancelled is not None and is_cancelled():
+        raise ExportCancelled("export was cancelled before starting.")
+    compilation: Path | None = None
+    clips: list[Path] = []
+    if want_compilation:
+        compilation = export_compilation(
+            source_path,
+            plan,
+            compilation_dest,
+            source=source,
+            ffmpeg=ffmpeg,
+            ffprobe=ffprobe,
+            video_encoder=video_encoder,
+            audio_encoder=audio_encoder,
+            include_audio=include_audio,
+            overwrite=overwrite,
+            is_cancelled=is_cancelled,
+            timeout_seconds=timeout_seconds,
+        )
+    if want_clips:
+        clips = export_clips(
+            source_path,
+            plan,
+            clips_dir,
+            source=source,
+            ffmpeg=ffmpeg,
+            ffprobe=ffprobe,
+            video_encoder=video_encoder,
+            audio_encoder=audio_encoder,
+            include_audio=include_audio,
+            overwrite=overwrite,
+            is_cancelled=is_cancelled,
+            timeout_seconds=timeout_seconds,
+        )
+    return {"compilation": compilation, "clips": clips}
