@@ -29,6 +29,7 @@ private-footage/
 # Downloaded models, inference caches, and generated results
 models/*
 !models/.gitkeep
+!models/manifest.json
 .cache/
 output/*
 !output/.gitkeep

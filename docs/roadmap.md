@@ -132,33 +132,23 @@ Goal: produce cached body observations from timestamped frames without coupling 
 - **Focused check:** `uv run pytest tests/test_models.py tests/test_cli.py`.
 - **Exit:** Tests cover valid artifact, mismatch, interruption, existing valid file, offline error, and attribution output.
 
-### M2.4 — ONNX person detector adapter
+### M2.4 — MediaPipe Pose Landmarker adapter
 
-- **Objective:** Run the approved person detector behind a small backend protocol and return deterministic normalized boxes.
-- **Dependency:** M2.3 integrated and approved detector artifact is available locally.
-- **Allowed:** `pyproject.toml`, `uv.lock`, `src/serve_review/pose/backend.py`, `src/serve_review/pose/person_onnx.py`, `tests/test_person_onnx.py`, sanitized tiny tensor fixtures.
-- **Forbidden:** pose estimation, serve rules, CLI, downloading in tests, model/license changes. Add only NumPy/ONNX Runtime versions authorized by the task.
-- **Behavior:** Explicit input preprocessing/output mapping, confidence threshold in versioned config, provider reporting, CPU fallback, no global session mutation.
-- **Focused check:** `uv run pytest tests/test_person_onnx.py`.
-- **Exit:** Fake-session tests cover shapes, transforms, NMS, no-person, malformed model output, provider fallback, and deterministic metadata.
+- **Objective:** Run the approved local Pose Landmarker `.task` model and map its 33 landmarks to portable normalized observations.
+- **Dependency:** M2.3 integrated and the manifest-approved artifact is available locally.
+- **Allowed:** `src/serve_review/pose/backend.py`, `src/serve_review/pose/mediapipe.py`, `tests/test_mediapipe_pose.py`, sanitized tiny fixtures.
+- **Forbidden:** serve rules, CLI, model downloads, model/license changes, private frames, new dependencies.
+- **Behavior:** Use ordered `VIDEO` calls; retain canonical source time separately from integer MediaPipe milliseconds; serialize calls to one landmarker; expose no-person/missing landmarks honestly.
+- **Focused check:** `uv run pytest tests/test_mediapipe_pose.py`.
+- **Exit:** Tests cover coordinate mapping, monotonically ordered timestamps, missing poses/landmarks, metadata, and deterministic adapter behavior.
 
-### M2.5 — RTMPose ONNX adapter
+### M2.5 — Pose extraction coordinator and diagnostic command
 
-- **Objective:** Infer body keypoints for supplied person crops and map them to source coordinates.
-- **Dependency:** M2.4 integrated and approved RTMPose artifact is available locally.
-- **Allowed:** `src/serve_review/pose/backend.py`, `src/serve_review/pose/rtmpose_onnx.py`, `tests/test_rtmpose_onnx.py`, sanitized tiny tensor fixtures.
-- **Forbidden:** serve rules, tracking, CLI, dependencies, model/license changes, private frames.
-- **Behavior:** Document preprocessing, heatmap/SimCC decoding, crop-to-source transform, confidence/visibility, missing output, and model identity.
-- **Focused check:** `uv run pytest tests/test_rtmpose_onnx.py`.
-- **Exit:** Fixture tests verify coordinate transforms, left/right joint identity, low confidence, malformed output, determinism, and backend protocol conformance.
-
-### M2.6 — Pose extraction coordinator and diagnostic command
-
-- **Objective:** Connect frame sampling, person detection, pose inference, and resumable cache; add a diagnostic extraction command.
-- **Dependency:** M2.5 integrated.
+- **Objective:** Connect frame sampling, the MediaPipe adapter, and resumable cache; add a diagnostic extraction command.
+- **Dependency:** M2.4 integrated.
 - **Allowed:** `src/serve_review/pose/extract.py`, `src/serve_review/cli.py`, `tests/test_pose_extract.py`, `tests/test_cli.py`.
 - **Forbidden:** serve detection/checkpoints, visualization, model downloads, dependencies, private media.
-- **Behavior:** Bounded processing, progress, cancellation, cache hit/resume, deterministic player selection for one-player footage, explicit no-person frames.
+- **Behavior:** Bounded processing, progress, cancellation, cache hit/resume, serialized VIDEO inference, and explicit no-person frames.
 - **Focused check:** `uv run pytest tests/test_pose_extract.py tests/test_cli.py`.
 - **Exit:** Fake-backend end-to-end tests cover complete, partial resume, cancellation, stale cache, inference error, and CLI reporting.
 

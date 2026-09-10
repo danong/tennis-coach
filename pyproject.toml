@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Offline tennis serve detection and video extraction"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
-dependencies = []
+dependencies = [
+    "mediapipe>=0.10.32,<0.11",
+]
 
 [project.scripts]
 serve-review = "serve_review.cli:main"

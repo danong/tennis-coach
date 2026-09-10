@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "id": "mediapipe-pose-landmarker-heavy",
+      "runtime": "mediapipe-tasks",
+      "artifact": "pose_landmarker_heavy.task",
+      "sha256": "64437af838a65d18e5ba7a0d39b465540069bc8aae8308de3e318aad31fcbc7b", 
+      "source_url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task",
+      "license_review": "PENDING: record the official model terms before M2.3 downloader work",
+      "input": "RGB image",
+      "output": "33 normalized pose landmarks plus optional world landmarks",
+      "macos_variant": "heavy",
+      "ios_candidates": ["full", "lite"],
+      "status": "local sanity-test baseline; not yet approved for production"
+    }
+  ]
+}
