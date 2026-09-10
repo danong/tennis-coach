@@ -49,6 +49,31 @@ def doctor() -> int:
     return 0
 
 
+def probe(args: argparse.Namespace) -> int:
+    from serve_review.media.probe import ProbeError, probe_source, write_source_json
+
+    source = args.video.expanduser()
+    if not source.is_file():
+        print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
+        return 2
+    if args.output is not None:
+        dest = args.output.expanduser()
+    else:
+        dest = Path("output") / source.stem / "source.json"
+    try:
+        metadata = probe_source(source, ffprobe=args.ffprobe)
+    except ProbeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    try:
+        written = write_source_json(metadata, dest)
+    except ProbeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(str(written))
+    return 0
+
+
 def cut(args: argparse.Namespace) -> int:
     source = args.video.expanduser()
     if not source.is_file():
@@ -75,6 +100,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser("doctor", help="check local prerequisites")
     doctor_parser.set_defaults(handler=lambda _args: doctor())
+
+    probe_parser = subparsers.add_parser(
+        "probe",
+        help="inspect a video with ffprobe and emit normalized source.json",
+        description=(
+            "Run ffprobe on a source MOV/MP4 video and write normalized "
+            "source.json metadata (dimensions, rational frame rate/time base, "
+            "duration, codec, rotation)."
+        ),
+    )
+    probe_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
+    probe_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="destination source.json file (default: output/<source-stem>/source.json)",
+    )
+    probe_parser.add_argument(
+        "--ffprobe",
+        default="ffprobe",
+        metavar="EXE",
+        help="ffprobe executable (default: ffprobe)",
+    )
+    probe_parser.set_defaults(handler=probe)
 
     cut_parser = subparsers.add_parser("cut", help="detect and export serves")
     cut_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
