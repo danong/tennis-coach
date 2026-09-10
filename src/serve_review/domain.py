@@ -20,19 +20,26 @@ __all__ = [
     "SOURCE_SCHEMA_VERSION",
     "RANGE_SCHEMA_VERSION",
     "EXPORT_PLAN_SCHEMA_VERSION",
+    "ATTEMPT_SCHEMA_VERSION",
+    "ATTEMPT_DOCUMENT_SCHEMA_VERSION",
     "DomainError",
     "SchemaVersionError",
     "SourceMetadataError",
     "RangeError",
     "ExportPlanError",
+    "AttemptError",
     "SourceMetadata",
     "MediaRange",
     "ExportPlan",
+    "Attempt",
+    "AttemptDocument",
 ]
 
 SOURCE_SCHEMA_VERSION = 1
 RANGE_SCHEMA_VERSION = 1
 EXPORT_PLAN_SCHEMA_VERSION = 1
+ATTEMPT_SCHEMA_VERSION = 1
+ATTEMPT_DOCUMENT_SCHEMA_VERSION = 1
 
 _ROTATIONS = (0, 90, 180, 270)
 
@@ -55,6 +62,10 @@ class RangeError(DomainError):
 
 class ExportPlanError(DomainError):
     """Raised when an export plan is invalid."""
+
+
+class AttemptError(DomainError):
+    """Raised when an attempt or attempt document is invalid."""
 
 
 def _is_int(value: Any) -> bool:
@@ -697,3 +708,470 @@ class ExportPlan:
     @classmethod
     def from_json(cls, data: str | bytes | bytearray) -> ExportPlan:
         return cls.from_dict(_loads_object("export_plan", data))
+
+
+_ATTEMPT_ID_PREFIX = "serve-"
+
+
+def _check_attempt_id(name: str, value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        raise AttemptError(
+            f"{name}: 'attempt_id' must be a non-empty string, "
+            f"got {value!r}."
+        )
+    body = value[len(_ATTEMPT_ID_PREFIX):] if value.startswith(_ATTEMPT_ID_PREFIX) else None
+    if body is None or len(body) < 3 or not body.isdigit():
+        raise AttemptError(
+            f"{name}: 'attempt_id' must look like 'serve-NNN' with at least "
+            f"three digits, got {value!r}."
+        )
+    return value
+
+
+def _check_confidence(name: str, value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AttemptError(
+            f"{name}: 'confidence' must be a number in [0, 1] or None, "
+            f"got {value!r}."
+        )
+    number = float(value)
+    if not math.isfinite(number) or number < 0.0 or number > 1.0:
+        raise AttemptError(
+            f"{name}: 'confidence' must lie in [0, 1] or be None, "
+            f"got {value!r}."
+        )
+    return number
+
+
+def _check_evidence(name: str, value: Any) -> dict[str, float]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise AttemptError(
+            f"{name}: 'evidence' must be a mapping of str to finite "
+            f"numbers, got {type(value).__name__}."
+        )
+    cleaned: dict[str, float] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise AttemptError(
+                f"{name}: 'evidence' keys must be non-blank strings, "
+                f"got {key!r}."
+            )
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            raise AttemptError(
+                f"{name}: 'evidence[{key}]' must be a finite number, "
+                f"got {item!r}."
+            )
+        number = float(item)
+        if not math.isfinite(number):
+            raise AttemptError(
+                f"{name}: 'evidence[{key}]' must be finite, got {item!r}."
+            )
+        cleaned[key] = number
+    return cleaned
+
+
+def _check_padding_value(name: str, value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AttemptError(
+            f"{name}: 'padding_seconds' must be a number, got {value!r}."
+        )
+    number = float(value)
+    if not math.isfinite(number) or number < 0.0:
+        raise AttemptError(
+            f"{name}: 'padding_seconds' must be finite and >= 0, "
+            f"got {value!r}."
+        )
+    return number
+
+
+def _union_overlapping(ranges: tuple[MediaRange, ...]) -> tuple[MediaRange, ...]:
+    """Merge strictly overlapping ranges; adjacency is preserved."""
+    if not ranges:
+        return ()
+    ordered = sorted(ranges, key=lambda item: (item.start_seconds, item.end_seconds))
+    merged: list[MediaRange] = [ordered[0]]
+    for item in ordered[1:]:
+        tail = merged[-1]
+        if item.start_seconds < tail.end_seconds:
+            merged[-1] = MediaRange(
+                start_seconds=tail.start_seconds,
+                end_seconds=max(tail.end_seconds, item.end_seconds),
+            )
+        else:
+            merged.append(item)
+    return tuple(merged)
+
+
+@dataclass(frozen=True, slots=True)
+class Attempt:
+    """One versioned serve attempt with detected and effective ranges.
+
+    ``detected_range`` is the unpadded detector output, half-open
+    ``[start, end)``. ``effective_range`` is the padded, source-clamped
+    range used for export; it always contains ``detected_range``.
+    ``confidence`` is an optional score in ``[0, 1]`` (``None`` means
+    unknown/uncertain). ``evidence`` maps non-blank names to finite
+    numbers and round-trips through JSON deterministically.
+    """
+
+    attempt_id: str = ""
+    detected_range: MediaRange = field(default_factory=lambda: MediaRange(0.0, 0.1))
+    effective_range: MediaRange = field(default_factory=lambda: MediaRange(0.0, 0.1))
+    confidence: float | None = None
+    evidence: dict[str, float] = field(default_factory=dict)
+    schema_version: int = ATTEMPT_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        name = "attempt"
+        version = self.schema_version
+        if not _is_int(version):
+            raise AttemptError(
+                f"{name}: 'schema_version' must be an integer, got {version!r}."
+            )
+        if version != ATTEMPT_SCHEMA_VERSION:
+            if version > ATTEMPT_SCHEMA_VERSION:
+                raise SchemaVersionError(
+                    f"{name}: unsupported newer schema_version {version!r}; "
+                    f"this build supports version {ATTEMPT_SCHEMA_VERSION}."
+                )
+            raise SchemaVersionError(
+                f"{name}: unsupported schema_version {version!r}; "
+                f"expected version {ATTEMPT_SCHEMA_VERSION}."
+            )
+        object.__setattr__(self, "attempt_id", _check_attempt_id(name, self.attempt_id))
+        detected = self.detected_range
+        effective = self.effective_range
+        if not isinstance(detected, MediaRange):
+            raise AttemptError(
+                f"{name}: 'detected_range' must be a MediaRange, "
+                f"got {type(detected).__name__}."
+            )
+        if not isinstance(effective, MediaRange):
+            raise AttemptError(
+                f"{name}: 'effective_range' must be a MediaRange, "
+                f"got {type(effective).__name__}."
+            )
+        if effective.start_seconds > detected.start_seconds or effective.end_seconds < detected.end_seconds:
+            raise AttemptError(
+                f"{name}: 'effective_range' {effective.to_dict()!r} must contain "
+                f"'detected_range' {detected.to_dict()!r}."
+            )
+        object.__setattr__(self, "confidence", _check_confidence(name, self.confidence))
+        object.__setattr__(self, "evidence", _check_evidence(name, self.evidence))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "attempt_id": self.attempt_id,
+            "confidence": self.confidence,
+            "detected_range": self.detected_range.to_dict(),
+            "effective_range": self.effective_range.to_dict(),
+            "evidence": {key: self.evidence[key] for key in sorted(self.evidence)},
+            "schema_version": self.schema_version,
+        }
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> Attempt:
+        name = "attempt"
+        if not isinstance(values, dict):
+            raise AttemptError(
+                f"{name}: mapping is required, got {type(values).__name__}."
+            )
+        known = {
+            "attempt_id",
+            "confidence",
+            "detected_range",
+            "effective_range",
+            "evidence",
+            "schema_version",
+        }
+        missing = sorted(known - set(values))
+        if missing:
+            raise AttemptError(f"{name}: missing required keys {missing!r}.")
+        try:
+            _check_no_unknown_keys(name, values, known)
+        except DomainError as exc:
+            raise AttemptError(str(exc)) from exc
+        try:
+            _check_schema_version(name, values, ATTEMPT_SCHEMA_VERSION)
+        except SchemaVersionError:
+            raise
+        except DomainError as exc:
+            raise AttemptError(str(exc)) from exc
+        try:
+            detected = MediaRange.from_dict(values["detected_range"])
+        except DomainError as exc:
+            raise AttemptError(f"{name}: invalid 'detected_range': {exc}.") from exc
+        try:
+            effective = MediaRange.from_dict(values["effective_range"])
+        except DomainError as exc:
+            raise AttemptError(f"{name}: invalid 'effective_range': {exc}.") from exc
+        return cls(
+            attempt_id=values["attempt_id"],
+            detected_range=detected,
+            effective_range=effective,
+            confidence=values["confidence"],
+            evidence=values["evidence"],
+            schema_version=values["schema_version"],
+        )
+
+    def to_json(self) -> str:
+        return _dumps_deterministic(self.to_dict())
+
+    @classmethod
+    def from_json(cls, data: str | bytes | bytearray) -> Attempt:
+        return cls.from_dict(_loads_object("attempt", data))
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptDocument:
+    """Versioned set of attempts for one source plus export ranges.
+
+    ``attempts`` preserve unpadded detector output alongside padded
+    effective ranges, ordered by ``(detected.start, detected.end)`` with
+    stable ``serve-NNN`` identifiers. ``export_ranges`` are the union of
+    strictly overlapping effective ranges (adjacent ranges stay
+    separate); detected ranges are never rewritten by the union.
+    An empty detection yields empty ``attempts`` and ``export_ranges``.
+    """
+
+    source_fingerprint: str = ""
+    source_duration_seconds: float = 0.0
+    padding_seconds: float = 0.0
+    method_version: str = "candidate-ranges-v1+plan-v1"
+    attempts: tuple[Attempt, ...] = ()
+    export_ranges: tuple[MediaRange, ...] = ()
+    schema_version: int = ATTEMPT_DOCUMENT_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        name = "attempt_document"
+        version = self.schema_version
+        if not _is_int(version):
+            raise AttemptError(
+                f"{name}: 'schema_version' must be an integer, got {version!r}."
+            )
+        if version != ATTEMPT_DOCUMENT_SCHEMA_VERSION:
+            if version > ATTEMPT_DOCUMENT_SCHEMA_VERSION:
+                raise SchemaVersionError(
+                    f"{name}: unsupported newer schema_version {version!r}; "
+                    f"this build supports version {ATTEMPT_DOCUMENT_SCHEMA_VERSION}."
+                )
+            raise SchemaVersionError(
+                f"{name}: unsupported schema_version {version!r}; "
+                f"expected version {ATTEMPT_DOCUMENT_SCHEMA_VERSION}."
+            )
+        _check_non_blank(name, "source_fingerprint", self.source_fingerprint)
+        try:
+            duration = _check_finite_positive(
+                name, "'source_duration_seconds'", self.source_duration_seconds
+            )
+        except DomainError as exc:
+            raise AttemptError(str(exc)) from exc
+        object.__setattr__(self, "source_duration_seconds", duration)
+        try:
+            padding = _check_padding_value(name, self.padding_seconds)
+        except AttemptError:
+            raise
+        object.__setattr__(self, "padding_seconds", padding)
+        try:
+            _check_non_blank(name, "method_version", self.method_version)
+        except DomainError as exc:
+            raise AttemptError(str(exc)) from exc
+        raw_attempts = self.attempts
+        if isinstance(raw_attempts, Attempt):
+            raise AttemptError(
+                f"{name}: 'attempts' must be a sequence of Attempt, "
+                f"got a single Attempt."
+            )
+        if not isinstance(raw_attempts, (list, tuple)):
+            raise AttemptError(
+                f"{name}: 'attempts' must be a list or tuple of Attempt, "
+                f"got {type(raw_attempts).__name__}."
+            )
+        normalized = tuple(raw_attempts)
+        for entry in normalized:
+            if not isinstance(entry, Attempt):
+                raise AttemptError(
+                    f"{name}: every attempt must be an Attempt, "
+                    f"got {type(entry).__name__}."
+                )
+        object.__setattr__(self, "attempts", normalized)
+        raw_export = self.export_ranges
+        if isinstance(raw_export, MediaRange):
+            raise AttemptError(
+                f"{name}: 'export_ranges' must be a sequence of MediaRange, "
+                f"got a single MediaRange."
+            )
+        if not isinstance(raw_export, (list, tuple)):
+            raise AttemptError(
+                f"{name}: 'export_ranges' must be a list or tuple of MediaRange, "
+                f"got {type(raw_export).__name__}."
+            )
+        export = tuple(raw_export)
+        for entry in export:
+            if not isinstance(entry, MediaRange):
+                raise AttemptError(
+                    f"{name}: every export range must be a MediaRange, "
+                    f"got {type(entry).__name__}."
+                )
+            if entry.end_seconds > duration:
+                raise AttemptError(
+                    f"{name}: export range {entry.to_dict()!r} extends beyond "
+                    f"source duration ({duration!r})."
+                )
+        object.__setattr__(self, "export_ranges", export)
+        # Attempt-level bounds and ordering.
+        for entry in normalized:
+            if entry.detected_range.end_seconds > duration:
+                raise AttemptError(
+                    f"{name}: detected range {entry.detected_range.to_dict()!r} "
+                    f"extends beyond source duration ({duration!r})."
+                )
+            if entry.effective_range.end_seconds > duration:
+                raise AttemptError(
+                    f"{name}: effective range {entry.effective_range.to_dict()!r} "
+                    f"extends beyond source duration ({duration!r})."
+                )
+        for first, second in zip(normalized, normalized[1:]):
+            if (second.detected_range.start_seconds, second.detected_range.end_seconds) < (
+                first.detected_range.start_seconds, first.detected_range.end_seconds
+            ):
+                raise AttemptError(
+                    f"{name}: attempts must be sorted by detected range; "
+                    f"{first.attempt_id!r} precedes {second.attempt_id!r}."
+                )
+        seen_ids = [entry.attempt_id for entry in normalized]
+        if len(set(seen_ids)) != len(seen_ids):
+            raise AttemptError(f"{name}: duplicate attempt_id values {seen_ids!r}.")
+        for index, entry in enumerate(normalized, start=1):
+            expected = f"serve-{index:03d}"
+            if entry.attempt_id != expected:
+                raise AttemptError(
+                    f"{name}: attempt #{index} must carry id {expected!r}, "
+                    f"got {entry.attempt_id!r}."
+                )
+        # Export ranges must be sorted, non-overlapping, and exactly the
+        # union of strictly overlapping effective ranges.
+        for first, second in zip(export, export[1:]):
+            if (second.start_seconds, second.end_seconds) < (first.start_seconds, first.end_seconds):
+                raise AttemptError(
+                    f"{name}: export ranges must be sorted; "
+                    f"{first.to_dict()!r} precedes {second.to_dict()!r}."
+                )
+            if first.overlaps(second):
+                raise AttemptError(
+                    f"{name}: export ranges must not overlap; "
+                    f"{first.to_dict()!r} overlaps {second.to_dict()!r}."
+                )
+        expected_export = _union_overlapping(
+            tuple(entry.effective_range for entry in normalized)
+        )
+        if export != expected_export:
+            raise AttemptError(
+                f"{name}: 'export_ranges' must equal the union of overlapping "
+                f"effective ranges; got {[item.to_dict() for item in export]!r}, "
+                f"expected {[item.to_dict() for item in expected_export]!r}."
+            )
+
+    def __len__(self) -> int:
+        return len(self.attempts)
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        return iter(self.attempts)
+
+    def __getitem__(self, index):  # type: ignore[no-untyped-def]
+        return self.attempts[index]
+
+    @property
+    def total_export_duration_seconds(self) -> float:
+        return sum(item.duration_seconds for item in self.export_ranges)
+
+    def to_export_plan(self) -> ExportPlan:
+        """Return an :class:`ExportPlan` over the unioned export ranges."""
+        if not self.export_ranges:
+            raise AttemptError("attempt_document: no export ranges to export.")
+        return ExportPlan(
+            source_fingerprint=self.source_fingerprint,
+            source_duration_seconds=self.source_duration_seconds,
+            ranges=self.export_ranges,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "attempts": [entry.to_dict() for entry in self.attempts],
+            "export_ranges": [entry.to_dict() for entry in self.export_ranges],
+            "method_version": self.method_version,
+            "padding_seconds": self.padding_seconds,
+            "schema_version": self.schema_version,
+            "source_duration_seconds": self.source_duration_seconds,
+            "source_fingerprint": self.source_fingerprint,
+        }
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> AttemptDocument:
+        name = "attempt_document"
+        if not isinstance(values, dict):
+            raise AttemptError(
+                f"{name}: mapping is required, got {type(values).__name__}."
+            )
+        known = {
+            "attempts",
+            "export_ranges",
+            "method_version",
+            "padding_seconds",
+            "schema_version",
+            "source_duration_seconds",
+            "source_fingerprint",
+        }
+        missing = sorted(known - set(values))
+        if missing:
+            raise AttemptError(f"{name}: missing required keys {missing!r}.")
+        try:
+            _check_no_unknown_keys(name, values, known)
+        except DomainError as exc:
+            raise AttemptError(str(exc)) from exc
+        try:
+            _check_schema_version(name, values, ATTEMPT_DOCUMENT_SCHEMA_VERSION)
+        except SchemaVersionError:
+            raise
+        except DomainError as exc:
+            raise AttemptError(str(exc)) from exc
+        raw_attempts = values["attempts"]
+        raw_export = values["export_ranges"]
+        if not isinstance(raw_attempts, (list, tuple)):
+            raise AttemptError(
+                f"{name}: 'attempts' must be a list of attempt objects, "
+                f"got {type(raw_attempts).__name__}."
+            )
+        if not isinstance(raw_export, (list, tuple)):
+            raise AttemptError(
+                f"{name}: 'export_ranges' must be a list of range objects, "
+                f"got {type(raw_export).__name__}."
+            )
+        try:
+            parsed_attempts = tuple(Attempt.from_dict(entry) for entry in raw_attempts)
+        except DomainError as exc:
+            raise AttemptError(f"{name}: invalid attempt: {exc}.") from exc
+        try:
+            parsed_export = tuple(MediaRange.from_dict(entry) for entry in raw_export)
+        except DomainError as exc:
+            raise AttemptError(f"{name}: invalid export range: {exc}.") from exc
+        return cls(
+            source_fingerprint=values["source_fingerprint"],
+            source_duration_seconds=values["source_duration_seconds"],
+            padding_seconds=values["padding_seconds"],
+            method_version=values["method_version"],
+            attempts=parsed_attempts,
+            export_ranges=parsed_export,
+            schema_version=values["schema_version"],
+        )
+
+    def to_json(self) -> str:
+        return _dumps_deterministic(self.to_dict())
+
+    @classmethod
+    def from_json(cls, data: str | bytes | bytearray) -> AttemptDocument:
+        return cls.from_dict(_loads_object("attempt_document", data))
