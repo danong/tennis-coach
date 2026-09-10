@@ -534,3 +534,189 @@ def test_export_reports_ffmpeg_failure(tmp_path: Path, monkeypatch, capsys) -> N
     assert export_cmd(args) == 1
     assert "ERROR" in capsys.readouterr().err
     assert not (tmp_path / "out" / video.stem / "serves.mov").exists()
+
+
+# --- extract-poses diagnostic command (M2.5) ---
+
+def test_extract_poses_defaults() -> None:
+    from pathlib import Path as _Path
+
+    args = build_parser().parse_args(["extract-poses", "session.mov"])
+
+    assert args.video == _Path("session.mov")
+    assert args.model == _Path("models/pose_landmarker_heavy.task")
+    assert args.sample_rate == 30.0
+    assert args.cache is None
+    assert args.output_dir == _Path("output")
+    assert args.overwrite is False
+    assert args.ffmpeg == "ffmpeg"
+    assert args.ffprobe == "ffprobe"
+
+
+def test_extract_poses_help_documents_command(capsys) -> None:
+    top_help = build_parser().format_help()
+    assert "extract-poses" in top_help
+
+    parser = build_parser()
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(["extract-poses", "--help"])
+    assert excinfo.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--sample-rate" in help_text
+    assert "--model" in help_text
+    assert "--cache" in help_text
+
+
+def test_extract_poses_rejects_missing_video(tmp_path: Path, capsys) -> None:
+    from serve_review.cli import extract_poses_cmd
+
+    args = build_parser().parse_args(["extract-poses", str(tmp_path / "missing.mov")])
+
+    assert extract_poses_cmd(args) == 2
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_extract_poses_rejects_bad_sample_rate(tmp_path: Path, capsys) -> None:
+    from serve_review.cli import extract_poses_cmd
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake")
+    for bad in ("0", "-3", "500"):
+        args = build_parser().parse_args(
+            ["extract-poses", str(source), "--sample-rate", bad]
+        )
+        assert extract_poses_cmd(args) == 2
+        assert "sample-rate" in capsys.readouterr().err
+
+
+def test_extract_poses_success_reports_cache_path(tmp_path: Path, capsys, monkeypatch) -> None:
+    from pathlib import Path as _Path
+
+    from serve_review.cli import extract_poses_cmd
+    from serve_review.pose import extract as extract_module
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake-video")
+    cache = tmp_path / "pose-v1.jsonl"
+    result = extract_module.ExtractionResult(
+        video=source,
+        cache_path=cache,
+        model_name="fake-heavy",
+        model_version="fake-v1",
+        sampling_rate_hz=30.0,
+        sampling_start_seconds=0.0,
+        frame_count=6,
+        cached_frames=0,
+        inferred_frames=6,
+        cache_hit=False,
+        complete=True,
+    )
+    seen: dict = {}
+
+    def _fake_extract(video, cache_path, **kwargs):
+        seen["video"] = _Path(video)
+        seen["cache"] = _Path(cache_path)
+        seen["rate"] = kwargs.get("sample_rate_hz")
+        seen["model"] = _Path(kwargs.get("model_path"))
+        assert kwargs.get("overwrite") is False
+        return result
+
+    monkeypatch.setattr(extract_module, "extract_poses", _fake_extract)
+    args = build_parser().parse_args(
+        ["extract-poses", str(source), "--cache", str(cache)]
+    )
+
+    assert extract_poses_cmd(args) == 0
+    out = capsys.readouterr().out
+    assert str(cache) in out
+    assert "6 frames" in out
+    assert seen["video"] == source
+    assert seen["cache"] == cache
+    assert seen["rate"] == 30.0
+
+
+def test_extract_poses_reports_cache_hit(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.cli import extract_poses_cmd
+    from serve_review.pose import extract as extract_module
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake-video")
+    cache = tmp_path / "pose-v1.jsonl"
+    result = extract_module.ExtractionResult(
+        video=source,
+        cache_path=cache,
+        model_name="fake-heavy",
+        model_version="fake-v1",
+        sampling_rate_hz=30.0,
+        sampling_start_seconds=0.0,
+        frame_count=4,
+        cached_frames=4,
+        inferred_frames=0,
+        cache_hit=True,
+        complete=True,
+    )
+    monkeypatch.setattr(
+        extract_module, "extract_poses", lambda *a, **k: result
+    )
+    args = build_parser().parse_args(
+        ["extract-poses", str(source), "--cache", str(cache)]
+    )
+
+    assert extract_poses_cmd(args) == 0
+    assert "cache hit" in capsys.readouterr().out
+
+
+def test_extract_poses_uses_default_cache_layout(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.cli import extract_poses_cmd
+    from serve_review.pose import extract as extract_module
+
+    source = tmp_path / "session.mov"
+    source.write_bytes(b"fake-video")
+    captured: dict = {}
+
+    def _fake_extract(video, cache_path, **kwargs):
+        from pathlib import Path as _Path
+
+        captured["cache"] = _Path(cache_path)
+        result = extract_module.ExtractionResult(
+            video=_Path(video),
+            cache_path=_Path(cache_path),
+            model_name="m",
+            model_version="v",
+            sampling_rate_hz=30.0,
+            sampling_start_seconds=0.0,
+            frame_count=1,
+            cached_frames=0,
+            inferred_frames=1,
+            cache_hit=False,
+            complete=True,
+        )
+        return result
+
+    monkeypatch.setattr(extract_module, "extract_poses", _fake_extract)
+    out_base = tmp_path / "out"
+    args = build_parser().parse_args(
+        ["extract-poses", str(source), "--output-dir", str(out_base)]
+    )
+
+    assert extract_poses_cmd(args) == 0
+    assert captured["cache"] == out_base / "session" / "cache" / "pose-v1.jsonl"
+
+
+def test_extract_poses_reports_failures_actionably(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.cli import extract_poses_cmd
+    from serve_review.pose import extract as extract_module
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake-video")
+
+    def _boom(video, cache_path, **kwargs):
+        raise extract_module.ExtractionError("fake probe failure")
+
+    monkeypatch.setattr(extract_module, "extract_poses", _boom)
+    args = build_parser().parse_args(
+        ["extract-poses", str(source), "--cache", str(tmp_path / "p.jsonl")]
+    )
+
+    assert extract_poses_cmd(args) == 1
+    assert "ERROR" in capsys.readouterr().err
