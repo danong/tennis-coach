@@ -24,7 +24,7 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 - **Environment:** macOS/Apple Silicon; JJ 0.45.1; mise Python 3.11.16; uv 0.12.9; model `opencode/muse-spark-1.3-contributor-free`.
 - **Allocation/result:** 75 turns / 20 minutes allowed; observed 21 turns; verified, then rejected for repair.
 - **Evidence:** candidate changed only the five allowed M1.2 files; stored verifier passed and binding was valid. Exact review found that rotation parsing accepts direct/tag fields but does not parse ffprobe MOV Display Matrix data in `side_data_list`.
-- **Review/lifecycle:** rejected by orchestrator; child repair requested to add Display Matrix rotation parsing and tests. Integration/human acceptance unavailable.
-- **Cleanup:** parent retained by Tau while its repair child runs.
+- **Review/lifecycle:** rejected by orchestrator. `tau repair` was attempted with the narrow rotation task but returned `cannot repair: parent current candidate is not inspectable`; no child was created. Integration/human acceptance unavailable.
+- **Cleanup:** parent is being rejected through Tau before a fresh retry.
 - **Cost/attention:** unavailable.
-- **Finding:** a verified candidate can have a meaningful media-metadata gap despite broad unit coverage; repair must test ffprobe's actual alternate metadata shape. Next action: review the child candidate and accept it only if the added parsing is correct.
+- **Finding:** a verified candidate can have a meaningful media-metadata gap despite broad unit coverage; repair must test ffprobe's actual alternate metadata shape. Repair is unavailable for this pre-upgrade parent record, so the safe fallback is reject/release then a fresh leaf retry.
