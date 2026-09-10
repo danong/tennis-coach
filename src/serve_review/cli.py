@@ -263,20 +263,54 @@ def extract_poses_cmd(args: argparse.Namespace) -> int:
 
 
 def cut(args: argparse.Namespace) -> int:
+    from serve_review.pipeline import CutCancelled, CutError, run_cut
+
     source = args.video.expanduser()
     if not source.is_file():
         print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
         return 2
-    if args.padding < 0:
+    try:
+        padding = float(args.padding)
+    except (TypeError, ValueError):
+        print(
+            f"ERROR: invalid --padding {args.padding!r}; "
+            "expected seconds >= 0.",
+            file=sys.stderr,
+        )
+        return 2
+    if not (padding >= 0):
         print("ERROR: --padding must be zero or greater.", file=sys.stderr)
         return 2
 
-    print(
-        "Serve detection/export is not implemented yet. "
-        "The next milestone adds manual-range export before model inference.",
-        file=sys.stderr,
-    )
-    return 3
+    def _progress(message: str) -> None:
+        print(message, file=sys.stderr)
+
+    try:
+        result = run_cut(
+            source,
+            output_dir=args.output_dir,
+            padding_seconds=padding,
+            mode=args.output,
+            overwrite=args.overwrite,
+            ffmpeg=args.ffmpeg,
+            ffprobe=args.ffprobe,
+            progress_callback=_progress,
+        )
+    except CutCancelled as exc:
+        print(f"ERROR: cut was cancelled at {exc.stage}: {exc.message}.", file=sys.stderr)
+        return 1
+    except CutError as exc:
+        print(f"ERROR: cut failed at {exc.stage}: {exc.message}.", file=sys.stderr)
+        return 1
+    print(str(result.attempts_path))
+    if result.empty:
+        print("no serves detected; wrote empty attempts only (no media output).")
+        return 0
+    if result.compilation is not None:
+        print(str(result.compilation))
+    for clip in result.clips:
+        print(str(clip))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -334,6 +368,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("output"),
         help="generated output directory (default: output)",
+    )
+    cut_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace existing outputs (default: fail on collision)",
+    )
+    cut_parser.add_argument(
+        "--ffmpeg",
+        default="ffmpeg",
+        metavar="EXE",
+        help="ffmpeg executable (default: ffmpeg)",
+    )
+    cut_parser.add_argument(
+        "--ffprobe",
+        default="ffprobe",
+        metavar="EXE",
+        help="ffprobe executable (default: ffprobe)",
     )
     cut_parser.set_defaults(handler=cut)
 

@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,9 @@ def test_cut_defaults() -> None:
     assert args.padding == 1.0
     assert args.output == "compilation"
     assert args.output_dir == Path("output")
+    assert args.overwrite is False
+    assert args.ffmpeg == "ffmpeg"
+    assert args.ffprobe == "ffprobe"
 
 
 def test_cut_rejects_missing_input(tmp_path: Path, capsys) -> None:
@@ -30,13 +34,253 @@ def test_cut_rejects_negative_padding(tmp_path: Path, capsys) -> None:
     assert "zero or greater" in capsys.readouterr().err
 
 
-def test_cut_truthfully_reports_unimplemented_pipeline(tmp_path: Path, capsys) -> None:
-    source = tmp_path / "source.mov"
-    source.touch()
-    args = build_parser().parse_args(["cut", str(source)])
+def test_cut_success_reports_attempts_and_outputs(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.pipeline import CutResult
+    from serve_review.domain import AttemptDocument
+    from serve_review import pipeline as pipeline_module
 
-    assert cut(args) == 3
-    assert "not implemented yet" in capsys.readouterr().err
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+    metadata = SimpleNamespace(fingerprint="sha256:x", duration_seconds=10.0)
+    document = AttemptDocument(
+        source_fingerprint="sha256:x",
+        source_duration_seconds=10.0,
+        padding_seconds=1.0,
+        method_version="candidate-ranges-v1+plan-v1",
+        attempts=(),
+        export_ranges=(),
+    )
+    session = tmp_path / "output" / source.stem
+    session.mkdir(parents=True)
+    attempts_path = session / "attempts.json"
+    attempts_path.write_text(document.to_json(), encoding="utf-8")
+    comp = session / "serves.mov"
+    comp.write_bytes(b"fake")
+    clip = session / "clips" / "serve-001.mov"
+    clip.parent.mkdir(parents=True, exist_ok=True)
+    clip.write_bytes(b"fake")
+    result = CutResult(
+        video=source,
+        session_dir=session,
+        source_metadata=metadata,  # type: ignore[arg-type]
+        attempts_document=document,
+        attempts_path=attempts_path,
+        source_path=session / "source.json",
+        run_path=session / "run.json",
+        cache_path=session / "cache" / "pose-v1.jsonl",
+        cache_hit=False,
+        mode="both",
+        compilation=comp,
+        clips=(clip,),
+        empty=False,
+    )
+    seen: dict = {}
+
+    def _fake_run_cut(video, **kwargs):
+        seen.update(kwargs)
+        seen["video"] = Path(video)
+        return result
+
+    monkeypatch.setattr(pipeline_module, "run_cut", _fake_run_cut)
+    args = build_parser().parse_args(
+        ["cut", str(source), "--padding", "1.5", "--output", "both",
+         "--output-dir", str(tmp_path / "output")]
+    )
+    assert cut(args) == 0
+    out = capsys.readouterr().out
+    assert str(attempts_path) in out
+    assert str(comp) in out
+    assert str(clip) in out
+    assert seen["padding_seconds"] == 1.5
+    assert seen["mode"] == "both"
+    assert seen["overwrite"] is False
+
+
+def test_cut_empty_result_reports_no_media(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.pipeline import CutResult
+    from serve_review.domain import AttemptDocument
+    from serve_review import pipeline as pipeline_module
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+    document = AttemptDocument(
+        source_fingerprint="sha256:x",
+        source_duration_seconds=10.0,
+        padding_seconds=1.0,
+        method_version="candidate-ranges-v1+plan-v1",
+        attempts=(),
+        export_ranges=(),
+    )
+    session = tmp_path / "output" / source.stem
+    session.mkdir(parents=True)
+    attempts_path = session / "attempts.json"
+    attempts_path.write_text(document.to_json(), encoding="utf-8")
+    result = CutResult(
+        video=source,
+        session_dir=session,
+        source_metadata=SimpleNamespace(fingerprint="sha256:x"),  # type: ignore[arg-type]
+        attempts_document=document,
+        attempts_path=attempts_path,
+        source_path=session / "source.json",
+        run_path=session / "run.json",
+        cache_path=session / "cache" / "pose-v1.jsonl",
+        cache_hit=True,
+        mode="compilation",
+        compilation=None,
+        clips=(),
+        empty=True,
+    )
+    monkeypatch.setattr(pipeline_module, "run_cut", lambda video, **k: result)
+    args = build_parser().parse_args(["cut", str(source), "--output-dir", str(tmp_path / "output")])
+    assert cut(args) == 0
+    out = capsys.readouterr().out
+    assert str(attempts_path) in out
+    assert "no serves detected" in out.lower()
+    assert not (session / "serves.mov").exists()
+
+
+def test_cut_reports_stage_failure(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.pipeline import CutError
+    from serve_review import pipeline as pipeline_module
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+
+    def _boom(video, **kwargs):
+        raise CutError("pose", "pose extraction failed: fake.")
+
+    monkeypatch.setattr(pipeline_module, "run_cut", _boom)
+    args = build_parser().parse_args(["cut", str(source)])
+    assert cut(args) == 1
+    err = capsys.readouterr().err
+    assert "pose" in err
+    assert "ERROR" in err
+
+
+def test_cut_forwards_overwrite_and_tools(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review import pipeline as pipeline_module
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+    seen: dict = {}
+
+    def _fake(video, **kwargs):
+        seen.update(kwargs)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(pipeline_module, "run_cut", _fake)
+    args = build_parser().parse_args(
+        ["cut", str(source), "--overwrite", "--ffmpeg", "/bin/ffmpeg", "--ffprobe", "/bin/ffprobe"]
+    )
+    with __import__("pytest").raises(SystemExit):
+        cut(args)
+    assert seen["overwrite"] is True
+    assert seen["ffmpeg"] == "/bin/ffmpeg"
+    assert seen["ffprobe"] == "/bin/ffprobe"
+
+
+def test_cut_integration_generated_media(tmp_path: Path, capsys, monkeypatch) -> None:
+    import shutil
+
+    from media_factory import generate_fixture, landscape_spec
+    from serve_review.detection.features import FeatureFrame
+    from serve_review.detection.ranges import CandidateRange
+    from serve_review.pose import cache as cache_module
+    from serve_review.pose import extract as extract_module
+    from serve_review.detection import features as features_module
+    from serve_review.detection import ranges as ranges_module
+
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        __import__("pytest").skip("FFmpeg and ffprobe are required")
+    video = generate_fixture(tmp_path / "session.mov", landscape_spec(duration_seconds=2.0))
+    before = video.read_bytes()
+
+    def _fake_extract(video_p, cache_path, **kwargs):
+        from types import SimpleNamespace as _NS
+
+        target = Path(cache_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"{}" + b"\n")
+        return _NS(cache_hit=False, cache_path=target)
+
+    def _fake_load(cache_path):
+        from types import SimpleNamespace as _NS
+
+        return _NS(frames=())
+
+    def _fake_features(observations, config):
+        return (
+            FeatureFrame(time_seconds=0.0, has_person=False, visible_fraction=0.0),
+            FeatureFrame(time_seconds=0.5, has_person=False, visible_fraction=0.0),
+        )
+
+    def _fake_candidates(frames, config):
+        return (CandidateRange(0.2, 0.7),)
+
+    monkeypatch.setattr(extract_module, "extract_poses", _fake_extract)
+    monkeypatch.setattr(cache_module, "load_cache", _fake_load)
+    monkeypatch.setattr(features_module, "extract_features", _fake_features)
+    monkeypatch.setattr(ranges_module, "find_candidates", _fake_candidates)
+    args = build_parser().parse_args(
+        ["cut", str(video), "--padding", "0", "--output", "compilation",
+         "--output-dir", str(tmp_path / "output")]
+    )
+    assert cut(args) == 0
+    session = tmp_path / "output" / video.stem
+    assert (session / "attempts.json").is_file()
+    assert (session / "source.json").is_file()
+    assert (session / "run.json").is_file()
+    assert (session / "serves.mov").is_file()
+    assert video.read_bytes() == before
+    out = capsys.readouterr().out
+    assert "serves.mov" in out
+
+
+def test_cut_integration_empty_detection_no_media(tmp_path: Path, capsys, monkeypatch) -> None:
+    import shutil
+
+    from media_factory import generate_fixture, landscape_spec
+    from serve_review.detection.features import FeatureFrame
+    from serve_review.pose import cache as cache_module
+    from serve_review.pose import extract as extract_module
+    from serve_review.detection import features as features_module
+    from serve_review.detection import ranges as ranges_module
+
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        __import__("pytest").skip("FFmpeg and ffprobe are required")
+    video = generate_fixture(tmp_path / "session.mov", landscape_spec(duration_seconds=2.0))
+
+    def _fake_extract(video_p, cache_path, **kwargs):
+        from types import SimpleNamespace as _NS
+
+        target = Path(cache_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"{}" + b"\n")
+        return _NS(cache_hit=True, cache_path=target)
+
+    def _fake_load(cache_path):
+        from types import SimpleNamespace as _NS
+
+        return _NS(frames=())
+
+    def _fake_features(observations, config):
+        return ()
+
+    def _fake_candidates(frames, config):
+        return ()
+
+    monkeypatch.setattr(extract_module, "extract_poses", _fake_extract)
+    monkeypatch.setattr(cache_module, "load_cache", _fake_load)
+    monkeypatch.setattr(features_module, "extract_features", _fake_features)
+    monkeypatch.setattr(ranges_module, "find_candidates", _fake_candidates)
+    args = build_parser().parse_args(
+        ["cut", str(video), "--output", "both", "--output-dir", str(tmp_path / "output")]
+    )
+    assert cut(args) == 0
+    session = tmp_path / "output" / video.stem
+    assert "no serves detected" in capsys.readouterr().out.lower()
+    assert not (session / "serves.mov").exists()
+    assert not (session / "clips").exists()
 
 
 def test_probe_help_documents_command(capsys) -> None:
