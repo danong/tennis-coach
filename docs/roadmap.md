@@ -108,7 +108,7 @@ Goal: produce cached body observations from timestamped frames without coupling 
 - **Dependency:** M1 gate accepted.
 - **Allowed:** `pyproject.toml`, `uv.lock`, `src/serve_review/media/frames.py`, `tests/test_frames.py`.
 - **Forbidden:** pose models, detector rules, CLI changes, private media. Add only the selected decode dependency documented in the task.
-- **Behavior:** Ordered source timestamps, orientation normalization, cancellation, no full-video retention, requested-rate sampling independent of nominal FPS.
+- **Behavior:** Decode sequential source frames and feed selected frames in strictly increasing source-time order; preserve canonical source timestamps separately from MediaPipe milliseconds; orientation normalization, cancellation, no full-video retention, and requested-rate sampling independent of nominal FPS. Initial policy is 30 Hz, with 60 Hz evaluation allowed on the hand-cut single-serve fixture.
 - **Focused check:** `uv run pytest tests/test_frames.py`.
 - **Exit:** Synthetic portrait/landscape and variable-schedule tests verify timestamps, coverage, cancellation, and a documented queue/memory bound.
 
@@ -125,7 +125,7 @@ Goal: produce cached body observations from timestamped frames without coupling 
 ### M2.3 — Model manifest and verified downloader
 
 - **Objective:** Define a model manifest and explicit command that downloads only approved artifacts and verifies SHA-256/license metadata.
-- **Dependency:** M2.2 integrated and orchestrator supplies approved URLs, hashes, licenses, and model contracts in the task.
+- **Dependency:** M2.2 integrated. The project owner approved the local Heavy MediaPipe model/license for M2; the task records its pinned manifest contract.
 - **Allowed:** `src/serve_review/models.py`, `src/serve_review/cli.py`, `tests/test_models.py`, `tests/test_cli.py`, `models/.gitkeep`.
 - **Forbidden:** choosing a model/license, committing weights, implicit network during tests/setup, inference, unrelated dependencies.
 - **Behavior:** No download without explicit command; temporary file and atomic rename; reject hash mismatch; models remain ignored; tests use a local fake transport.
