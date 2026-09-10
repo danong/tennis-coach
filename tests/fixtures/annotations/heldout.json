@@ -1,0 +1,13 @@
+{
+  "annotations": [
+    {
+      "end_seconds": 9.0,
+      "label": "serve",
+      "media": "sess-c/cap03.mov",
+      "session_id": "sess-c",
+      "start_seconds": 6.0
+    }
+  ],
+  "dataset_split": "heldout",
+  "schema_version": 1
+}

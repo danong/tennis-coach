@@ -1,0 +1,34 @@
+{
+  "annotations": [
+    {
+      "end_seconds": 12.0,
+      "label": "serve",
+      "media": "sess-a/cap01.mov",
+      "session_id": "sess-a",
+      "start_seconds": 10.0
+    },
+    {
+      "end_seconds": 23.0,
+      "label": "serve",
+      "media": "sess-a/cap01.mov",
+      "session_id": "sess-a",
+      "start_seconds": 20.0
+    },
+    {
+      "end_seconds": 31.0,
+      "label": "ambiguous",
+      "media": "sess-a/cap01.mov",
+      "session_id": "sess-a",
+      "start_seconds": 30.0
+    },
+    {
+      "end_seconds": 7.0,
+      "label": "serve",
+      "media": "sess-b/cap02.mov",
+      "session_id": "sess-b",
+      "start_seconds": 5.0
+    }
+  ],
+  "dataset_split": "dev",
+  "schema_version": 1
+}
