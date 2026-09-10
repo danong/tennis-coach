@@ -23,7 +23,7 @@ Default worker yield: summary, changed files, checks/results, deviations, and re
 | Foundation | done | direct | initial base | mise/uv/CLI scaffold |
 | M1.1 | done | `9caa1fad-e7b3-4deb-9a95-c91caef22e19` | `40540f728c0b` | reviewed, integrated, and released after topology repair |
 | M1.2 | done | `99203706-0a25-4975-a8b3-9954f5d4243e` | `4bb98f3bbe28` | accepted; Display Matrix rotation coverage and integrated check passed |
-| M1.3 | not started | — | — | — |
+| M1.3 | accepting | `0356c0d0-15f5-4cfb-81e8-0e2c3bb7fbcb` | — | reviewed synthetic fixture generator |
 | M1.4 | not started | — | — | — |
 | M1.5 | not started | — | — | — |
 | M2.1 | not started | — | — | — |

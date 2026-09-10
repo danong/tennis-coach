@@ -39,3 +39,10 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 - **Cleanup:** accepted worker workspace released; `jj workspace list` contains only the default workspace.
 - **Cost/attention:** unavailable.
 - **Finding:** requiring `integration_verification` and using Tau acceptance avoided manual candidate topology manipulation. Tau moved `main` correctly with the approval-journal commit as its ancestor; the caller still must rebase its empty default working-copy child to `main` before local commands test the accepted tree.
+
+### 2026-09-09 — M1.3 synthetic media fixture generator
+
+- **Identity:** run `0356c0d0-15f5-4cfb-81e8-0e2c3bb7fbcb`; base `419b17c8`; captured candidate `98e88fc47427`.
+- **Environment/result:** macOS/Apple Silicon; JJ 0.45.1; Python 3.11.16; model `opencode/muse-spark-1.3-contributor-free`; 14 turns; verified.
+- **Evidence/review:** exact two-file diff only, no generated binary or dependency change; deterministic bounded FFmpeg fixture factory and real temporary portrait/landscape tests; stored verifier/binding passed; approved, acceptance pending.
+- **Finding:** generated tiny fixtures give M1.4 media integration tests a private-footage-free foundation.
