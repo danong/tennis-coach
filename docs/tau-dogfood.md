@@ -63,3 +63,10 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 - **Lifecycle:** approved and accepted through Tau; worker workspace released; default working copy rebased onto `main`. Per owner instruction, acceptance ran only focused M4.2 verification rather than another full suite.
 - **Cost/attention:** measured inference cost unavailable; human acceptance unavailable.
 - **Finding:** local-polynomial derivatives and explicit observed/interpolated quality channels satisfy cadence invariance without requiring a higher-rate pose-cache architecture; actual denser inference remains conditional on the M4 gate.
+
+### 2026-09-11 — M4.2 anchor smoke / alignment repair attempts
+
+- **Smoke evidence:** ignored anchor `refs/anchors/single-serve-01.mov`, using a matching existing 145-frame pose cache, built a 145-sample 30 Hz grid. Raw audio peak was 3.655 s, 14 ms before the known ~3.669 s contact; the candidate grid time was 3.667 s. This validates source-time/audio alignment.
+- **Finding:** only 4 grid samples were marked observed and 141 interpolated. The pose cadence measured 29.979 Hz while the configured grid is 30 Hz; strict exact-time matching accumulated small drift and misclassified genuine observations. This is an M4.2 repair requirement before M4.3 evidence gating—not an inference-quality conclusion.
+- **Tau operational outcomes:** `ce3fe3cd-3e8d-49fc-948b-ab674c099151` failed before worker start because the dispatch base hash was mistyped; `c0eba7a4-56c5-40f4-85f0-288175a20fcb` exhausted 45 turns without candidate/readiness; `1bc50aa4-e99d-4fa3-bda0-bd078623ceb2` and `e1266c98-01b7-4e84-b5dd-459c7fb9bcb2` paused without valid Tau handoff. No candidate was captured, reviewed, or integrated; unsafe resumes were not attempted.
+- **Next action:** make a fresh, bounded M4.2 alignment repair candidate with a direct-observation snap tolerance and explicit support-offset/uncertainty semantics; do not proceed to M4.3 until it is verified and reviewed.
