@@ -30,6 +30,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
+    "AUDIO_CHANNELS",
+    "AUDIO_SAMPLE_RATES",
+    "DEFAULT_AUDIO_CHANNELS",
+    "DEFAULT_AUDIO_SAMPLE_RATE_HZ",
     "DEFAULT_DURATION_SECONDS",
     "DEFAULT_FPS",
     "FixtureError",
@@ -41,10 +45,13 @@ __all__ = [
     "PORTRAIT_SIZE",
     "SEGMENT_COLORS",
     "SEGMENT_HUE_STEP_DEGREES",
+    "audio_input_spec",
+    "build_av_fixture_args",
     "build_ffmpeg_args",
     "extract_frame_bytes",
     "ffmpeg_available",
     "filter_graph",
+    "generate_av_fixture",
     "generate_fixture",
     "landscape_spec",
     "make_fixture",
@@ -502,3 +509,232 @@ def _remove_partial(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+#: Sample rates covered by audio fixtures (raw slow-motion MOVs carry
+#: 44.1/48 kHz audio alongside high-rate video).
+AUDIO_SAMPLE_RATES: tuple[int, ...] = (44100, 48000)
+#: Channel counts covered by audio fixtures.
+AUDIO_CHANNELS: tuple[int, ...] = (1, 2)
+DEFAULT_AUDIO_SAMPLE_RATE_HZ = 44100
+DEFAULT_AUDIO_CHANNELS = 1
+
+
+def audio_input_spec(
+    audio_expr: str,
+    *,
+    sample_rate_hz: int = DEFAULT_AUDIO_SAMPLE_RATE_HZ,
+    duration_seconds: float = DEFAULT_DURATION_SECONDS,
+) -> str:
+    """Return the deterministic ``aevalsrc`` lavfi input description.
+
+    ``audio_expr`` is one ``aevalsrc`` expression for mono, or one
+    ``|``-separated expression per channel for stereo. The expression
+    may use the ``t`` (seconds) variable, so clicks/tones sit at known
+    source times. Single quotes are rejected: the expression is wrapped
+    in quotes for lavfi parsing and a quote would break determinism.
+    """
+    if not isinstance(audio_expr, str) or not audio_expr.strip():
+        raise FixtureError(
+            "invalid audio expression: expected a non-blank aevalsrc "
+            f"expression, got {audio_expr!r}."
+        )
+    if "'" in audio_expr:
+        raise FixtureError(
+            "invalid audio expression: single quotes are not allowed "
+            f"in {audio_expr!r}."
+        )
+    if (
+        isinstance(sample_rate_hz, bool)
+        or not isinstance(sample_rate_hz, int)
+        or sample_rate_hz not in AUDIO_SAMPLE_RATES
+    ):
+        raise FixtureError(
+            f"invalid audio sample rate: {sample_rate_hz!r}; "
+            f"expected one of {list(AUDIO_SAMPLE_RATES)}."
+        )
+    if (
+        isinstance(duration_seconds, bool)
+        or not isinstance(duration_seconds, (int, float))
+        or not (0 < float(duration_seconds) <= MAX_DURATION_SECONDS)
+    ):
+        raise FixtureError(
+            f"invalid audio duration: {duration_seconds!r}; "
+            f"expected 0 < duration <= {MAX_DURATION_SECONDS}s."
+        )
+    return (
+        f"aevalsrc='{audio_expr.strip()}'"
+        f":s={sample_rate_hz}"
+        f":d={_format_seconds(duration_seconds)}"
+    )
+
+
+def build_av_fixture_args(
+    output_path: Path | str,
+    spec: FixtureSpec,
+    *,
+    audio_expr: str,
+    sample_rate_hz: int = DEFAULT_AUDIO_SAMPLE_RATE_HZ,
+    channels: int = DEFAULT_AUDIO_CHANNELS,
+    audio_codec: str = "aac",
+    ffmpeg: str = "ffmpeg",
+) -> list[str]:
+    """Build the deterministic FFmpeg argument array for one A/V fixture.
+
+    The synthetic video track follows ``spec`` (``testsrc2`` plus the
+    deterministic segment filter); the audio track is the ``audio_expr``
+    signal encoded at ``sample_rate_hz``/``channels``. The same inputs
+    always produce the same array; no shell interpolation is used.
+    """
+    if not isinstance(spec, FixtureSpec):
+        raise FixtureError(
+            "invalid fixture spec: "
+            f"expected FixtureSpec, got {type(spec).__name__}."
+        )
+    if not isinstance(ffmpeg, str) or not ffmpeg:
+        raise FixtureError(
+            f"invalid ffmpeg executable: {ffmpeg!r}; expected a non-blank string."
+        )
+    if (
+        isinstance(channels, bool)
+        or not isinstance(channels, int)
+        or channels not in AUDIO_CHANNELS
+    ):
+        raise FixtureError(
+            f"invalid audio channels: {channels!r}; "
+            f"expected one of {list(AUDIO_CHANNELS)}."
+        )
+    if not isinstance(audio_codec, str) or not audio_codec.strip():
+        raise FixtureError(
+            f"invalid audio codec: {audio_codec!r}; expected a non-blank string."
+        )
+    output = str(output_path)
+    if not output:
+        raise FixtureError("invalid fixture output path: expected a non-blank path.")
+    audio_input = audio_input_spec(
+        audio_expr,
+        sample_rate_hz=sample_rate_hz,
+        duration_seconds=spec.duration_seconds,
+    )
+    return [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        source_input_spec(spec),
+        "-f",
+        "lavfi",
+        "-i",
+        audio_input,
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-vf",
+        filter_graph(spec),
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-movflags",
+        "+faststart",
+        "-c:a",
+        audio_codec.strip(),
+        "-ar",
+        str(sample_rate_hz),
+        "-ac",
+        str(channels),
+        "-shortest",
+        "-t",
+        _format_seconds(spec.duration_seconds),
+        output,
+    ]
+
+
+def generate_av_fixture(
+    output_path: Path | str,
+    spec: FixtureSpec,
+    *,
+    audio_expr: str,
+    sample_rate_hz: int = DEFAULT_AUDIO_SAMPLE_RATE_HZ,
+    channels: int = DEFAULT_AUDIO_CHANNELS,
+    audio_codec: str = "aac",
+    ffmpeg: str = "ffmpeg",
+    timeout_seconds: float = 120.0,
+) -> Path:
+    """Generate one audio+video fixture at ``output_path``.
+
+    Runs FFmpeg with an argument array. On failure any partial output
+    is removed and a :class:`FixtureError` is raised. Both tracks are
+    synthetic; no source media is read or modified.
+    """
+    if not isinstance(spec, FixtureSpec):
+        raise FixtureError(
+            "invalid fixture spec: "
+            f"expected FixtureSpec, got {type(spec).__name__}."
+        )
+    output = Path(output_path).expanduser()
+    if not str(output):
+        raise FixtureError("invalid fixture output path: expected a non-blank path.")
+    if "/" in ffmpeg or "\\" in ffmpeg:
+        if not Path(ffmpeg).is_file():
+            raise _missing_tool_error(ffmpeg)
+    elif shutil.which(ffmpeg) is None:
+        raise _missing_tool_error(ffmpeg)
+    parent = output.parent
+    if str(parent) not in ("", "."):
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise FixtureError(
+                f"could not create fixture directory {parent}: {exc}."
+            ) from exc
+    args = build_av_fixture_args(
+        output,
+        spec,
+        audio_expr=audio_expr,
+        sample_rate_hz=sample_rate_hz,
+        channels=channels,
+        audio_codec=audio_codec,
+        ffmpeg=ffmpeg,
+    )
+    try:
+        completed = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except FileNotFoundError as exc:
+        raise _missing_tool_error(ffmpeg) from exc
+    except OSError as exc:
+        raise FixtureError(f"could not run ffmpeg as {ffmpeg!r}: {exc}.") from exc
+    except subprocess.TimeoutExpired as exc:
+        _remove_partial(output)
+        raise FixtureError(
+            f"ffmpeg timed out generating fixture {output} "
+            f"after {timeout_seconds}s."
+        ) from exc
+    if completed.returncode != 0:
+        _remove_partial(output)
+        detail = ((completed.stderr or "").strip() or (completed.stdout or "").strip())
+        suffix = f": {detail}" if detail else ": no output"
+        raise FixtureError(
+            f"ffmpeg failed generating fixture {output} "
+            f"(exit {completed.returncode}){suffix}."
+        )
+    if not output.is_file() or output.stat().st_size == 0:
+        _remove_partial(output)
+        raise FixtureError(
+            f"ffmpeg did not produce fixture output at {output}."
+        )
+    return output
