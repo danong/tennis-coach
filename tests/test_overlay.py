@@ -820,3 +820,157 @@ def test_extract_overlay_no_person_frames_render_unannotated(
     for frame in rendered:
         # No-person frames pass through unannotated: identical to input.
         assert np.all(frame == 9)
+
+
+
+# --- Sampler-vs-export orientation regression ------------------------------
+
+
+def _make_rotated_clip(
+    tmp_path: Path, *, width: int, height: int, rotation: int, name: str
+) -> Path:
+    """Generate a synthetic clip carrying Display Matrix rotation.
+
+    Stored pixels stay width x height with the deterministic top-left
+    corner patch as the asymmetric marker; rotation metadata is attached
+    via FFmpeg's -display_rotation input option plus stream copy (ffprobe
+    then reports a Display Matrix rotation of 90, -180, or -90 for
+    90/180/270). Rotation 0 is the plain fixture.
+    """
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from media_factory import FixtureSpec, generate_fixture
+
+    base = generate_fixture(
+        tmp_path / f"{name}-base.mov",
+        FixtureSpec(
+            width=width, height=height, duration_seconds=0.5, fps=10
+        ),
+    )
+    if rotation == 0:
+        return base
+    out = tmp_path / f"{name}-{rotation}.mov"
+    completed = subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-display_rotation:v:0", str(rotation),
+            "-i", str(base), "-c", "copy", str(out),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 0, completed.stderr[-500:]
+    return out
+
+
+def _decode_first_frame(
+    video: Path, *, height: int, width: int, autorotate: bool = True
+) -> np.ndarray:
+    """Decode the first frame to uint8 RGB, with/without autorotate."""
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    if not autorotate:
+        args.append("-noautorotate")
+    args += [
+        "-i", str(video), "-frames:v", "1",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+    ]
+    completed = subprocess.run(args, capture_output=True, check=False)
+    assert completed.returncode == 0, completed.stderr[-500:]
+    raw = bytes(completed.stdout)
+    assert len(raw) == height * width * 3
+    return (
+        np.frombuffer(raw, dtype=np.uint8)
+        .reshape((height, width, 3))
+        .copy()
+    )
+
+
+@needs_ffmpeg
+def test_overlay_matches_export_orientation_at_all_rotations(
+    tmp_path: Path,
+) -> None:
+    """Regression: overlay pose frames sit in the export orientation.
+
+    For synthetic landscape (320x240 stored) and portrait (240x320
+    stored) clips carrying Display Matrix rotation 0/90/180/270, the
+    sampler upright frame -- rendered with a None observation
+    (passthrough, so the asymmetric corner marker is preserved) and
+    encoded with write_overlay_video -- must match the FFmpeg autorotate
+    decode (the orientation the export path produces, since export never
+    passes -noautorotate). A final export-clip cross-check proves the
+    actual export_clips output agrees too. The prior clockwise sampler
+    convention rendered 90/270 overlays 180 degrees flipped, so pose dots
+    would land on mirrored joints.
+    """
+    from serve_review.domain import ExportPlan, MediaRange
+    from serve_review.media.export import export_clips
+    from serve_review.media.frames import iter_sampled_frames
+    from serve_review.media.probe import probe_source
+
+    cases = [
+        (320, 240, "landscape", (0, 90, 180, 270)),
+        (240, 320, "portrait", (0, 90, 180, 270)),
+    ]
+    for width, height, label, rotations in cases:
+        for rotation in rotations:
+            video = _make_rotated_clip(
+                tmp_path, width=width, height=height,
+                rotation=rotation, name=f"ov-{label}-{rotation}",
+            )
+            metadata = probe_source(video)
+            assert metadata.rotation_degrees == rotation
+            if rotation in (90, 270):
+                upright_w, upright_h = height, width
+            else:
+                upright_w, upright_h = width, height
+            ground_truth = _decode_first_frame(
+                video, height=upright_h, width=upright_w, autorotate=True
+            )
+            sampled = list(iter_sampled_frames(video, (0.0,)))[0]
+            assert (sampled.width, sampled.height) == (upright_w, upright_h)
+            rendered = render_frame(sampled.image, None)
+            assert np.array_equal(rendered, sampled.image)
+            overlay_dest = tmp_path / f"ov-{label}-{rotation}.mp4"
+            write_overlay_video(
+                iter([rendered]), overlay_dest,
+                width=upright_w, height=upright_h, fps=10.0,
+            )
+            overlay_frame = _decode_first_frame(
+                overlay_dest, height=upright_h, width=upright_w
+            )
+            mad = float(
+                np.abs(
+                    overlay_frame.astype(np.int16)
+                    - ground_truth.astype(np.int16)
+                ).mean()
+            )
+            assert mad < 15.0, (
+                f"{label} rotation {rotation}: overlay differs from "
+                f"the export-orientation ground truth (MAD={mad:.2f})"
+            )
+    video = _make_rotated_clip(
+        tmp_path, width=320, height=240, rotation=90, name="ov-export-xcheck"
+    )
+    metadata = probe_source(video)
+    plan = ExportPlan(
+        source_fingerprint=metadata.fingerprint,
+        source_duration_seconds=metadata.duration_seconds,
+        ranges=(MediaRange(0.0, metadata.duration_seconds),),
+    )
+    clips = export_clips(
+        video, plan, tmp_path / "ov-clips", source=metadata, overwrite=True
+    )
+    assert len(clips) == 1
+    sampled = list(iter_sampled_frames(video, (0.0,)))[0]
+    clip_frame = _decode_first_frame(
+        clips[0], height=sampled.height, width=sampled.width
+    )
+    clip_mad = float(
+        np.abs(
+            clip_frame.astype(np.int16) - sampled.image.astype(np.int16)
+        ).mean()
+    )
+    assert clip_mad < 15.0, (
+        "export clip differs from the sampled upright frame "
+        f"(MAD={clip_mad:.2f})"
+    )

@@ -125,8 +125,10 @@ def test_rotate_rgb_frame_maps_pixels_deterministically() -> None:
     assert rotate_rgb_frame(image, 90).shape == (3, 2, 3)
     assert rotate_rgb_frame(image, 270).shape == (3, 2, 3)
     assert rotate_rgb_frame(image, 180).shape == (2, 3, 3)
-    assert np.array_equal(rotate_rgb_frame(image, 90), np.rot90(image, k=3))
-    assert np.array_equal(rotate_rgb_frame(image, 270), np.rot90(image, k=1))
+    # Counter-clockwise display-matrix convention (matches FFmpeg
+    # autorotate/export): 90 is one CCW quarter turn, 270 is three.
+    assert np.array_equal(rotate_rgb_frame(image, 90), np.rot90(image, k=1))
+    assert np.array_equal(rotate_rgb_frame(image, 270), np.rot90(image, k=3))
     assert np.array_equal(rotate_rgb_frame(image, 180), np.rot90(image, k=2))
     assert rotate_rgb_frame(image, 90).flags["C_CONTIGUOUS"]
     with pytest.raises(FrameError):
@@ -345,8 +347,9 @@ def test_sampler_upright_rgb_contract_accepted_by_pose_boundary(
 
     Uses fake ffprobe/Popen bytes (no private footage, no binaries) to
     isolate the representation/transform contract: stored-orientation
-    ``rgb24`` bytes plus a 90-degree clockwise display rotation must
-    yield exactly one manual CW rotation into upright display-oriented,
+    ``rgb24`` bytes plus a 90-degree counter-clockwise display rotation
+    (FFmpeg display-matrix convention) must yield exactly one manual CCW
+    rotation into upright display-oriented,
     contiguous ``uint8`` ``H x W x 3`` frames with canonical timestamps
     and independently owned pixel buffers. Every yielded frame is then
     fed through a fake contract-compatible pose boundary that enforces
@@ -437,9 +440,9 @@ def test_sampler_upright_rgb_contract_accepted_by_pose_boundary(
     assert "-noautorotate" in used
     assert used.index("-noautorotate") < used.index("-i")
     assert used[used.index("-pix_fmt") + 1] == "rgb24"
-    # Upright display orientation: 90 CW swaps stored (W=4,H=2) to (W=2,H=4).
+    # Upright display orientation: 90 CCW swaps stored (W=4,H=2) to (W=2,H=4).
     for index, frame in enumerate(frames):
-        expected = np.ascontiguousarray(np.rot90(stored_frames[index], k=3))
+        expected = np.ascontiguousarray(np.rot90(stored_frames[index], k=1))
         assert frame.width == stored_height
         assert frame.height == stored_width
         assert frame.image.dtype == np.uint8
@@ -487,6 +490,161 @@ def test_sampler_upright_rgb_contract_accepted_by_pose_boundary(
     assert len(accepted) == len(frames)  # 3/3 detections, not 0/N
     assert boundary.calls == sorted(boundary.calls)
     assert len(set(boundary.calls)) == len(frames)
+
+
+def _make_rotated_fixture(
+    tmp_path: Path, *, width: int, height: int, rotation: int, name: str
+) -> Path:
+    """Generate a synthetic fixture carrying Display Matrix rotation.
+
+    The stored pixels stay ``width`` x ``height`` (with the deterministic
+    top-left corner patch from ``media_factory`` as the asymmetric
+    marker); rotation metadata is attached with FFmpeg's
+    ``-display_rotation`` input option plus stream copy, so ffprobe
+    reports a ``side_data_list`` Display Matrix entry (90, -180, -90 for
+    90/180/270). Rotation 0 is the plain fixture.
+    """
+    import subprocess as _subprocess
+
+    from media_factory import FixtureSpec  # local import: test helper only
+
+    base = generate_fixture(
+        tmp_path / f"{name}-base.mov",
+        FixtureSpec(
+            width=width, height=height, duration_seconds=0.5, fps=10
+        ),
+    )
+    if rotation == 0:
+        return base
+    out = tmp_path / f"{name}-{rotation}.mov"
+    completed = _subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            f"-display_rotation:v:0", str(rotation),
+            "-i", str(base), "-c", "copy", str(out),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 0, completed.stderr[-500:]
+    return out
+
+
+def _decode_first_frame_raw(
+    video: Path, *, autorotate: bool, out_height: int, out_width: int
+) -> np.ndarray:
+    """Decode the first frame to ``uint8`` RGB with/without autorotate."""
+    import subprocess as _subprocess
+
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    if not autorotate:
+        args.append("-noautorotate")
+    args += [
+        "-i", str(video), "-frames:v", "1",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+    ]
+    completed = _subprocess.run(args, capture_output=True, check=False)
+    assert completed.returncode == 0, completed.stderr[-500:]
+    raw = bytes(completed.stdout)
+    assert len(raw) == out_height * out_width * 3
+    return np.frombuffer(raw, dtype=np.uint8).reshape(
+        (out_height, out_width, 3)
+    ).copy()
+
+
+def test_sampler_orientation_contract_version_bumped() -> None:
+    """The 90/270 convention fix bumps the sampler orientation identity.
+
+    Version 1 treated probed rotation as clockwise, flipping upright
+    frames from rotation-90/270 sources by 180 degrees relative to the
+    FFmpeg autorotate/export orientation. Pose observations sampled under
+    version 1 from such sources are stale (flipped coordinates) and must
+    be quarantined/re-extracted, never silently validated.
+    """
+    assert frames_module.SAMPLER_ORIENTATION_VERSION == 2
+    assert "SAMPLER_ORIENTATION_VERSION" in frames_module.__all__
+
+
+@NEEDS_TOOLS
+def test_sampler_matches_ffmpeg_autorotate_at_all_rotations(
+    tmp_path: Path,
+) -> None:
+    """Regression: sampled upright frames match the autorotate ground truth.
+
+    Synthetic landscape (320x240 stored) and portrait (240x320 stored)
+    fixtures carry an asymmetric top-left corner marker plus Display
+    Matrix rotation 0/90/180/270. Ground truth is the default FFmpeg
+    decode (autorotate on -- the same orientation the export path
+    produces, since export never passes ``-noautorotate``). The sampler
+    decodes with ``-noautorotate`` and applies one manual rotation; its
+    upright output must equal the ground truth at all four rotations.
+    The prior clockwise convention matched at 0/180 but was 180 degrees
+    off at 90/270, so this test also asserts the old orientation would
+    mismatch there (sensitivity check).
+    """
+    cases = [
+        (320, 240, "landscape"),
+        (240, 320, "portrait"),
+    ]
+    for width, height, label in cases:
+        for rotation in (0, 90, 180, 270):
+            video = _make_rotated_fixture(
+                tmp_path,
+                width=width, height=height,
+                rotation=rotation,
+                name=f"{label}-{rotation}",
+            )
+            metadata = probe_source(video)
+            assert metadata.rotation_degrees == rotation
+            assert (metadata.width, metadata.height) == (width, height)
+            # Ground truth: FFmpeg default (autorotate) decode orientation.
+            if rotation in (90, 270):
+                upright_w, upright_h = height, width
+            else:
+                upright_w, upright_h = width, height
+            expected = _decode_first_frame_raw(
+                video, autorotate=True,
+                out_height=upright_h, out_width=upright_w,
+            )
+            sampled = list(iter_sampled_frames(video, (0.0,)))[0]
+            assert (sampled.width, sampled.height) == (upright_w, upright_h)
+            assert sampled.image.shape == (upright_h, upright_w, 3)
+            mean_abs = float(
+                np.abs(
+                    sampled.image.astype(np.int16)
+                    - expected.astype(np.int16)
+                ).mean()
+            )  # lossless transpose of identical stored bytes: ~0.
+            assert mean_abs < 8.0, (
+                f"{label} rotation {rotation}: sampler differs from "
+                f"autorotate ground truth (MAD={mean_abs:.2f})"
+            )
+            if rotation in (90, 270):
+                # Sensitivity: the prior clockwise convention (90<->270
+                # swapped) sits 180 degrees off here, far from ground truth.
+                stored = _decode_first_frame_raw(
+                    video, autorotate=False,
+                    out_height=height, out_width=width,
+                )
+                flipped = rotate_rgb_frame(
+                    stored, 270 if rotation == 90 else 90
+                )
+                flipped_mad = float(
+                    np.abs(
+                        flipped.astype(np.int16)
+                        - expected.astype(np.int16)
+                    ).mean()
+                )
+                assert flipped_mad > 50.0, (
+                    f"{label} rotation {rotation}: sensitivity check failed "
+                    f"(flipped MAD={flipped_mad:.2f}); the marker may be "
+                    "too weak to catch a 180-degree flip"
+                )
+    # The sampler decode contract is unchanged: stored-orientation bytes
+    # via ``-noautorotate`` before ``-i``, bounded single-frame streaming.
+    args = build_rawvideo_decode_args("/tmp/src.mov")
+    assert "-noautorotate" in args
+    assert args.index("-noautorotate") < args.index("-i")
+    assert MAX_BUFFERED_FRAMES == 1
 
 
 @NEEDS_TOOLS

@@ -17,6 +17,14 @@ Rotation precedence (deterministic, first present wins):
    carrying a ``"rotation"`` value;
 4. otherwise ``0`` (no rotation metadata).
 
+Rotation convention: values are counter-clockwise display-rotation
+degrees in the FFmpeg display-matrix convention (``-display_rotation``
+sets a pure counter-clockwise rotation; ffprobe ``side_data_list``
+Display Matrix ``rotation`` values such as ``-90``/``-180`` normalize via
+modulo 360 to ``270``/``180``). The frame sampler applies the probed
+value counter-clockwise so sampled upright frames match the FFmpeg
+autorotate/export orientation exactly.
+
 Every present rotation value is normalized with modulo 360 (so ``-90``
 becomes ``270`` and ``360`` becomes ``0``) and must then be one of
 ``0, 90, 180, 270``; malformed or unsupported degrees raise

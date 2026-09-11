@@ -374,6 +374,27 @@ def test_rotation_ignores_non_display_matrix_entries() -> None:
     assert extract_rotation(stream) == 270
 
 
+def test_rotation_display_matrix_convention_is_counter_clockwise() -> None:
+    """Document the FFmpeg display-matrix convention used by the sampler.
+
+    FFmpeg's ``-display_rotation`` sets a pure counter-clockwise rotation
+    and ffprobe reports it in ``side_data_list`` Display Matrix entries
+    (negative equivalents such as ``-90``/``-180`` normalize via modulo
+    360 to ``270``/``180``). The sampler applies the probed value
+    counter-clockwise so upright frames match the autorotate/export
+    orientation; see ``tests/test_frames.py`` for the pixel-level
+    ground-truth comparison at 0/90/180/270.
+    """
+    # Negative Display Matrix values normalize to their CCW equivalents.
+    for raw, expected in ((-90, 270), ("-90", 270), (-180, 180), (90, 90)):
+        stream = _payload(
+            stream={"side_data_list": [
+                {"side_data_type": "Display Matrix", "rotation": raw}
+            ]}
+        )["streams"][0]
+        assert extract_rotation(stream) == expected
+
+
 def test_probe_end_to_end_side_data_negative(tmp_path: Path, monkeypatch) -> None:
     video = _make_video(tmp_path)
     payload = _payload(

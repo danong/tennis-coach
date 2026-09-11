@@ -19,10 +19,21 @@ list is small floats (about 8 bytes per source frame) and is the only
 preloaded structure.
 
 Rotation normalization: stored pixels are rotated into the upright display
-orientation using the probe ``rotation_degrees`` (clockwise display
-rotation). ``0`` is identity, ``90`` rotates 90 degrees clockwise,
-``180`` flips, ``270`` rotates 90 degrees counter-clockwise. An explicit
-``rotation_degrees`` argument overrides probed metadata.
+orientation using the probe ``rotation_degrees`` (counter-clockwise
+display-rotation degrees, matching the FFmpeg display-matrix /
+autorotate / export convention: ``-display_rotation`` sets a pure
+counter-clockwise rotation). ``0`` is identity, ``90`` rotates 90 degrees
+counter-clockwise, ``180`` flips, ``270`` rotates 90 degrees clockwise.
+An explicit ``rotation_degrees`` argument overrides probed metadata.
+
+Sampler orientation contract: ``SAMPLER_ORIENTATION_VERSION`` pins this
+counter-clockwise convention. Version 1 treated the probed value as
+clockwise (90/270 swapped), so upright frames from rotation-90/270
+sources came out 180 degrees flipped relative to the FFmpeg
+autorotate/export orientation. Any pose cache holding observations
+sampled under version 1 from a rotation-90/270 source is stale: its
+normalized coordinates sit in the flipped frame and must be
+quarantined and re-extracted, never silently reused.
 
 Selection semantics: for each strictly increasing requested source time
 ``t``, the first decoded frame with canonical time ``>= t - tolerance``
@@ -59,6 +70,7 @@ __all__ = [
     "MAX_BUFFERED_FRAMES",
     "MAX_SAMPLE_RATE_HZ",
     "SUPPORTED_ROTATIONS",
+    "SAMPLER_ORIENTATION_VERSION",
     "FrameCancelled",
     "FrameError",
     "SampledFrame",
@@ -79,8 +91,15 @@ MAX_SAMPLE_RATE_HZ = 120.0
 MAX_BUFFERED_FRAMES = 1
 #: Tolerance matching a requested time to the next decoded canonical time.
 FRAME_MATCH_TOLERANCE_SECONDS = 0.001
-#: Supported display-rotation values (clockwise degrees).
+#: Supported display-rotation values (counter-clockwise degrees, matching
+#: the FFmpeg display-matrix / autorotate / export convention).
 SUPPORTED_ROTATIONS = (0, 90, 180, 270)
+#: Sampler orientation contract version. Bumped to 2 when the 90/270-degree
+#: convention was corrected from clockwise to counter-clockwise (matching
+#: FFmpeg autorotate/export). Caches sampled under version 1 from
+#: rotation-90/270 sources are 180-degree-flipped and must be
+#: quarantined/re-extracted, never silently validated.
+SAMPLER_ORIENTATION_VERSION = 2
 
 _DURATION_EPS = 1e-9
 
@@ -315,10 +334,12 @@ def validate_schedule(
 def rotate_rgb_frame(image: np.ndarray, rotation_degrees: int) -> np.ndarray:
     """Rotate stored ``image`` into upright display orientation.
 
-    ``rotation_degrees`` is the clockwise display rotation reported by
-    probing: ``0`` is identity, ``90`` rotates 90 degrees clockwise,
-    ``180`` flips, ``270`` rotates 90 degrees counter-clockwise. ``90``
-    and ``270`` swap width and height. The result is a contiguous array.
+    ``rotation_degrees`` is the counter-clockwise display rotation reported
+    by probing (FFmpeg display-matrix convention, as applied by FFmpeg
+    autorotate and the export path): ``0`` is identity, ``90`` rotates 90
+    degrees counter-clockwise, ``180`` flips, ``270`` rotates 90 degrees
+    clockwise (i.e. 90 degrees counter-clockwise three times). ``90`` and
+    ``270`` swap width and height. The result is a contiguous array.
     """
     rotation = _check_rotation(rotation_degrees)
     if not isinstance(image, np.ndarray):
@@ -331,9 +352,9 @@ def rotate_rgb_frame(image: np.ndarray, rotation_degrees: int) -> np.ndarray:
     if rotation == 180:
         return np.ascontiguousarray(np.rot90(image, k=2))
     if rotation == 90:
-        # Clockwise quarter turn.
-        return np.ascontiguousarray(np.rot90(image, k=3))
-    return np.ascontiguousarray(np.rot90(image, k=1))
+        # Counter-clockwise quarter turn (FFmpeg display-matrix convention).
+        return np.ascontiguousarray(np.rot90(image, k=1))
+    return np.ascontiguousarray(np.rot90(image, k=3))
 
 
 def build_ffprobe_frame_times_args(
