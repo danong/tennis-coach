@@ -37,10 +37,13 @@ Default worker yield: summary, changed files, checks/results, deviations, and re
 | M3.3 | not started | — | — | — |
 | M3.4 | not started | — | — | — |
 | M3.5 | not started | — | — | — |
-| M4.1 | not started | — | — | — |
-| M4.2 | not started | — | — | — |
-| M4.3 | not started | — | — | — |
-| M4.4 | not started | — | — | — |
+| M4.1 | not started | — | — | eight-stage phase schema and rubric |
+| M4.2 | not started | — | — | attempt-local resampling and derivatives |
+| M4.3 | not started | — | — | stage evidence and candidate generation |
+| M4.4 | not started | — | — | constrained joint DP solver |
+| M4.5 | not started | — | — | analyze command and checkpoint report |
+| M4.6 | not started | — | — | phase evaluation and manual gate |
+| M4.7 | conditional | — | — | focused denser inference only if the M4 gate requires it |
 
 ## M1 — Trusted media path
 
@@ -210,51 +213,87 @@ Goal: convert pose observations into useful attempt ranges and wire the public `
 
 **M3 gate:** Label development sessions, freeze configuration without viewing the held-out session, then run once on held-out footage. Target 95% recall and 90% precision for this personal setup and inspect every error. The user compares compilation review against raw scrubbing. Failed gates produce a new narrowly specified experiment rather than weaker metrics.
 
-## M4 — Automatic checkpoints
+## M4 — Kovacs eight-stage serve phases
 
-Goal: add honest, optional review anchors without destabilizing serve cutting.
+Goal: estimate the eight stages of the Kovacs & Ellenbecker serve model inside accepted, unpadded attempt ranges without destabilizing serve cutting. The stages are `start`, `release`, `loading`, `cocking`, `acceleration`, `contact`, `deceleration`, and `finish`.
 
-### M4.1 — Checkpoint domain schema
+Each stage is an estimated biomechanical phase, not necessarily one exact visual event. Output therefore includes a half-open source-time interval, an optional representative keyframe, confidence, availability, provenance, and limitations. Public JSON uses concise stage names; method limitations belong in provenance/metadata and documentation. Body pose must not claim direct observation of the ball, racket head, racket orientation, shoulder internal/external rotation, or visually observed contact.
 
-- **Objective:** Add versioned optional checkpoint intervals, confidence, provenance, visibility, and method identity.
-- **Dependency:** M3 gate accepted.
-- **Allowed:** `src/serve_review/domain.py`, `tests/test_checkpoints.py`.
-- **Forbidden:** inference/heuristics, CLI, dependencies.
-- **Behavior:** Checkpoints lie within their attempt; unavailable is representable; estimated contact cannot use visual-contact provenance; unsupported newer schemas fail safely.
+M4 is non-blocking with respect to M3: phase completeness and structural anomaly flags never suppress, shorten, relabel, or otherwise change macro attempts or exports. Contact is anchored by raw-source audio with explicit uncertainty and may be supported by body pose, but it is not described as an exact visually observed frame.
+
+### M4.1 — Eight-stage domain schema and rubric
+
+- **Objective:** Add versioned attempt-phase documents and codify the observable body/audio rubric for all eight stages.
+- **Dependency:** M3.5 integrated and the development serve-cutting baseline reviewed; the held-out cutting gate may remain pending because M4 cannot alter M3 output.
+- **Allowed:** `src/serve_review/domain.py`, `src/serve_review/checkpoints/__init__.py`, `tests/test_checkpoints.py`.
+- **Forbidden:** inference, feature heuristics, solver logic, CLI, dependencies, detector changes.
+- **Behavior:** Every stage supports a half-open interval, optional keyframe, confidence, availability (`available`, `partial`, `unavailable`), provenance (`body_pose`, `audio_transient`, `body_pose_audio`, `manual`), evidence, and limitations. Documents include method/configuration identity, `structural_status` (`complete`, `partial`, `incomplete`, `unavailable`), and stable anomaly identifiers. Stage times lie inside the unpadded attempt and preserve canonical source time. Unsupported newer versions fail safely.
+- **Rubric constraints:** `contact` is audio-anchored with temporal uncertainty; `release` is a body-pose estimate unless ball evidence exists; `cocking` is a body-pose stage estimate and cannot claim observed racket drop; camera-axis motion is not called anatomical posterior/forward without calibrated viewpoint; lead/toss/dominant-side identity is configured or explicitly uncertain.
 - **Focused check:** `uv run pytest tests/test_checkpoints.py`.
-- **Exit:** Golden round trips and invalid provenance/time/version cases pass.
+- **Exit:** Golden round trips and invalid stage order, range, provenance, availability, uncertainty, anomaly, and version cases pass; all eight concise stage keys are covered.
 
-### M4.2 — Focused dense pose extraction
+### M4.2 — Attempt-local phase features
 
-- **Objective:** Reuse the pose backend at a denser schedule only inside accepted attempt windows.
+- **Objective:** Convert existing timestamped pose/audio observations inside each unpadded attempt into a uniform, confidence-aware feature grid suitable for phase inference.
 - **Dependency:** M4.1 integrated.
-- **Allowed:** `src/serve_review/pose/extract.py`, `src/serve_review/pose/cache.py`, `tests/test_dense_pose.py`.
-- **Forbidden:** checkpoint selection, CLI, dependencies, model changes.
-- **Behavior:** Attempt-window cache identity, bounded scheduling, deduplication at boundaries, cancellation, and no whole-session dense pass.
-- **Focused check:** `uv run pytest tests/test_dense_pose.py`.
-- **Exit:** Tests verify requested coverage, cache reuse/invalidation, overlapping windows, and processing bounds.
+- **Allowed:** `src/serve_review/checkpoints/phase_features.py`, `tests/test_phase_features.py`.
+- **Forbidden:** stage selection, DP solver, CLI, detector changes, whole-session re-inference, new dependencies.
+- **Behavior:** Slice strictly to the attempt range; resample only short visibility-qualified spans onto a uniform grid; retain `observed`, observation-quality, and interpolation-span channels; never bridge configured long gaps. Record source frame rate, pose observation rate, and analysis-grid rate. Define Savitzky–Golay/local-polynomial smoothing windows in seconds and derive legal odd sample windows from cadence. Compute timestamp-aware positions, angles, velocities, and accelerations with explicit boundary/gap confidence. Interpolation may support smoothing but cannot manufacture visual precision; uncertainty is never narrower than supporting observation spacing.
+- **Signals:** Visibility-gated normalized wrist/elbow/shoulder/hip/knee/ankle trajectories, elbow and knee angles, shoulder/hip/torso axes, torso displacement/rotation proxies, and aligned audio transient candidates. Camera-relative quantities remain named camera-relative.
+- **Focused check:** `uv run pytest tests/test_phase_features.py`.
+- **Exit:** Synthetic 30/60/120 Hz and irregular-time sequences produce cadence-consistent extrema; tests cover short interpolation, forbidden long gaps, visibility loss, derivative boundaries, quality propagation, and no artificial precision from upsampling.
 
-### M4.3 — Body-derived checkpoint baseline
+### M4.3 — Stage evidence and candidate generation
 
-- **Objective:** Emit optional loading, upward-swing, estimated-contact, follow-through, and landing intervals from dense body features.
-- **Dependency:** M4.2 integrated and checkpoint rubric supplied in the task.
-- **Allowed:** `src/serve_review/checkpoints/__init__.py`, `src/serve_review/checkpoints/body.py`, `tests/test_body_checkpoints.py`.
-- **Forbidden:** racket/ball claims, CLI, dependencies, detector range changes.
-- **Behavior:** Deterministic temporal windows; confidence/provenance; missing phases allowed; estimated contact never labeled visually observed.
-- **Focused check:** `uv run pytest tests/test_body_checkpoints.py`.
-- **Exit:** Synthetic motions cover full/abbreviated serve, occlusion, truncated range, absent landing, ambiguous contact, and determinism.
+- **Objective:** Generate a bounded set of deterministic candidate frames/intervals and unary evidence scores `S_i(t)` for each of the eight stages.
+- **Dependency:** M4.2 integrated and a written stage rubric supplied in the task.
+- **Allowed:** `src/serve_review/checkpoints/evidence.py`, `tests/test_phase_evidence.py`.
+- **Forbidden:** joint sequence solving, CLI, detector/export changes, racket/ball claims, dependencies.
+- **Behavior:** Combine multiple visibility-qualified cues rather than define a stage by one global extremum. Weight evidence by observation quality; interpolated points cannot be the sole support for a high-confidence visual keyframe. Anchor contact candidates to audio transients with uncertainty. Support multiple candidates, explicit unavailable candidates, deterministic tie-breaking, configurable broad physiological search windows, and side/viewpoint uncertainty. Thresholds are centralized and versioned.
+- **Focused check:** `uv run pytest tests/test_phase_evidence.py`.
+- **Exit:** Synthetic full, abbreviated, occluded, truncated, low-knee-bend, and aborted sequences demonstrate sensible candidate sets without forcing missing evidence; audio-only contact cannot create unsupported surrounding body stages.
 
-### M4.4 — Analyze command and checkpoint report
+### M4.4 — Constrained joint phase solver
 
-- **Objective:** Add `analyze` to load attempts, run dense extraction/body checkpoints, and atomically emit `checkpoints.json`.
+- **Objective:** Select the globally consistent eight-stage sequence using dynamic programming instead of greedy chained extrema.
 - **Dependency:** M4.3 integrated.
-- **Allowed:** `src/serve_review/analysis_pipeline.py`, `src/serve_review/cli.py`, `tests/test_analysis_pipeline.py`, `tests/test_cli.py`.
-- **Forbidden:** racket model integration, output-video overlays, dependencies, private media.
-- **Behavior:** Accept explicit attempts or prior cut output; retain cutting usability on analysis failure; cache reuse; honest partial/unavailable results.
-- **Focused check:** `uv run pytest tests/test_analysis_pipeline.py tests/test_cli.py`.
-- **Exit:** Fake end-to-end tests cover full/partial/no checkpoints, stale attempts, cancellation, malformed input, atomic output, and unchanged serve exports.
+- **Allowed:** `src/serve_review/checkpoints/phase_solver.py`, `tests/test_phase_solver.py`.
+- **Forbidden:** feature extraction, CLI, detector/export changes, dependencies, private tuning data.
+- **Behavior:** Maximize `sum S_i(T_i) + sum Q_i(T_i, T_{i+1})` under chronological ordering and broad versioned transition constraints. Every stage has an unavailable/skip state with an explicit penalty; the solver never fabricates a stage merely to complete the sequence. Contact is a strong uncertain anchor, not an unconstrained exact frame. Produce intervals, representative keyframes, confidence/evidence, structural status, and non-blocking anomaly flags. Deterministic tie-breaking is mandatory.
+- **Focused check:** `uv run pytest tests/test_phase_solver.py`.
+- **Exit:** Hand-calculated paths verify global-over-local choices, ordering, ties, skip states, uncertainty propagation, contact anchoring, missing data, truncated attempts, and deterministic output.
 
-**M4 gate:** The user reviews checkpoint frames against manually chosen intervals. Record per-checkpoint usefulness and errors. Racket/ball model discovery becomes a new milestone only if body-derived anchors are insufficient and a licensed mobile-capable model has been explicitly approved.
+### M4.5 — Analyze command and phase report
+
+- **Objective:** Add `analyze` to load accepted attempts and cached pose/audio observations, run phase features/evidence/solver, and atomically emit `checkpoints.json`.
+- **Dependency:** M4.4 integrated.
+- **Allowed:** `src/serve_review/analysis_pipeline.py`, `src/serve_review/cli.py`, `tests/test_analysis_pipeline.py`, `tests/test_cli.py`.
+- **Forbidden:** detector threshold changes, suppression of attempts/exports, output-video overlays, dense re-inference, dependencies, private media.
+- **Behavior:** Accept explicit attempts or prior cut output; reuse compatible caches; retain cutting usability on analysis failure; emit honest full/partial/unavailable results and stage-derived metrics only when their required stages are available. Never modify `attempts.json`, clips, or compilation.
+- **Focused check:** `uv run pytest tests/test_analysis_pipeline.py tests/test_cli.py`.
+- **Exit:** Fake end-to-end tests cover full/partial/no phases, stale inputs, cancellation, malformed data, atomic output, deterministic reruns, and byte-unchanged serve exports.
+
+### M4.6 — Phase evaluation and manual gate
+
+- **Objective:** Validate session-disjoint phase annotation manifests and report interval/keyframe quality without tuning on held-out footage.
+- **Dependency:** M4.5 integrated.
+- **Allowed:** `src/serve_review/checkpoint_evaluation.py`, `tests/test_checkpoint_evaluation.py`, sanitized annotation fixtures.
+- **Forbidden:** solver/feature threshold changes, CLI, dependencies, private manifests.
+- **Behavior:** Compare representative keyframes with manually accepted intervals; report availability, interval overlap, median and high-percentile timing error, stage-order violations, confidence calibration, structural completeness, and serve-versus-aborted structural separation. Do not score an unavailable body-only claim as if racket/ball ground truth existed.
+- **Focused check:** `uv run pytest tests/test_checkpoint_evaluation.py`.
+- **Exit:** Hand-calculated synthetic cases verify interval acceptance, uncertainty, missing stages, ambiguity, ties, split leakage, and deterministic reports.
+
+**M4 gate:** The user labels representative stage intervals on development attempts, configuration is frozen, and the system is run once on session-disjoint footage. Review every stage and anomaly, recording per-stage availability, timing usefulness, systematic errors, and whether 30 Hz pose observations are adequate. Structural status remains advisory and cannot alter M3 exports.
+
+### M4.7 — Conditional focused denser pose extraction
+
+- **Objective:** Re-run pose inference at a higher observed cadence only inside accepted attempt windows if the M4 gate shows that existing observations are temporally inadequate.
+- **Dependency:** M4 gate evidence demonstrating a concrete cadence-related failure; otherwise this leaf remains deferred.
+- **Allowed:** `src/serve_review/pose/extract.py`, `src/serve_review/pose/cache.py`, `src/serve_review/analysis_pipeline.py`, `tests/test_dense_pose.py`, `tests/test_analysis_pipeline.py`.
+- **Forbidden:** whole-session dense passes, model changes, solver threshold changes, dependencies, private media.
+- **Behavior:** Separate attempt-window cache identity, bounded source-frame scheduling, actual inference on requested frames, overlap deduplication, cancellation, and explicit observed cadence metadata. Resampling never substitutes for requested visual observations.
+- **Focused check:** `uv run pytest tests/test_dense_pose.py tests/test_analysis_pipeline.py`.
+- **Exit:** Tests verify requested observed coverage, cache reuse/invalidation, overlapping windows, processing bounds, and truthful distinction between observed and interpolated samples.
 
 ## Completion rules
 

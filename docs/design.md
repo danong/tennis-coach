@@ -13,7 +13,7 @@ Given one unmodified iPhone slow-motion `.MOV`, find serve attempts without manu
 The user controls symmetric context padding in seconds. The intended command is:
 
 ```sh
-mise run cut -- refs/IMG_1077.MOV --padding 1 --output both
+mise run cut -- refs/sessions/dev/2026-09-08-00.mov --padding 1 --output both
 ```
 
 A later analysis command adds review checkpoints within each detected serve. Everything runs locally on an Apple-silicon Mac. Footage, annotations, model caches, and results are not uploaded.
