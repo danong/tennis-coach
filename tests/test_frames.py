@@ -662,3 +662,308 @@ def test_errors_are_actionable(tmp_path: Path) -> None:
     corrupt.write_bytes(b"not-a-video" * 100)
     with pytest.raises(FrameError):
         list(iter_sampled_frames(corrupt, (0.1,)))
+
+
+# --- Hardware-accelerated decode with ffmpeg-side early dropping ---
+
+
+def test_decode_args_hwaccel_before_input_and_fps_matches_schedule() -> None:
+    from serve_review.media.frames import FRAME_MATCH_TOLERANCE_SECONDS
+
+    args = build_rawvideo_decode_args("/tmp/src.mov")
+    assert args[0] == "ffmpeg"
+    assert "-hwaccel" in args
+    assert args[args.index("-hwaccel") + 1] == "videotoolbox"
+    assert args.index("-hwaccel") < args.index("-i")
+    assert "-noautorotate" in args
+    assert args.index("-noautorotate") < args.index("-i")
+    assert "-vf" not in args  # arbitrary schedules stay passthrough
+    assert args[args.index("-pix_fmt") + 1] == "rgb24"
+    assert args[args.index("-fps_mode") + 1] == "passthrough"
+    assert FRAME_MATCH_TOLERANCE_SECONDS == pytest.approx(0.001)
+
+    schedule = build_uniform_schedule(1.0, 30.0)
+    rate = 30.0
+    filtered = build_rawvideo_decode_args("/tmp/src.mov", rate_hz=rate)
+    assert filtered.index("-hwaccel") < filtered.index("-i")
+    assert filtered.index("-noautorotate") < filtered.index("-i")
+    assert "-vf" in filtered
+    vf_value = filtered[filtered.index("-vf") + 1]
+    assert "round=up" in vf_value
+    # fps value matches the scheduled rate.
+    assert vf_value.startswith(f"fps={rate:g}")
+    assert len(schedule) == 30
+    with pytest.raises(FrameError):
+        build_rawvideo_decode_args("/tmp/src.mov", rate_hz=0)  # type: ignore[arg-type]
+    with pytest.raises(FrameError):
+        build_rawvideo_decode_args("/tmp/src.mov", rate_hz=1000.0)
+    assert build_rawvideo_decode_args("/tmp/src.mov", rate_hz=10.0) == \
+        build_rawvideo_decode_args("/tmp/src.mov", rate_hz=10.0)
+
+
+@NEEDS_TOOLS
+def test_fps_dropping_keeps_canonical_times_within_tolerance(tmp_path: Path) -> None:
+    """30 fps source sampled at 10 Hz: dropped frames keep exact times."""
+    from serve_review.media.frames import FRAME_MATCH_TOLERANCE_SECONDS
+
+    video = _make_fixture(tmp_path, orientation="landscape")
+    rate = 10.0
+    frames = list(iter_frames_at_rate(video, rate))
+    schedule = build_uniform_schedule(1.0, rate)
+    assert len(frames) == len(schedule) == 10
+    times = _times(frames)
+    assert all(later > earlier for earlier, later in zip(times, times[1:]))
+    for target, moment in zip(schedule, times):
+        assert abs(moment - target) <= FRAME_MATCH_TOLERANCE_SECONDS
+        assert moment >= target - FRAME_MATCH_TOLERANCE_SECONDS
+    # fps filter used round=up (first frame at/after target); the default
+    # round=near would sit one source interval (33 ms) off here.
+    assert times[1] == pytest.approx(0.1, abs=FRAME_MATCH_TOLERANCE_SECONDS)
+
+
+@NEEDS_TOOLS
+def test_120fps_to_30hz_keeps_canonical_times(tmp_path: Path) -> None:
+    """Real 120 fps fixture sampled at 30 Hz stays within tolerance."""
+    import subprocess as _subprocess
+
+    from serve_review.media.frames import FRAME_MATCH_TOLERANCE_SECONDS
+
+    out = tmp_path / "high120.mov"
+    completed = _subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i",
+            "testsrc2=size=320x240:rate=120:duration=0.5",
+            "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-preset", "veryfast", "-crf", "23", str(out),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 0, completed.stderr[-500:]
+    rate = 30.0
+    frames = list(iter_frames_at_rate(out, rate))
+    schedule = build_uniform_schedule(0.5, rate)
+    assert len(frames) == len(schedule) == 15
+    times = _times(frames)
+    assert all(later > earlier for earlier, later in zip(times, times[1:]))
+    for target, moment in zip(schedule, times):
+        assert abs(moment - target) <= FRAME_MATCH_TOLERANCE_SECONDS
+
+
+def test_240fps_style_schedule_maps_filtered_outputs_to_source_times(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Synthetic 240 Hz source times at a 30 Hz schedule stay exact."""
+    from types import SimpleNamespace
+    import io
+    import subprocess as subprocess_module
+
+    from serve_review.media.frames import FRAME_MATCH_TOLERANCE_SECONDS
+
+    stored_width, stored_height = 8, 8
+    frame_times = [index / 240.0 for index in range(120)]  # 0.5 s at 240 Hz
+    schedule = tuple(index / 30.0 for index in range(15))  # 0.5 s at 30 Hz
+    assert len(schedule) == 15
+
+    def _stored_frame(index: int) -> np.ndarray:
+        base = np.empty((stored_height, stored_width, 3), dtype=np.uint8)
+        for y in range(stored_height):
+            for x in range(stored_width):
+                for c in range(3):
+                    base[y, x, c] = (x * 13 + y * 29 + c * 37 + index * 11) % 256
+        return base
+
+    source_frames = [_stored_frame(i) for i in range(len(frame_times))]
+    # Uniform 240 -> 30 Hz selects every 8th source frame.
+    selected = [index * 8 for index in range(15)]
+    payload = b"".join(
+        source_frames[i].tobytes(order="C") for i in selected
+    )
+    captured: list[list[str]] = []
+
+    class _FakeStdout(io.BytesIO):
+        def close(self) -> None:
+            pass
+
+    class _FakeStderr:
+        def read(self, *args: object, **kwargs: object) -> bytes:
+            return b""
+
+        def close(self) -> None:
+            pass
+
+    class _FakeProc:
+        def __init__(self, args: list[str]) -> None:
+            captured.append(list(args))
+            self.stdout: object = _FakeStdout(payload)
+            self.stderr: object = _FakeStderr()
+
+        def poll(self) -> int | None:
+            return None
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    video = tmp_path / "clip.mov"
+    video.write_bytes(b"fake-video-bytes")
+    metadata = SimpleNamespace(
+        duration_seconds=0.5,
+        width=stored_width,
+        height=stored_height,
+        rotation_degrees=0,
+        fingerprint="sha256:fake",
+    )
+    monkeypatch.setattr(
+        frames_module, "_resolve_metadata", lambda *a, **k: metadata
+    )
+    monkeypatch.setattr(
+        frames_module, "_decode_frame_times", lambda *a, **k: list(frame_times)
+    )
+    monkeypatch.setattr(frames_module, "_ensure_tool", lambda *a, **k: None)
+    monkeypatch.setattr(
+        subprocess_module, "Popen", lambda args, **k: _FakeProc(list(args))
+    )
+    frames = list(iter_sampled_frames(video, schedule))
+    assert len(frames) == len(schedule) == 15
+    assert captured and "-hwaccel" in captured[0]
+    assert captured[0].index("-hwaccel") < captured[0].index("-i")
+    vf_value = captured[0][captured[0].index("-vf") + 1]
+    assert vf_value.startswith("fps=30") and "round=up" in vf_value
+    for frame, target, source_index in zip(frames, schedule, selected):
+        assert abs(frame.time_seconds - target) <= FRAME_MATCH_TOLERANCE_SECONDS
+        assert frame.time_seconds == pytest.approx(
+            frame_times[source_index], abs=1e-9
+        )
+        assert np.array_equal(frame.image, source_frames[source_index])
+
+
+@NEEDS_TOOLS
+def test_filtered_orientation_matches_autorotate_at_90_270(tmp_path: Path) -> None:
+    """Filtered (fps-dropped) upright frames match the export orientation."""
+    for rotation in (90, 270):
+        video = _make_rotated_fixture(
+            tmp_path, width=320, height=240, rotation=rotation,
+            name=f"filt-{rotation}",
+        )
+        frames = list(iter_frames_at_rate(video, 10.0))
+        assert len(frames) == 5  # 0.5 s fixture at 10 Hz
+        expected = _decode_first_frame_raw(
+            video, autorotate=True, out_height=320, out_width=240,
+        )
+        assert frames[0].image.shape == (320, 240, 3)
+        mad = float(
+            np.abs(
+                frames[0].image.astype(np.int16) - expected.astype(np.int16)
+            ).mean()
+        )
+        assert mad < 8.0, f"rotation {rotation}: MAD={mad:.2f}"
+        args = build_rawvideo_decode_args(str(video), rate_hz=10.0)
+        assert args.index("-hwaccel") < args.index("-i")
+        assert args.index("-noautorotate") < args.index("-i")
+
+
+@NEEDS_TOOLS
+def test_filtered_cancellation_midstream(tmp_path: Path) -> None:
+    video = _make_fixture(tmp_path, orientation="landscape")
+    with pytest.raises(FrameCancelled):
+        list(iter_frames_at_rate(video, 10.0, is_cancelled=lambda: True))
+    state = {"calls": 0}
+
+    def _cancel_after_two() -> bool:
+        state["calls"] += 1
+        return state["calls"] > 3
+
+    stream = iter_frames_at_rate(video, 10.0, is_cancelled=_cancel_after_two)
+    first = next(stream)
+    second = next(stream)
+    assert first.time_seconds < second.time_seconds
+    with pytest.raises(FrameCancelled):
+        next(stream)
+
+
+def test_hwaccel_unavailable_fails_actionably(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A VideoToolbox init failure raises an actionable error, no fallback."""
+    from types import SimpleNamespace
+    import io
+    import subprocess as subprocess_module
+
+    stored_width, stored_height = 320, 240
+    frame_times = [index / 30.0 for index in range(30)]
+    schedule = tuple(index / 30.0 for index in range(30))
+
+    class _EmptyStdout(io.BytesIO):
+        def close(self) -> None:
+            pass
+
+    class _FailStderr:
+        def read(self, *args: object, **kwargs: object) -> bytes:
+            return (
+                b"[vist#0:0/h264] No device available for decoder: "
+                b"device type videotoolbox needed for codec h264. "
+                b"Hardware device setup failed for decoder."
+            )
+
+        def close(self) -> None:
+            pass
+
+    seen: list[list[str]] = []
+
+    class _FailProc:
+        def __init__(self, args: list[str]) -> None:
+            seen.append(list(args))
+            self.stdout: object = _EmptyStdout(b"")
+            self.stderr: object = _FailStderr()
+
+        def poll(self) -> int | None:
+            return 1
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 1
+
+    video = tmp_path / "clip.mov"
+    video.write_bytes(b"fake-video-bytes")
+    metadata = SimpleNamespace(
+        duration_seconds=1.0,
+        width=stored_width,
+        height=stored_height,
+        rotation_degrees=0,
+        fingerprint="sha256:fake",
+    )
+    monkeypatch.setattr(
+        frames_module, "_resolve_metadata", lambda *a, **k: metadata
+    )
+    monkeypatch.setattr(
+        frames_module, "_decode_frame_times", lambda *a, **k: list(frame_times)
+    )
+    monkeypatch.setattr(frames_module, "_ensure_tool", lambda *a, **k: None)
+    monkeypatch.setattr(
+        subprocess_module, "Popen", lambda args, **k: _FailProc(list(args))
+    )
+    with pytest.raises(FrameError, match="VideoToolbox"):
+        list(iter_sampled_frames(video, schedule))
+    assert seen and "-hwaccel" in seen[0]
+    assert seen[0][seen[0].index("-hwaccel") + 1] == "videotoolbox"
+
+
+@NEEDS_TOOLS
+def test_upsampling_still_does_not_invent_frames(tmp_path: Path) -> None:
+    """60 Hz on a 30 fps source yields 30 canonical frames, never 60."""
+    video = _make_fixture(tmp_path, orientation="landscape")
+    at_60 = list(iter_frames_at_rate(video, 60.0))
+    at_30 = list(iter_frames_at_rate(video, 30.0))
+    assert len(at_60) == len(at_30) == 30
+    assert _times(at_60) == pytest.approx(_times(at_30), abs=1e-9)

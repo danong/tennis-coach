@@ -380,33 +380,52 @@ def build_ffprobe_frame_times_args(
 
 
 def build_rawvideo_decode_args(
-    video: Path | str, *, ffmpeg: str = "ffmpeg"
+    video: Path | str, *, ffmpeg: str = "ffmpeg", rate_hz: float | None = None
 ) -> list[str]:
     """Build the FFmpeg argument array decoding stored frames to ``rgb24``.
 
-    Uses ``-fps_mode passthrough`` so exactly one output frame exists per
-    source frame in decode order. ``-noautorotate`` (input option, before
-    ``-i``) disables FFmpeg's automatic display-rotation so the pipe
-    always carries stored-orientation ``rgb24`` bytes; the caller then
-    applies the single manual upright rotation. Without it, rotated
-    phone footage would arrive pre-rotated and a second manual rotation
-    would double-rotate/garble the pose input. The same inputs always
-    produce the same array; no shell interpolation is used.
+    Uses ``-fps_mode passthrough`` so each filter-graph output frame
+    crosses the pipe once in decode order. ``-hwaccel videotoolbox``
+    (input option, before ``-i``) offloads HEVC decode to the Media
+    Engine. ``-noautorotate`` (input option, before ``-i``) disables
+    FFmpeg's automatic display-rotation so the pipe always carries
+    stored-orientation ``rgb24`` bytes; the caller then applies the
+    single manual upright rotation. Without it, rotated phone footage
+    would arrive pre-rotated and a second manual rotation would
+    double-rotate/garble the pose input.
+
+    When ``rate_hz`` is given, an output ``-vf fps=<rate>:round=up``
+    stage drops frames in FFmpeg so only sampled-rate frames cross the
+    pipe. ``round=up`` selects the first source frame at or after each
+    output timestamp, matching the sampler selection rule (first decoded
+    frame ``>= t - tolerance``); the default ``round=near`` picks a
+    neighbouring frame (up to half a source interval away) and breaks
+    the 1 ms match tolerance on non-divisible grids. ``rate_hz`` must be
+    a valid sampling rate; ``None`` keeps 1:1 passthrough for arbitrary
+    schedules. The same inputs always produce the same array; no shell
+    interpolation is used.
     """
     executable = _check_executable("ffmpeg", ffmpeg)
     source = str(video)
     if not source:
         raise FrameError("invalid video: expected a non-blank path.")
+    filt: list[str] = []
+    if rate_hz is not None:
+        rate = _check_rate(rate_hz)
+        filt = ["-vf", f"fps={rate:g}:round=up"]
     return [
         executable,
         "-hide_banner",
         "-loglevel",
         "error",
+        "-hwaccel",
+        "videotoolbox",
         "-noautorotate",
         "-i",
         source,
         "-map",
         "0:v:0",
+        *filt,
         "-f",
         "rawvideo",
         "-pix_fmt",
@@ -548,6 +567,93 @@ def _read_exact(stream: Any, size: int) -> bytes:
     return b"".join(chunks)
 
 
+def _infer_uniform_rate(schedule: tuple[float, ...]) -> float | None:
+    """Infer the uniform sampling rate of ``schedule`` if evenly spaced."""
+    if len(schedule) < 2:
+        return None
+    interval = schedule[1] - schedule[0]
+    if not math.isfinite(interval) or interval <= 0:
+        return None
+    for earlier, later in zip(schedule, schedule[1:]):
+        if abs((later - earlier) - interval) > 1e-9:
+            return None
+    rate = 1.0 / interval
+    if not math.isfinite(rate) or not 0 < rate <= MAX_SAMPLE_RATE_HZ:
+        return None
+    return rate
+
+
+def _select_filter_rate(
+    schedule: tuple[float, ...],
+    frame_times: list[float],
+    selected: list[int],
+) -> float | None:
+    """Decide the ffmpeg ``fps`` filter rate, or ``None`` for passthrough.
+
+    Returns the inferred uniform rate only for the safe downsampling
+    case: an evenly spaced schedule starting at the timeline origin
+    whose point count does not exceed the decoded source frame count
+    and whose selection maps 1:1 (no dedup). Every other shape --
+    arbitrary schedules, non-zero starts, single points, or requested
+    rates above the source density (which would duplicate frames and
+    invent output) -- returns ``None`` so decoding stays bit-identical
+    passthrough with unchanged selection semantics.
+    """
+    inferred = _infer_uniform_rate(schedule)
+    if inferred is None:
+        return None
+    if abs(schedule[0]) > 1e-9:
+        return None
+    if len(schedule) > len(frame_times):
+        return None
+    if len(selected) != len(schedule):
+        return None
+    try:
+        return _check_rate(inferred)
+    except FrameError:
+        return None
+
+
+_HWACCEL_FAILURE_MARKERS = (
+    "videotoolbox",
+    "hwaccel",
+    "hardware device",
+    "no device available",
+    "device creation failed",
+    "hardware device setup failed",
+)
+
+
+def _hwaccel_failure_text(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _HWACCEL_FAILURE_MARKERS)
+
+
+def _short_read_error(
+    *, video_path: Path, done: int, expected: int, detail: str, filtered: bool
+) -> FrameError:
+    suffix = f": {detail}" if detail else ""
+    if detail and _hwaccel_failure_text(detail):
+        return FrameError(
+            f"VideoToolbox hardware decode failed for {video_path} "
+            f"after {done} of {expected} expected frames{suffix}; "
+            "ensure this FFmpeg build supports `-hwaccel videotoolbox`, "
+            "the source codec is Media Engine compatible, and retry. "
+            "No software fallback was attempted; refusing to emit "
+            "silently re-decoded output."
+        )
+    kind = "fps-filtered" if filtered else "passthrough"
+    if filtered:
+        return FrameError(
+            f"ffmpeg produced only {done} of {expected} expected "
+            f"({kind}) frames for {video_path}{suffix}."
+        )
+    return FrameError(
+        f"ffmpeg produced only {done} of {expected} expected frames "
+        f"for {video_path}{suffix}."
+    )
+
+
 def _check_cancelled(is_cancelled: Callable[[], bool] | None, message: str) -> None:
     if is_cancelled is None:
         return
@@ -568,14 +674,18 @@ def _run_selected(
     selected: list[int],
     ffmpeg: str,
     is_cancelled: Callable[[], bool] | None,
+    filter_rate_hz: float | None = None,
 ) -> Iterator[SampledFrame]:
     _ensure_tool(ffmpeg)
-    args = build_rawvideo_decode_args(video_path, ffmpeg=ffmpeg)
+    args = build_rawvideo_decode_args(
+        video_path, ffmpeg=ffmpeg, rate_hz=filter_rate_hz
+    )
     frame_size = stored_width * stored_height * 3
     if rotation in (90, 270):
         out_width, out_height = stored_height, stored_width
     else:
         out_width, out_height = stored_width, stored_height
+    filtered = filter_rate_hz is not None
     wanted = set(selected)
     last_wanted = selected[-1]
     try:
@@ -592,6 +702,48 @@ def _run_selected(
     assert proc.stdout is not None
     try:
         _check_cancelled(is_cancelled, "frame sampling was cancelled before starting.")
+        if filtered:
+            # fps-filtered pipe: exactly one output per selected source
+            # frame in schedule order; canonical times stay the ffprobe
+            # source times so output matches the uniform schedule within
+            # FRAME_MATCH_TOLERANCE_SECONDS. Bounded to one frame.
+            for position, source_index in enumerate(selected):
+                _check_cancelled(
+                    is_cancelled,
+                    f"frame sampling was cancelled at sampled frame "
+                    f"{position} of {len(selected)}.",
+                )
+                raw = _read_exact(proc.stdout, frame_size)
+                if len(raw) < frame_size:
+                    detail = b""
+                    try:
+                        assert proc.stderr is not None
+                        detail = proc.stderr.read() or b""
+                    except OSError:
+                        detail = b""
+                    text = detail.decode("utf-8", "replace").strip()
+                    raise _short_read_error(
+                        video_path=video_path,
+                        done=position,
+                        expected=len(selected),
+                        detail=text,
+                        filtered=True,
+                    )
+                stored = (
+                    np.frombuffer(raw, dtype=np.uint8)
+                    .reshape((stored_height, stored_width, 3))
+                    .copy()
+                )
+                upright = rotate_rgb_frame(stored, rotation)
+                moment = frame_times[source_index]
+                yield SampledFrame(
+                    time_seconds=moment,
+                    timestamp_ms=int(round(moment * 1000)),
+                    width=out_width,
+                    height=out_height,
+                    image=np.ascontiguousarray(upright, dtype=np.uint8),
+                )
+            return
         for index in range(len(frame_times)):
             _check_cancelled(
                 is_cancelled,
@@ -609,10 +761,12 @@ def _run_selected(
                 except OSError:
                     detail = b""
                 text = detail.decode("utf-8", "replace").strip()
-                suffix = f": {text}" if text else ""
-                raise FrameError(
-                    f"ffmpeg produced only {index} of {len(frame_times)} "
-                    f"expected frames for {video_path}{suffix}."
+                raise _short_read_error(
+                    video_path=video_path,
+                    done=index,
+                    expected=len(frame_times),
+                    detail=text,
+                    filtered=False,
                 )
             if index not in wanted:
                 continue
@@ -710,6 +864,7 @@ def iter_sampled_frames(
     schedule = validate_schedule(times_seconds, duration)
     frame_times = _decode_frame_times(video_path, ffprobe_exe)
     selected = _select_frame_indices(frame_times, schedule, video_path)
+    filter_rate_hz = _select_filter_rate(schedule, frame_times, selected)
     return _run_selected(
         video_path,
         stored_width,
@@ -719,6 +874,7 @@ def iter_sampled_frames(
         selected,
         ffmpeg_exe,
         is_cancelled,
+        filter_rate_hz,
     )
 
 
