@@ -52,8 +52,10 @@ __all__ = [
     "ExportCollisionError",
     "ExportError",
     "build_compilation_ffmpeg_args",
+    "build_concat_copy_args",
     "build_ffmpeg_args",
     "clip_filename",
+    "concat_join_readiness",
     "export_clips",
     "export_compilation",
     "export_outputs",
@@ -874,6 +876,256 @@ def _run_ffmpeg_for_output(
         ) from exc
 
 
+def _escape_concat_path(path: str) -> str:
+    """Escape ``path`` for an FFmpeg concat-demuxer list file."""
+    return "'" + path.replace("'", "'\\''") + "'"
+
+
+def build_concat_copy_args(
+    listfile: Path | str,
+    temp_output: Path | str,
+    *,
+    ffmpeg: str = "ffmpeg",
+) -> list[str]:
+    """Build the concat-demuxer ``-c copy`` argument array.
+
+    The list file holds one ``file '<path>'`` line per clip in join
+    order. Video and audio streams are copied without decoding or
+    re-encoding, so the join runs at disk speed with no quality loss.
+    The same inputs always produce the same array.
+    """
+    if not isinstance(ffmpeg, str) or not ffmpeg.strip():
+        raise ExportError(
+            f"invalid ffmpeg executable: {ffmpeg!r}; expected a non-blank string."
+        )
+    list_path = str(listfile)
+    dest = str(temp_output)
+    if not list_path:
+        raise ExportError("invalid listfile: expected a non-blank path.")
+    if not dest:
+        raise ExportError("invalid temp_output: expected a non-blank path.")
+    return [
+        ffmpeg.strip(),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        list_path,
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        dest,
+    ]
+
+
+def _clip_stream_signatures(payload: dict) -> tuple[tuple, tuple]:
+    streams = payload.get("streams")
+    if not isinstance(streams, list):
+        raise ExportError("clip probe payload has no streams list.")
+    video = next(
+        (
+            entry
+            for entry in streams
+            if isinstance(entry, dict) and entry.get("codec_type") == "video"
+        ),
+        None,
+    )
+    if video is None:
+        raise ExportError("clip has no video stream; cannot stream-copy join.")
+    video_sig = (
+        video.get("codec_name"),
+        video.get("width"),
+        video.get("height"),
+        video.get("avg_frame_rate"),
+        video.get("r_frame_rate"),
+        video.get("time_base"),
+        video.get("pix_fmt"),
+    )
+    audio_entries = [
+        entry
+        for entry in streams
+        if isinstance(entry, dict) and entry.get("codec_type") == "audio"
+    ]
+    if not audio_entries:
+        audio_sig: tuple = (False,)
+    else:
+        first = audio_entries[0]
+        audio_sig = (
+            True,
+            first.get("codec_name"),
+            first.get("sample_rate"),
+            first.get("channels"),
+            first.get("time_base"),
+        )
+    return (video_sig, audio_sig)
+
+
+def concat_join_readiness(
+    clip_paths: list[Path] | tuple[Path, ...],
+    *,
+    ffprobe: str = "ffprobe",
+) -> str | None:
+    """Check whether ``clip_paths`` can be joined with stream copy.
+
+    Returns ``None`` when the join is valid; otherwise returns an
+    explicit reason string so the caller fails closed to the filter
+    re-encode path instead of attempting a corrupt join. Checks, in
+    order: every input is present and non-empty, every input probes,
+    and every input shares the first clip's video codec, dimensions,
+    frame-rate/timebase, pixel format, and audio layout.
+    """
+    items = list(clip_paths)
+    if not items:
+        return "no clip files were produced; falling back to filter re-encode."
+    for path in items:
+        candidate = Path(path)
+        if not candidate.is_file():
+            return (
+                f"clip file is missing: {candidate}; "
+                "falling back to filter re-encode."
+            )
+        try:
+            if candidate.stat().st_size == 0:
+                return (
+                    f"clip file is empty: {candidate}; "
+                    "falling back to filter re-encode."
+                )
+        except OSError as exc:
+            return (
+                f"could not stat clip file {candidate} ({exc}); "
+                "falling back to filter re-encode."
+            )
+    if not isinstance(ffprobe, str) or not ffprobe.strip():
+        return (
+            f"invalid ffprobe executable: {ffprobe!r}; "
+            "falling back to filter re-encode."
+        )
+    signatures: list[tuple[tuple, tuple]] = []
+    for path in items:
+        try:
+            payload = probe_module.run_ffprobe(Path(path), ffprobe=ffprobe.strip())
+        except ProbeError as exc:
+            return (
+                f"could not probe clip {path} ({exc}); "
+                "falling back to filter re-encode."
+            )
+        try:
+            signatures.append(_clip_stream_signatures(payload))
+        except ExportError as exc:
+            return f"{exc} Falling back to filter re-encode."
+    reference = signatures[0]
+    for index, signature in enumerate(signatures[1:], start=2):
+        if signature != reference:
+            return (
+                f"clip {index} of {len(items)} has differing "
+                f"codec/timebase/resolution/audio {signature!r} vs "
+                f"first clip {reference!r}; falling back to filter "
+                "re-encode rather than a corrupt join."
+            )
+    return None
+
+
+def _join_clips_with_copy(
+    clip_paths: list[Path],
+    dest: Path,
+    *,
+    ffmpeg: str = "ffmpeg",
+    is_cancelled: Callable[[], bool] | None = None,
+    timeout_seconds: float = 300.0,
+) -> Path:
+    """Join ``clip_paths`` in order into ``dest`` via ``-c copy``.
+
+    Writes to a temporary file beside ``dest`` plus a temporary concat
+    list file, then atomically renames. Temporary files are removed on
+    failure, timeout, cancellation, or keyboard interrupt.
+    """
+    if is_cancelled is not None and is_cancelled():
+        raise ExportCancelled("compilation join was cancelled before starting.")
+    _ensure_ffmpeg(ffmpeg.strip() if isinstance(ffmpeg, str) else ffmpeg)  # type: ignore[arg-type]
+    ffmpeg_exe = ffmpeg.strip()
+    parent = dest.parent
+    if str(parent) not in ("", "."):
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ExportError(
+                f"could not create output directory {parent}: {exc}."
+            ) from exc
+    tmp_path: str | None = None
+    list_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(parent) if str(parent) not in ("", ".") else None,
+            prefix=dest.name + ".tmp-concat-",
+            suffix=".txt",
+            delete=False,
+        ) as list_handle:
+            list_path = list_handle.name
+            for clip in clip_paths:
+                list_handle.write(f"file {_escape_concat_path(str(clip))}\n")
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=str(parent) if str(parent) not in ("", ".") else None,
+            prefix=dest.name + ".tmp-",
+            suffix=".mov",
+            delete=False,
+        ) as handle:
+            tmp_path = handle.name
+        args = build_concat_copy_args(list_path, tmp_path, ffmpeg=ffmpeg_exe)
+        try:
+            finished = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=float(timeout_seconds),
+            )
+        except FileNotFoundError as exc:
+            raise _missing_tool_error(ffmpeg_exe) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ExportError(
+                f"ffmpeg timed out joining {len(clip_paths)} clip(s) "
+                f"with stream copy after {timeout_seconds}s."
+            ) from exc
+        except OSError as exc:
+            raise ExportError(
+                f"could not run ffmpeg as {ffmpeg_exe!r}: {exc}."
+            ) from exc
+        if finished.returncode != 0:
+            detail = ((finished.stderr or "").strip() or (finished.stdout or "").strip())
+            suffix = f": {detail}" if detail else ": no output"
+            raise ExportError(
+                f"ffmpeg failed joining {len(clip_paths)} clip(s) "
+                f"with stream copy (exit {finished.returncode}){suffix}."
+            )
+        if not Path(tmp_path).is_file() or Path(tmp_path).stat().st_size == 0:
+            raise ExportError(
+                f"ffmpeg did not produce output joining {len(clip_paths)} "
+                "clip(s) with stream copy."
+            )
+        try:
+            os.replace(tmp_path, dest)
+        except OSError as exc:
+            raise ExportError(
+                f"could not move joined compilation into place at {dest}: {exc}."
+            ) from exc
+        tmp_path = None
+    except BaseException:
+        _remove_quietly(tmp_path)
+        _remove_quietly(list_path)
+        raise
+    _remove_quietly(list_path)
+    return dest
+
+
 def export_compilation(
     source_video: Path | str,
     plan: ExportPlan,
@@ -1038,9 +1290,22 @@ def export_outputs(
 
     Ranges keep plan (source) order; the compilation concatenates them
     back-to-back with no artificial gaps. All destinations are checked
-    for collisions before any FFmpeg work runs. Temporary files are
-    written beside each final result and atomically renamed; they are
-    removed on failure, timeout, or cancellation.
+    for collisions before any FFmpeg work runs. Temporary files (plus the
+    concat list file) are written beside each final result and atomically
+    renamed; they are removed on failure, timeout, or cancellation.
+
+    In ``both`` mode the clips are encoded once from the original source
+    samples and the compilation is then joined losslessly from those
+    just-encoded clips with the concat demuxer plus stream copy
+    (``-c copy``: no re-encode, no quality loss, disk-speed join). When
+    the join inputs fail closed validation (missing inputs or differing
+    codec/timebase/resolution) or the copy itself fails, the compilation
+    falls back to the current filter re-encode path from the source.
+    Standalone ``compilation`` mode always uses the filter re-encode
+    path unchanged.
+
+    Frame accuracy lives in the clips; the join preserves clip order and
+    introduces no dead-time gaps.
 
     Returns:
         ``{"compilation": Path | None, "clips": list[Path]}``.
@@ -1088,6 +1353,61 @@ def export_outputs(
         raise ExportCancelled("export was cancelled before starting.")
     compilation: Path | None = None
     clips: list[Path] = []
+    if mode == "both":
+        # Single lossy generation: encode each range once as a clip,
+        # then join serves.mov losslessly from those clips. Any join
+        # problem fails closed to the filter re-encode path below.
+        clips = export_clips(
+            source_path,
+            plan,
+            clips_dir,
+            source=source,
+            ffmpeg=ffmpeg,
+            ffprobe=ffprobe,
+            video_encoder=video_encoder,
+            video_bitrate=video_bitrate,
+            audio_encoder=audio_encoder,
+            include_audio=include_audio,
+            overwrite=overwrite,
+            is_cancelled=is_cancelled,
+            timeout_seconds=timeout_seconds,
+        )
+        fallback_reason = concat_join_readiness(clips, ffprobe=ffprobe)
+        if fallback_reason is None:
+            try:
+                compilation = _join_clips_with_copy(
+                    clips,
+                    compilation_dest,
+                    ffmpeg=ffmpeg,
+                    is_cancelled=is_cancelled,
+                    timeout_seconds=timeout_seconds,
+                )
+            except ExportCancelled:
+                raise
+            except KeyboardInterrupt:
+                raise
+            except ExportError as exc:
+                fallback_reason = (
+                    "concat stream-copy join failed "
+                    f"({exc}); falling back to filter re-encode."
+                )
+        if fallback_reason is not None:
+            compilation = export_compilation(
+                source_path,
+                plan,
+                compilation_dest,
+                source=source,
+                ffmpeg=ffmpeg,
+                ffprobe=ffprobe,
+                video_encoder=video_encoder,
+                video_bitrate=video_bitrate,
+                audio_encoder=audio_encoder,
+                include_audio=include_audio,
+                overwrite=overwrite,
+                is_cancelled=is_cancelled,
+                timeout_seconds=timeout_seconds,
+            )
+        return {"compilation": compilation, "clips": clips}
     if want_compilation:
         compilation = export_compilation(
             source_path,

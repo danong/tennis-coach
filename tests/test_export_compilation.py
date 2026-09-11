@@ -430,6 +430,10 @@ def test_no_partial_final_file_when_compilation_ffmpeg_fails(
 def test_no_partial_files_when_both_mode_ffmpeg_fails(
     tmp_path: Path, monkeypatch
 ) -> None:
+    # Both-mode encodes clips first, then joins serves.mov losslessly.
+    # The first FFmpeg call (clip) succeeds; the join copy and the
+    # fallback re-encode both fail, so the finished clip remains while
+    # no partial compilation or temp files are left behind.
     video, meta = _make_source(tmp_path)
     out_dir = tmp_path / "out"
     plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5)])
@@ -449,8 +453,8 @@ def test_no_partial_files_when_both_mode_ffmpeg_fails(
     monkeypatch.setattr(export_module.subprocess, "run", _flaky)
     with pytest.raises(ExportError, match="ffmpeg failed"):
         export_outputs(video, plan, out_dir, mode="both", source=meta)
-    assert (out_dir / COMPILATION_FILENAME).is_file()
-    assert not (out_dir / CLIPS_SUBDIR / "serve-001.mov").exists()
+    assert not (out_dir / COMPILATION_FILENAME).exists()
+    assert (out_dir / CLIPS_SUBDIR / "serve-001.mov").is_file()
     assert _tmp_leftovers(out_dir) == []
 
 
@@ -773,3 +777,196 @@ def test_hwaccel_decode_compilation_valid_portrait_and_landscape(
         assert probed.duration_seconds == pytest.approx(
             expected, abs=_sample_tolerance(meta)
         )
+
+
+# --- Lossless stream-copy concat join for both-mode (same-run clips) ---
+
+
+def test_build_concat_copy_args_is_stream_copy_without_reencode() -> None:
+    args = export_module.build_concat_copy_args("list.txt", "out.mov")
+    assert args[0] == "ffmpeg"
+    assert "-f" in args and args[args.index("-f") + 1] == "concat"
+    assert args[args.index("-safe") + 1] == "0"
+    assert args[args.index("-i") + 1] == "list.txt"
+    assert args[args.index("-c") + 1] == "copy"
+    assert "-c:v" not in args and "-c:a" not in args
+    assert "-filter_complex" not in args and "-vf" not in args
+    assert "-preset" not in args and "-crf" not in args and "-b:v" not in args
+    assert "-hwaccel" not in args
+    assert args[-1] == "out.mov"
+    again = export_module.build_concat_copy_args("list.txt", "out.mov")
+    assert again == args
+
+
+def test_concat_join_readiness_rejects_missing_and_mismatched(tmp_path: Path) -> None:
+    missing = export_module.concat_join_readiness([tmp_path / "nope.mov"])
+    assert isinstance(missing, str) and "missing" in missing.lower()
+    assert "re-encode" in missing
+    empty = tmp_path / "empty.mov"
+    empty.write_bytes(b"")
+    reason_empty = export_module.concat_join_readiness([empty])
+    assert isinstance(reason_empty, str) and "empty" in reason_empty.lower()
+    assert export_module.concat_join_readiness([]) is not None
+    # Mismatched codec/resolution inputs fail closed with an explicit reason.
+    land, _ = _make_source(tmp_path, orientation="landscape", name="land.mov")
+    port, _ = _make_source(tmp_path, orientation="portrait", name="port.mov")
+    reason = export_module.concat_join_readiness([land, port])
+    assert isinstance(reason, str)
+    assert "differing" in reason.lower() or "differ" in reason.lower()
+    assert "re-encode" in reason
+
+
+@NEEDS_TOOLS
+def test_both_mode_join_matches_clips_losslessly_and_reencode(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    ranges = [MediaRange(0.2, 0.7), MediaRange(1.2, 1.8)]
+    plan = ExportPlan.for_source(meta, ranges)
+    both = export_outputs(video, plan, tmp_path / "both", mode="both", source=meta)
+    clips = list(both["clips"])
+    comp = both["compilation"]
+    assert isinstance(comp, Path) and comp.is_file()
+    assert [p.name for p in clips] == ["serve-001.mov", "serve-002.mov"]
+    # Duration equals the sum of ranges (no dead-time gaps).
+    expected = sum(r.duration_seconds for r in ranges)
+    tolerance = _sample_tolerance(meta)
+    assert probe_source(comp).duration_seconds == pytest.approx(expected, abs=tolerance)
+    clip_total = sum(probe_source(c).duration_seconds for c in clips)
+    assert probe_source(comp).duration_seconds == pytest.approx(clip_total, abs=tolerance)
+    # Lossless: first compilation frames decode identically to clip 1 frames.
+    comp_frame = extract_frame_bytes(comp, 0.1)
+    clip_frame = extract_frame_bytes(clips[0], 0.1)
+    assert _mean_abs_diff(comp_frame, clip_frame) < 1.0
+    # Byte-comparable to the standalone re-encode path in frames/duration.
+    re_out = export_compilation(video, plan, tmp_path / "re-serves.mov", source=meta)
+    assert probe_source(re_out).duration_seconds == pytest.approx(expected, abs=tolerance)
+    re_frame = extract_frame_bytes(re_out, 0.1)
+    assert _mean_abs_diff(comp_frame, re_frame) < 12.0
+    assert probe_source(comp).duration_seconds == pytest.approx(
+        probe_source(re_out).duration_seconds, abs=tolerance
+    )
+
+
+@NEEDS_TOOLS
+def test_both_mode_join_valid_portrait_and_landscape(tmp_path: Path) -> None:
+    for orientation in ("landscape", "portrait"):
+        video, meta = _make_source(
+            tmp_path, orientation=orientation, name=f"join-{orientation}.mov"
+        )
+        ranges = [MediaRange(0.1, 0.6), MediaRange(1.0, 1.5)]
+        plan = ExportPlan.for_source(meta, ranges)
+        both = export_outputs(
+            video, plan, tmp_path / f"join-{orientation}-out",
+            mode="both", source=meta,
+        )
+        comp = both["compilation"]
+        assert isinstance(comp, Path) and comp.is_file() and comp.stat().st_size > 0
+        probed = probe_source(comp)
+        assert (probed.width, probed.height) == (meta.width, meta.height)
+        assert probed.rotation_degrees == meta.rotation_degrees
+        expected = sum(r.duration_seconds for r in ranges)
+        assert probed.duration_seconds == pytest.approx(
+            expected, abs=_sample_tolerance(meta)
+        )
+        # Order preserved: each half matches its source range, not the other.
+        src_early = extract_frame_bytes(video, 0.2)
+        src_late = extract_frame_bytes(video, 1.2)
+        assert _mean_abs_diff(src_early, src_late) > 1.0
+        first = extract_frame_bytes(comp, 0.1)
+        second = extract_frame_bytes(comp, 0.7)
+        assert _mean_abs_diff(first, second) > 1.0
+        assert _mean_abs_diff(first, src_early) < _mean_abs_diff(first, src_late)
+        assert _mean_abs_diff(second, src_late) < _mean_abs_diff(second, src_early)
+
+
+@NEEDS_TOOLS
+def test_both_mode_falls_back_to_reencode_on_mismatch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video, meta = _make_source(tmp_path)
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5), MediaRange(1.0, 1.5)])
+    monkeypatch.setattr(
+        export_module,
+        "concat_join_readiness",
+        lambda clips, **kwargs: "simulated mismatch; falling back to filter re-encode.",
+    )
+    out_dir = tmp_path / "out"
+    result = export_outputs(video, plan, out_dir, mode="both", source=meta)
+    comp = result["compilation"]
+    assert isinstance(comp, Path) and comp.is_file()
+    assert [p.name for p in result["clips"]] == ["serve-001.mov", "serve-002.mov"]
+    expected = plan.total_duration_seconds
+    assert probe_source(comp).duration_seconds == pytest.approx(
+        expected, abs=_sample_tolerance(meta)
+    )
+    assert _tmp_leftovers(out_dir) == []
+
+
+@NEEDS_TOOLS
+def test_both_mode_copy_failure_falls_back_to_reencode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video, meta = _make_source(tmp_path)
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5), MediaRange(1.0, 1.5)])
+    real_run = subprocess.run
+
+    def _flaky(args, **kwargs):
+        if "-f" in args and "concat" in args:
+            return subprocess.CompletedProcess(
+                args=args, returncode=1, stdout="", stderr="concat boom"
+            )
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(export_module.subprocess, "run", _flaky)
+    out_dir = tmp_path / "out"
+    result = export_outputs(video, plan, out_dir, mode="both", source=meta)
+    assert isinstance(result["compilation"], Path)
+    assert result["compilation"].is_file()
+    assert probe_source(result["compilation"]).duration_seconds == pytest.approx(
+        plan.total_duration_seconds, abs=_sample_tolerance(meta)
+    )
+    assert _tmp_leftovers(out_dir) == []
+
+
+@NEEDS_TOOLS
+def test_both_mode_join_cancellation_cleans_temp_but_keeps_clips(
+    tmp_path: Path,
+) -> None:
+    video, meta = _make_source(tmp_path)
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5), MediaRange(1.0, 1.5)])
+    calls = {"count": 0}
+
+    def _cancel():
+        calls["count"] += 1
+        # export_clips polls once at start + once per clip (3 polls);
+        # cancel at the join stage that follows.
+        return calls["count"] > 3
+
+    out_dir = tmp_path / "out"
+    with pytest.raises(ExportCancelled, match="cancelled"):
+        export_outputs(
+            video, plan, out_dir, mode="both", source=meta, is_cancelled=_cancel
+        )
+    assert not (out_dir / COMPILATION_FILENAME).exists()
+    assert (out_dir / CLIPS_SUBDIR / "serve-001.mov").is_file()
+    assert _tmp_leftovers(out_dir) == []
+    assert _tmp_leftovers(tmp_path) == []
+
+
+@NEEDS_TOOLS
+def test_both_mode_join_keyboard_interrupt_cleans_temp(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video, meta = _make_source(tmp_path)
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5), MediaRange(1.0, 1.5)])
+    real_run = subprocess.run
+
+    def _interrupted(args, **kwargs):
+        if "-f" in args and "concat" in args:
+            raise KeyboardInterrupt("simulated cancel during join")
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(export_module.subprocess, "run", _interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        export_outputs(video, plan, tmp_path / "out", mode="both", source=meta)
+    assert not (tmp_path / "out" / COMPILATION_FILENAME).exists()
+    assert _tmp_leftovers(tmp_path) == []

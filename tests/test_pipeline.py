@@ -841,3 +841,72 @@ def test_av_bypass_path_still_writes_empty_shadow_log(tmp_path: Path) -> None:
     _, _, result, _ = run_faked(tmp_path)
     assert result.shadows == ()
     assert result.shadows_path is not None and result.shadows_path.is_file()
+
+
+# --- both-mode lossless join (single lossy generation) ---
+
+
+def test_pipeline_both_mode_joins_clips_with_single_lossy_generation(
+    tmp_path: Path,
+) -> None:
+    _needs_tools()
+    from media_factory import generate_fixture, landscape_spec
+
+    from serve_review.media import export as export_module
+    from serve_review.media.probe import probe_source
+
+    from media_factory import extract_frame_bytes as _extract_bytes
+
+    video = generate_fixture(
+        tmp_path / "session.mov", landscape_spec(duration_seconds=2.0)
+    )
+    extract, load, feats, cands = _integration_fakes(
+        CandidateRange(0.2, 0.7)
+    )
+    seen_concat: list[list[str]] = []
+    seen_filter_complex = {"count": 0}
+    real_run = export_module.subprocess.run
+
+    def _spy(args, **kwargs):
+        parts = list(args)
+        if parts and str(parts[0]).endswith("ffprobe"):
+            return real_run(args, **kwargs)
+        if "-filter_complex" in parts:
+            seen_filter_complex["count"] += 1
+        if "-f" in parts and "concat" in parts:
+            seen_concat.append(parts)
+        return real_run(args, **kwargs)
+
+    import serve_review.media.export as _export_mod
+
+    original_run = _export_mod.subprocess.run
+    _export_mod.subprocess.run = _spy
+    try:
+        result = run_cut(
+            video,
+            output_dir=tmp_path / "output",
+            padding_seconds=0.0,
+            mode="both",
+            extract_fn=extract,
+            load_cache_fn=load,
+            features_fn=feats,
+            candidates_fn=cands,
+        )
+    finally:
+        _export_mod.subprocess.run = original_run
+    assert result.empty is False
+    assert result.compilation is not None and result.compilation.is_file()
+    assert len(result.clips) == 1 and result.clips[0].is_file()
+    # Single lossy generation: no filter re-encode ran; one stream-copy join did.
+    assert seen_filter_complex["count"] == 0
+    assert len(seen_concat) == 1
+    assert seen_concat[0][seen_concat[0].index("-c") + 1] == "copy"
+    # Compilation duration matches the padded export range; frames match the clip.
+    comp_dur = probe_source(result.compilation).duration_seconds
+    clip_dur = probe_source(result.clips[0]).duration_seconds
+    assert comp_dur == pytest.approx(clip_dur, abs=0.08)
+    comp_frame = _extract_bytes(result.compilation, 0.1)
+    clip_frame = _extract_bytes(result.clips[0], 0.1)
+    count = min(len(comp_frame), len(clip_frame))
+    mad = sum(abs(a - b) for a, b in zip(comp_frame[:count], clip_frame[:count])) / count
+    assert mad < 1.0
