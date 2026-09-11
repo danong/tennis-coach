@@ -637,3 +637,139 @@ def test_hardware_compilation_failure_names_encoder_and_cleans_up(
     assert "hardware unavailable" in message
     assert not (out_dir / COMPILATION_FILENAME).exists()
     assert _tmp_leftovers(out_dir) == []
+
+
+def test_build_compilation_args_places_hwaccel_videotoolbox_before_input() -> None:
+    args = build_compilation_ffmpeg_args(
+        "a.mov", [MediaRange(0.0, 0.5)], "t.mov"
+    )
+    assert "-hwaccel" in args
+    assert args[args.index("-hwaccel") + 1] == "videotoolbox"
+    assert args.index("-hwaccel") < args.index("-i")
+    for index, part in enumerate(args):
+        if part == "-i":
+            assert args[index - 2] == "-hwaccel"
+            assert args[index - 1] == "videotoolbox"
+    # Deterministic construction still holds with the decode flags present.
+    again = build_compilation_ffmpeg_args(
+        "a.mov", [MediaRange(0.0, 0.5)], "t.mov"
+    )
+    assert again == args
+
+
+@NEEDS_TOOLS
+def test_export_compilation_passes_hwaccel_decode_to_ffmpeg(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video, meta = _make_source(tmp_path, duration_seconds=1.0)
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.4)])
+    captured: dict = {}
+    real_run = subprocess.run
+
+    def _spy(args, **kwargs):
+        if not str(args[0]).endswith("ffprobe"):
+            captured["args"] = list(args)
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(export_module.subprocess, "run", _spy)
+    export_compilation(
+        video, plan, tmp_path / "serves.mov", source=meta
+    )
+    args = captured["args"]
+    assert "-hwaccel" in args
+    assert args[args.index("-hwaccel") + 1] == "videotoolbox"
+    assert args.index("-hwaccel") < args.index("-i")
+
+
+@NEEDS_TOOLS
+def test_hwaccel_decode_compilation_failure_names_videotoolbox(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video, meta = _make_source(tmp_path)
+    out_dir = tmp_path / "out"
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5), MediaRange(1.0, 1.5)])
+    real_run = subprocess.run
+    seen: list[list[str]] = []
+
+    def _fail(args, **kwargs):
+        if str(args[0]).endswith("ffprobe"):
+            return real_run(args, **kwargs)
+        seen.append(list(args))
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=1,
+            stdout="",
+            stderr=(
+                "[vist#0:0/h264 @ 0xabc] No device available for decoder: "
+                "device type videotoolbox needed for codec h264. "
+                "Hardware device setup failed for decoder."
+            ),
+        )
+
+    monkeypatch.setattr(export_module.subprocess, "run", _fail)
+    with pytest.raises(ExportError) as excinfo:
+        export_compilation(video, plan, out_dir / COMPILATION_FILENAME, source=meta)
+    message = str(excinfo.value)
+    assert "VideoToolbox" in message
+    assert "-hwaccel videotoolbox" in message
+    assert "No software fallback" in message
+    assert seen and "-hwaccel" in seen[0]
+    assert seen[0][seen[0].index("-hwaccel") + 1] == "videotoolbox"
+    assert not (out_dir / COMPILATION_FILENAME).exists()
+    assert _tmp_leftovers(out_dir) == []
+
+
+@NEEDS_VIDEOTOOLBOX
+def test_hwaccel_decode_compilation_matches_software_decode(
+    tmp_path: Path,
+) -> None:
+    video, meta = _make_source(tmp_path)
+    ranges = [MediaRange(0.2, 0.7), MediaRange(1.2, 1.8)]
+    plan = ExportPlan.for_source(meta, ranges)
+    tolerance = _sample_tolerance(meta)
+    expected = sum(r.duration_seconds for r in ranges)
+    hw_out = export_compilation(video, plan, tmp_path / "hwdec-serves.mov", source=meta)
+    hw_args = build_compilation_ffmpeg_args(
+        video, ranges, tmp_path / "probe-mov"
+    )
+    assert hw_args[hw_args.index("-hwaccel") + 1] == "videotoolbox"
+    sw_args = [part for part in hw_args if part not in ("-hwaccel", "videotoolbox")]
+    sw_args[-1] = str(tmp_path / "swdec-serves.mov")
+    assert "-hwaccel" not in sw_args
+    done = subprocess.run(sw_args, capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr
+    hw_probed = probe_source(hw_out)
+    sw_probed = probe_source(tmp_path / "swdec-serves.mov")
+    assert hw_probed.duration_seconds == pytest.approx(expected, abs=tolerance)
+    assert sw_probed.duration_seconds == pytest.approx(expected, abs=tolerance)
+    assert hw_probed.duration_seconds == pytest.approx(
+        sw_probed.duration_seconds, abs=tolerance
+    )
+    assert (hw_probed.width, hw_probed.height) == (
+        sw_probed.width,
+        sw_probed.height,
+    ) == (meta.width, meta.height)
+
+
+@NEEDS_VIDEOTOOLBOX
+def test_hwaccel_decode_compilation_valid_portrait_and_landscape(
+    tmp_path: Path,
+) -> None:
+    for orientation in ("landscape", "portrait"):
+        video, meta = _make_source(
+            tmp_path, orientation=orientation, name=f"hwdec-comp-{orientation}.mov"
+        )
+        ranges = [MediaRange(0.1, 0.6), MediaRange(1.0, 1.5)]
+        plan = ExportPlan.for_source(meta, ranges)
+        out = export_compilation(
+            video, plan, tmp_path / f"hwdec-serves-{orientation}.mov", source=meta
+        )
+        assert out.is_file() and out.stat().st_size > 0
+        probed = probe_source(out)
+        assert _probe_video_codec(out) == "h264"
+        assert (probed.width, probed.height) == (meta.width, meta.height)
+        assert probed.rotation_degrees == meta.rotation_degrees
+        expected = sum(r.duration_seconds for r in ranges)
+        assert probed.duration_seconds == pytest.approx(
+            expected, abs=_sample_tolerance(meta)
+        )

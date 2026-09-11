@@ -189,7 +189,35 @@ def _hardware_failure_hint(encoder: str) -> str:
             f"pass video_encoder={SOFTWARE_VIDEO_ENCODER!r} explicitly for the "
             "software path. No silent fallback was attempted."
         )
-    return "" 
+    return ""
+
+
+_HWACCEL_FAILURE_MARKERS = (
+    "videotoolbox",
+    "hwaccel",
+    "hardware device",
+    "no device available",
+    "device creation failed",
+    "hardware device setup failed",
+)
+
+
+def _is_hwaccel_failure(text: str) -> bool:
+    """Return True when FFmpeg output names a VideoToolbox decode failure."""
+    return any(marker in (text or "").lower() for marker in _HWACCEL_FAILURE_MARKERS)
+
+
+def _hardware_decode_failure_hint(detail: str) -> str:
+    """Return the actionable VideoToolbox decode hint for ``detail``."""
+    if detail and _is_hwaccel_failure(detail):
+        return (
+            " VideoToolbox hardware decode via '-hwaccel videotoolbox' failed; "
+            "ensure this FFmpeg build supports `-hwaccel videotoolbox`, "
+            "the source codec is Media Engine compatible, and retry. "
+            "No software fallback was attempted; refusing to emit "
+            "silently re-decoded output."
+        )
+    return ""
 
 
 def build_ffmpeg_args(
@@ -206,6 +234,8 @@ def build_ffmpeg_args(
 ) -> list[str]:
     """Build the deterministic FFmpeg argument array for one exact trim.
 
+    Hardware VideoToolbox decode (``-hwaccel videotoolbox`` as an input
+    option before ``-i``) offloads source decode to the Media Engine.
     Video is trimmed with the ``trim`` filter and re-encoded with
     ``video_encoder`` (default VideoToolbox hardware H.264 at the
     ``video_bitrate`` target in the 4-8 Mbps review band; ``libx264``
@@ -257,6 +287,8 @@ def build_ffmpeg_args(
         "-loglevel",
         "error",
         "-y",
+        "-hwaccel",
+        "videotoolbox",
         "-i",
         source,
         "-map",
@@ -561,6 +593,7 @@ def export_clips(
                     f"with video encoder {encoder!r} "
                     f"(exit {finished.returncode}){suffix}."
                     f"{_hardware_failure_hint(encoder)}"
+                    f"{_hardware_decode_failure_hint(detail)}"
                 )
             if not Path(tmp_path).is_file() or Path(tmp_path).stat().st_size == 0:
                 raise ExportError(
@@ -618,6 +651,8 @@ def build_compilation_ffmpeg_args(
 ) -> list[str]:
     """Build the deterministic FFmpeg argument array for one compilation.
 
+    Hardware VideoToolbox decode (``-hwaccel videotoolbox`` as an input
+    option before ``-i``) offloads source decode to the Media Engine.
     Each range is trimmed with the ``trim``/``atrim`` filters, timestamps
     are reset with ``setpts``/``asetpts``, and the segments are joined with
     the ``concat`` filter in the given (plan) order. Segments are placed
@@ -691,6 +726,8 @@ def build_compilation_ffmpeg_args(
         "-loglevel",
         "error",
         "-y",
+        "-hwaccel",
+        "videotoolbox",
         "-i",
         source,
         "-filter_complex",
@@ -822,6 +859,7 @@ def _run_ffmpeg_for_output(
             f"ffmpeg failed {label} with video encoder {video_encoder!r} "
             f"(exit {finished.returncode}){suffix}."
             f"{_hardware_failure_hint(video_encoder)}"
+            f"{_hardware_decode_failure_hint(detail)}"
         )
     if not Path(tmp_path).is_file() or Path(tmp_path).stat().st_size == 0:
         raise ExportError(
