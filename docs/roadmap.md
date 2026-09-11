@@ -38,7 +38,7 @@ Default worker yield: summary, changed files, checks/results, deviations, and re
 | M3.4 | not started | — | — | — |
 | M3.5 | not started | — | — | — |
 | M4.1 | done | `73efa0fb-71b0-4f75-b953-db3b20a9e3da` | `e769cb6b98d6` | 720-test candidate verification; reviewed and accepted |
-| M4.2 | not started | — | — | attempt-local resampling and derivatives |
+| M4.2 | done | `2591024a-7455-4fd5-8b71-137b46e7bd6f` | `a38e4ab88563` | 725-test candidate verification; reviewed and accepted |
 | M4.3 | not started | — | — | stage evidence and candidate generation |
 | M4.4 | not started | — | — | constrained joint DP solver |
 | M4.5 | not started | — | — | analyze command and checkpoint report |

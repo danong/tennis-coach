@@ -55,3 +55,11 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 - **Intervention:** first candidate (`c0d3b280-e8dc-4524-95d3-e5b4c875058e`) was rejected for missing audio-anchor and top-level source-document constraints; repair preparation failed before binding (`64c8ff43-976a-45ae-8208-73ad5fdc1425`). A corrected candidate (`98763a68-35aa-474f-ae2d-d1df2f9344c9`) passed 720 tests but Tau acceptance verification timed out twice and left no integration. A second corrected candidate (`fbd11111-d256-4909-af17-ed8e146cecac`) was rejected because its frozen dataclass exposed a mutable stage dictionary. The accepted retry added a read-only mapping and direct regression coverage.
 - **Cost/attention:** three full candidate runs were required; measured inference cost unavailable. Human acceptance unavailable.
 - **Finding:** schema immutability must cover nested containers, not only frozen dataclass attributes; focused integration verification avoids repeating an already-passed full candidate suite during acceptance.
+
+### 2026-09-11 — M4.2 attempt-local phase features
+
+- **Identity:** accepted run `2591024a-7455-4fd5-8b71-137b46e7bd6f`; base `0ecbda71`; captured candidate `b93210a00c2e`; integrated `a38e4ab88563`; model `opencode/muse-spark-1.3-contributor-free`; 17 turns.
+- **Evidence/review:** exactly three allowed files changed. Candidate verification passed 725 tests. Exact review confirmed strict half-open attempt slicing, physical-duration window configuration, uniform grid metadata, visibility-gated normalized camera-relative geometry, short-gap-only reduced-quality interpolation, timestamp-aware derivatives, audio alignment, and synthetic cadence/gap/boundary/precision-honesty coverage.
+- **Lifecycle:** approved and accepted through Tau; worker workspace released; default working copy rebased onto `main`. Per owner instruction, acceptance ran only focused M4.2 verification rather than another full suite.
+- **Cost/attention:** measured inference cost unavailable; human acceptance unavailable.
+- **Finding:** local-polynomial derivatives and explicit observed/interpolated quality channels satisfy cadence invariance without requiring a higher-rate pose-cache architecture; actual denser inference remains conditional on the M4 gate.
