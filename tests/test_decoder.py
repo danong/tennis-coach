@@ -546,6 +546,80 @@ def test_absolute_floor_rejects_near_silence() -> None:
     assert len(result.shadows) == 1
 
 
+def _long_drive_serve(
+    *, drive_end: float = 2.5, peak_time: float | None = None
+) -> tuple[list[FeatureFrame], list[AudioEnergy]]:
+    """Serve with a long overhead drive (span >> +-0.4 s window)."""
+    start = 1.0
+    frames: list[FeatureFrame] = []
+    frames += _rest_run(0.0, 5)  # 0.0..0.4 idle
+    for i in range(3):  # preparation 1.0,1.1,1.2
+        frames.append(
+            _feat(
+                start + i * STEP,
+                torso=0.5,
+                overhead=0.0,
+                elbow_speed=0.4,
+                elbow_flex=120.0,
+                rest=0.15,
+            )
+        )
+    moment = start + 0.3  # first acceleration trigger at 1.3
+    while moment <= drive_end + 1e-9:
+        frames.append(
+            _feat(
+                moment,
+                torso=0.5,
+                overhead=1.0,
+                elbow_speed=5.0,
+                elbow_flex=170.0,
+                rest=0.1,
+            )
+        )
+        moment += STEP
+    exit_t = drive_end + 0.5
+    frames.append(
+        _feat(
+            exit_t,
+            torso=0.0,
+            overhead=0.0,
+            elbow_speed=0.1,
+            elbow_flex=150.0,
+            rest=0.9,
+        )
+    )
+    frames += _rest_run(exit_t + STEP, 5)
+    frames.sort(key=lambda f: f.time_seconds)
+    audio = [AudioEnergy(time_seconds=f.time_seconds, energy=QUIET) for f in frames]
+    if peak_time is not None:
+        audio.append(AudioEnergy(time_seconds=peak_time, energy=LOUD))
+        audio.sort(key=lambda a: a.time_seconds)
+    return frames, audio
+
+
+def test_long_drive_late_contact_validates() -> None:
+    # Acceleration span 1.3..2.5 (1.2 s >> 0.4 s window); a transient at
+    # the drive end is ~1.2 s after onset, so a first-trigger anchor
+    # would shadow it. The latest-trigger anchor follows the drive.
+    frames, audio = _long_drive_serve(drive_end=2.5, peak_time=2.55)
+    result = decode_sequence(frames, audio)
+    assert len(result.ranges) == 1
+    assert result.shadows == ()
+    assert result.ranges[0].start_seconds == pytest.approx(1.0)
+    assert result.ranges[0].end_seconds == pytest.approx(3.0)
+
+
+def test_long_drive_transient_far_after_end_shadows() -> None:
+    # Same long drive, but the transient sits 0.7 s past the last
+    # acceleration trigger: outside the +-0.4 s window even from the
+    # latest anchor, so the hypothesis must shadow.
+    frames, audio = _long_drive_serve(drive_end=2.5, peak_time=3.25)
+    result = decode_sequence(frames, audio)
+    assert result.ranges == ()
+    assert len(result.shadows) == 1
+    assert result.shadows[0].reason == REASON_SHADOW
+
+
 def test_transient_ratio_is_versioned() -> None:
     frames, audio = _real_scale_serve(start=3.0)
     # 0.053 over the 0.009 bed is ratio ~5.9: the default 5.0 passes

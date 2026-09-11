@@ -31,7 +31,8 @@ Macro states over ``F_t``:
   overhead position with high-confidence elbow geometry present).
 - ``follow_through``: entered from ``acceleration`` only when a
   validating audio transient lies within ``+-audio_window_seconds``
-  (default 0.4 s, versioned) of the overhead-acceleration time, where
+  (default 0.4 s, versioned) of the latest overhead-acceleration
+  trigger time (the anchor follows the drive phase), where
   validation is scale-invariant: the peak ``A_t`` energy inside the
   window must reach ``audio_transient_ratio`` (default 5.0) times the
   session-median baseline and clear the small ``audio_transient_floor``
@@ -181,7 +182,8 @@ class DecoderConfig:
       0.01) the window peak must also clear, so near-silence sessions
       never validate on a ratio against a ~0 baseline.
     - ``audio_window_seconds``: half-width of the ``+-`` source-time
-      window around overhead acceleration scanned for the transient.
+      window around the latest overhead-acceleration trigger time
+      scanned for the transient.
     - ``dropout_hysteresis_frames``: consecutive dropout frames bridged
       inside an active state (3-5 inclusive).
     """
@@ -910,6 +912,8 @@ def decode_sequence(
                     dropout = 0
                 continue
             dropout = 0
+            if _is_acceleration_trigger(frame, cfg):
+                accel_time = moment
             if _has_validating_transient(accel_time, audio_list, cfg):
                 state = "follow_through"
                 continue
