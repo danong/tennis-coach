@@ -43,8 +43,11 @@ __all__ = [
     "CLIPS_SUBDIR",
     "COMPILATION_FILENAME",
     "DEFAULT_AUDIO_ENCODER",
+    "DEFAULT_VIDEO_BITRATE",
+    "DEFAULT_VIDEO_BITRATE_BPS",
     "DEFAULT_VIDEO_ENCODER",
     "EXPORT_MODES",
+    "SOFTWARE_VIDEO_ENCODER",
     "ExportCancelled",
     "ExportCollisionError",
     "ExportError",
@@ -56,8 +59,23 @@ __all__ = [
     "export_outputs",
 ]
 
-#: Explicit default video encoder. Always re-encoded; never stream-copied.
-DEFAULT_VIDEO_ENCODER = "libx264"
+#: Explicit default video encoder: VideoToolbox hardware H.264.
+#: Always re-encoded; never stream-copied. ``libx264`` (see
+#: :data:`SOFTWARE_VIDEO_ENCODER`) remains selectable via the existing
+#: ``video_encoder`` parameter for the software path.
+DEFAULT_VIDEO_ENCODER = "h264_videotoolbox"
+#: Software H.264 encoder kept selectable via ``video_encoder``.
+SOFTWARE_VIDEO_ENCODER = "libx264"
+#: Explicit default target video bitrate for the hardware encoder.
+#: Review-band target: 6 Mbps lies inside the 4-8 Mbps review band
+#: (see ``REVIEW_VIDEO_BITRATE_MIN_BPS``/``REVIEW_VIDEO_BITRATE_MAX_BPS``).
+DEFAULT_VIDEO_BITRATE = "6M"
+#: Default target bitrate in bits per second (matches ``DEFAULT_VIDEO_BITRATE``).
+DEFAULT_VIDEO_BITRATE_BPS = 6_000_000
+#: Lower bound of the review-band bitrate window (bits per second).
+REVIEW_VIDEO_BITRATE_MIN_BPS = 4_000_000
+#: Upper bound of the review-band bitrate window (bits per second).
+REVIEW_VIDEO_BITRATE_MAX_BPS = 8_000_000
 #: Explicit audio encoder used only when the source has an audio stream.
 DEFAULT_AUDIO_ENCODER = "aac"
 #: Compilation file name written inside an output directory.
@@ -110,6 +128,70 @@ def _format_seconds(value: float) -> str:
     return f"{float(value):.6f}"
 
 
+def _parse_video_bitrate_to_bps(value: object) -> int:
+    """Parse an FFmpeg-style bitrate (``"6M"``, ``"6000k"``, ``"6000000"``) to bps."""
+    if isinstance(value, bool) or not isinstance(value, str) or not value.strip():
+        raise ExportError(
+            f"invalid video_bitrate: {value!r}; expected a non-blank bitrate "
+            "such as '6M'."
+        )
+    text = value.strip().lower()
+    multiplier = 1
+    if text.endswith("k"):
+        multiplier = 1_000
+        text = text[:-1]
+    elif text.endswith("m"):
+        multiplier = 1_000_000
+        text = text[:-1]
+    try:
+        number = float(text)
+    except ValueError:
+        raise ExportError(
+            f"invalid video_bitrate: {value!r}; expected a numeric bitrate "
+            "such as '6M'."
+        ) from None
+    import math
+
+    if not math.isfinite(number) or number <= 0:
+        raise ExportError(
+            f"invalid video_bitrate: {value!r}; expected a bitrate greater "
+            "than zero."
+        )
+    return int(number * multiplier)
+
+
+def _check_video_bitrate(name: str, value: object) -> str:
+    cleaned = value.strip() if isinstance(value, str) else value
+    _parse_video_bitrate_to_bps(cleaned)  # raises ExportError when invalid.
+    assert isinstance(cleaned, str)
+    return cleaned.strip()
+
+
+def _video_encoder_args(encoder: str, video_bitrate: str) -> list[str]:
+    """Return the deterministic quality/speed flags for ``encoder``.
+
+    Hardware ``h264_videotoolbox`` uses an explicit ``-b:v`` target in
+    the review band; the software ``libx264`` path keeps its explicit
+    ``-preset veryfast -crf 18`` options. Any other re-encoding encoder
+    receives the explicit ``-b:v`` target. ``-preset``/``-crf`` are
+    ``libx264``-specific and are never emitted for VideoToolbox.
+    """
+    if encoder == SOFTWARE_VIDEO_ENCODER:
+        return ["-preset", "veryfast", "-crf", "18"]
+    return ["-b:v", video_bitrate]
+
+
+def _hardware_failure_hint(encoder: str) -> str:
+    if "videotoolbox" in encoder.lower():
+        return (
+            f" Hardware encode via {encoder!r} failed; ensure this FFmpeg build "
+            "supports VideoToolbox hardware encoding on this Mac and retry, or "
+            f"pass video_encoder={SOFTWARE_VIDEO_ENCODER!r} explicitly for the "
+            "software path. No silent fallback was attempted."
+        )
+    return "" 
+
+
 def build_ffmpeg_args(
     source_video: Path | str,
     start_seconds: float,
@@ -118,13 +200,17 @@ def build_ffmpeg_args(
     *,
     ffmpeg: str = "ffmpeg",
     video_encoder: str = DEFAULT_VIDEO_ENCODER,
+    video_bitrate: str = DEFAULT_VIDEO_BITRATE,
     audio_encoder: str = DEFAULT_AUDIO_ENCODER,
     include_audio: bool = False,
 ) -> list[str]:
     """Build the deterministic FFmpeg argument array for one exact trim.
 
     Video is trimmed with the ``trim`` filter and re-encoded with
-    ``video_encoder``. When ``include_audio`` is true, audio is trimmed
+    ``video_encoder`` (default VideoToolbox hardware H.264 at the
+    ``video_bitrate`` target in the 4-8 Mbps review band; ``libx264``
+    remains selectable and keeps its explicit preset/CRF options).
+    When ``include_audio`` is true, audio is trimmed
     with the ``atrim`` filter and encoded with ``audio_encoder``;
     otherwise the output is video-only (``-an``). Stream copy is never
     used. The same inputs always produce the same array.
@@ -136,6 +222,7 @@ def build_ffmpeg_args(
             f"invalid ffmpeg executable: {ffmpeg!r}; expected a non-blank string."
         )
     encoder = _check_encoder("video_encoder", video_encoder)
+    bitrate = _check_video_bitrate("video_bitrate", video_bitrate)
     if include_audio:
         _check_encoder("audio_encoder", audio_encoder)
     for key, value in (("start_seconds", start_seconds), ("end_seconds", end_seconds)):
@@ -178,10 +265,7 @@ def build_ffmpeg_args(
         video_filter,
         "-c:v",
         encoder,
-        "-preset",
-        "veryfast",
-        "-crf",
-        "18",
+        *_video_encoder_args(encoder, bitrate),
         "-pix_fmt",
         "yuv420p",
         "-movflags",
@@ -263,6 +347,7 @@ def export_clips(
     ffmpeg: str = "ffmpeg",
     ffprobe: str = "ffprobe",
     video_encoder: str = DEFAULT_VIDEO_ENCODER,
+    video_bitrate: str = DEFAULT_VIDEO_BITRATE,
     audio_encoder: str = DEFAULT_AUDIO_ENCODER,
     include_audio: bool | None = None,
     overwrite: bool = False,
@@ -281,7 +366,11 @@ def export_clips(
             duration) must agree with ``plan``.
         ffmpeg: FFmpeg executable.
         ffprobe: ffprobe executable used for validation/audio detection.
-        video_encoder: Explicit video encoder (never ``"copy"``).
+        video_encoder: Explicit video encoder (never ``"copy"``; default
+            VideoToolbox hardware H.264, ``libx264`` selects software).
+        video_bitrate: Explicit target video bitrate for hardware encoders
+            (default ``'6M'`` in the 4-8 Mbps review band; ignored by the
+            ``libx264`` software path, which uses preset/CRF instead).
         audio_encoder: Explicit audio encoder when audio is included.
         include_audio: ``True`` forces trimmed audio, ``False`` forces
             video-only output, ``None`` (default) auto-detects: audio is
@@ -312,6 +401,7 @@ def export_clips(
         raise ExportError(f"input video does not exist: {source_path}.")
     out_dir = Path(output_dir).expanduser()
     encoder = _check_encoder("video_encoder", video_encoder)
+    bitrate = _check_video_bitrate("video_bitrate", video_bitrate)
     if include_audio is True:
         _check_encoder("audio_encoder", audio_encoder)
     elif include_audio is not None and not isinstance(include_audio, bool):
@@ -437,6 +527,7 @@ def export_clips(
                 tmp_path,
                 ffmpeg=ffmpeg_exe,
                 video_encoder=encoder,
+                video_bitrate=bitrate,
                 audio_encoder=audio_encoder,
                 include_audio=want_audio,
             )
@@ -454,7 +545,8 @@ def export_clips(
                 raise ExportError(
                     f"ffmpeg timed out exporting clip {number} of {len(plan)} "
                     f"[{media_range.start_seconds}, {media_range.end_seconds}s) "
-                    f"after {timeout_seconds}s."
+                    f"with video encoder {encoder!r} "
+                    f"after {timeout_seconds}s.{_hardware_failure_hint(encoder)}"
                 ) from exc
             except OSError as exc:
                 raise ExportError(
@@ -466,12 +558,15 @@ def export_clips(
                 raise ExportError(
                     f"ffmpeg failed exporting clip {number} of {len(plan)} "
                     f"[{media_range.start_seconds}, {media_range.end_seconds}s) "
+                    f"with video encoder {encoder!r} "
                     f"(exit {finished.returncode}){suffix}."
+                    f"{_hardware_failure_hint(encoder)}"
                 )
             if not Path(tmp_path).is_file() or Path(tmp_path).stat().st_size == 0:
                 raise ExportError(
                     f"ffmpeg did not produce output for clip {number} of {len(plan)} "
-                    f"[{media_range.start_seconds}, {media_range.end_seconds}s)."
+                    f"[{media_range.start_seconds}, {media_range.end_seconds}s) "
+                    f"with video encoder {encoder!r}.{_hardware_failure_hint(encoder)}"
                 )
             try:
                 os.replace(tmp_path, dest)
@@ -517,6 +612,7 @@ def build_compilation_ffmpeg_args(
     *,
     ffmpeg: str = "ffmpeg",
     video_encoder: str = DEFAULT_VIDEO_ENCODER,
+    video_bitrate: str = DEFAULT_VIDEO_BITRATE,
     audio_encoder: str = DEFAULT_AUDIO_ENCODER,
     include_audio: bool = False,
 ) -> list[str]:
@@ -527,7 +623,9 @@ def build_compilation_ffmpeg_args(
     the ``concat`` filter in the given (plan) order. Segments are placed
     back-to-back with no artificial gaps or padding. Stream copy is never
     used; video (and optional audio) are always re-encoded with explicit
-    encoders. The same inputs always produce the same array.
+    encoders (default VideoToolbox hardware H.264 at the ``video_bitrate``
+    review-band target; ``libx264`` remains selectable with preset/CRF).
+    The same inputs always produce the same array.
     """
     import math
 
@@ -536,6 +634,7 @@ def build_compilation_ffmpeg_args(
             f"invalid ffmpeg executable: {ffmpeg!r}; expected a non-blank string."
         )
     encoder = _check_encoder("video_encoder", video_encoder)
+    bitrate = _check_video_bitrate("video_bitrate", video_bitrate)
     if include_audio:
         _check_encoder("audio_encoder", audio_encoder)
     items = _check_ranges_sequence(ranges)
@@ -600,10 +699,7 @@ def build_compilation_ffmpeg_args(
         "[outv]",
         "-c:v",
         encoder,
-        "-preset",
-        "veryfast",
-        "-crf",
-        "18",
+        *_video_encoder_args(encoder, bitrate),
         "-pix_fmt",
         "yuv420p",
         "-movflags",
@@ -697,6 +793,7 @@ def _run_ffmpeg_for_output(
     dest: Path,
     label: str,
     timeout_seconds: float,
+    video_encoder: str = DEFAULT_VIDEO_ENCODER,
 ) -> None:
     try:
         finished = subprocess.run(
@@ -710,7 +807,9 @@ def _run_ffmpeg_for_output(
         raise _missing_tool_error(ffmpeg_exe) from exc
     except subprocess.TimeoutExpired as exc:
         raise ExportError(
-            f"ffmpeg timed out {label} after {timeout_seconds}s."
+            f"ffmpeg timed out {label} with video encoder "
+            f"{video_encoder!r} after {timeout_seconds}s."
+            f"{_hardware_failure_hint(video_encoder)}"
         ) from exc
     except OSError as exc:
         raise ExportError(
@@ -720,10 +819,15 @@ def _run_ffmpeg_for_output(
         detail = ((finished.stderr or "").strip() or (finished.stdout or "").strip())
         suffix = f": {detail}" if detail else ": no output"
         raise ExportError(
-            f"ffmpeg failed {label} (exit {finished.returncode}){suffix}."
+            f"ffmpeg failed {label} with video encoder {video_encoder!r} "
+            f"(exit {finished.returncode}){suffix}."
+            f"{_hardware_failure_hint(video_encoder)}"
         )
     if not Path(tmp_path).is_file() or Path(tmp_path).stat().st_size == 0:
-        raise ExportError(f"ffmpeg did not produce output {label}.")
+        raise ExportError(
+            f"ffmpeg did not produce output {label} with video encoder "
+            f"{video_encoder!r}.{_hardware_failure_hint(video_encoder)}"
+        )
     try:
         os.replace(tmp_path, dest)
     except OSError as exc:
@@ -741,6 +845,7 @@ def export_compilation(
     ffmpeg: str = "ffmpeg",
     ffprobe: str = "ffprobe",
     video_encoder: str = DEFAULT_VIDEO_ENCODER,
+    video_bitrate: str = DEFAULT_VIDEO_BITRATE,
     audio_encoder: str = DEFAULT_AUDIO_ENCODER,
     include_audio: bool | None = None,
     overwrite: bool = False,
@@ -752,7 +857,9 @@ def export_compilation(
     Segments are trimmed from the original source samples with exact
     filter-based trims and joined back-to-back with the ``concat`` filter:
     no dead-time gaps are inserted. The output is always re-encoded with
-    an explicit video encoder; stream copy is never used.
+    an explicit video encoder (default VideoToolbox hardware H.264 at the
+    ``video_bitrate`` review-band target; ``libx264`` selects software);
+    stream copy is never used.
 
     Args:
         source_video: Original source video; read only, never modified.
@@ -785,6 +892,7 @@ def export_compilation(
         raise ExportError(f"input video does not exist: {source_path}.")
     destination = Path(dest).expanduser()
     encoder = _check_encoder("video_encoder", video_encoder)
+    bitrate = _check_video_bitrate("video_bitrate", video_bitrate)
     if include_audio is True:
         _check_encoder("audio_encoder", audio_encoder)
     elif include_audio is not None and not isinstance(include_audio, bool):
@@ -850,6 +958,7 @@ def export_compilation(
             tmp_path,
             ffmpeg=ffmpeg_exe,
             video_encoder=encoder,
+            video_bitrate=bitrate,
             audio_encoder=audio_encoder,
             include_audio=want_audio,
         )
@@ -857,7 +966,7 @@ def export_compilation(
             f"exporting compilation of {len(plan)} range(s) "
             f"[{plan.ranges[0].start_seconds}, ..., {plan.ranges[-1].end_seconds}s)"
         )
-        _run_ffmpeg_for_output(args, ffmpeg_exe, tmp_path, destination, label, float(timeout_seconds))
+        _run_ffmpeg_for_output(args, ffmpeg_exe, tmp_path, destination, label, float(timeout_seconds), encoder)
         tmp_path = None
     except BaseException:
         _remove_quietly(tmp_path)
@@ -875,6 +984,7 @@ def export_outputs(
     ffmpeg: str = "ffmpeg",
     ffprobe: str = "ffprobe",
     video_encoder: str = DEFAULT_VIDEO_ENCODER,
+    video_bitrate: str = DEFAULT_VIDEO_BITRATE,
     audio_encoder: str = DEFAULT_AUDIO_ENCODER,
     include_audio: bool | None = None,
     overwrite: bool = False,
@@ -909,6 +1019,8 @@ def export_outputs(
     source_path = Path(source_video).expanduser()
     if not source_path.is_file():
         raise ExportError(f"input video does not exist: {source_path}.")
+    _check_encoder("video_encoder", video_encoder)
+    _check_video_bitrate("video_bitrate", video_bitrate)
     out_dir = Path(output_dir).expanduser()
     compilation_dest = out_dir / COMPILATION_FILENAME
     clips_dir = out_dir / CLIPS_SUBDIR
@@ -947,6 +1059,7 @@ def export_outputs(
             ffmpeg=ffmpeg,
             ffprobe=ffprobe,
             video_encoder=video_encoder,
+            video_bitrate=video_bitrate,
             audio_encoder=audio_encoder,
             include_audio=include_audio,
             overwrite=overwrite,
@@ -962,6 +1075,7 @@ def export_outputs(
             ffmpeg=ffmpeg,
             ffprobe=ffprobe,
             video_encoder=video_encoder,
+            video_bitrate=video_bitrate,
             audio_encoder=audio_encoder,
             include_audio=include_audio,
             overwrite=overwrite,

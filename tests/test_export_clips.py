@@ -18,7 +18,10 @@ import pytest
 from serve_review.domain import ExportPlan, ExportPlanError, MediaRange, SourceMetadata
 from serve_review.media import export as export_module
 from serve_review.media.export import (
+    DEFAULT_VIDEO_BITRATE,
+    DEFAULT_VIDEO_BITRATE_BPS,
     DEFAULT_VIDEO_ENCODER,
+    SOFTWARE_VIDEO_ENCODER,
     ExportCancelled,
     ExportCollisionError,
     ExportError,
@@ -400,6 +403,166 @@ def test_explicit_encoder_selection_reaches_ffmpeg(
 
 @NEEDS_TOOLS
 def test_default_encoder_is_explicit_and_never_stream_copy() -> None:
-    assert DEFAULT_VIDEO_ENCODER == "libx264"
+    assert DEFAULT_VIDEO_ENCODER == "h264_videotoolbox"
+    assert SOFTWARE_VIDEO_ENCODER == "libx264"
     args = build_ffmpeg_args("a.mov", 0.0, 0.5, "t.mov")
     assert args[args.index("-c:v") + 1] == DEFAULT_VIDEO_ENCODER
+    assert "copy" not in args
+    # Hardware default carries an explicit review-band bitrate target;
+    # libx264-specific preset/CRF flags are never emitted for VideoToolbox.
+    assert args[args.index("-b:v") + 1] == DEFAULT_VIDEO_BITRATE
+    assert "-preset" not in args and "-crf" not in args
+
+
+def test_default_bitrate_is_documented_review_band_target() -> None:
+    assert DEFAULT_VIDEO_BITRATE_BPS == 6_000_000
+    assert DEFAULT_VIDEO_BITRATE == "6M"
+    from serve_review.media import export as export_mod
+
+    assert (
+        export_mod.REVIEW_VIDEO_BITRATE_MIN_BPS
+        <= DEFAULT_VIDEO_BITRATE_BPS
+        <= export_mod.REVIEW_VIDEO_BITRATE_MAX_BPS
+    )
+    assert 4_000_000 <= export_mod._parse_video_bitrate_to_bps(
+        DEFAULT_VIDEO_BITRATE
+    ) <= 8_000_000
+
+
+def test_libx264_override_keeps_software_options() -> None:
+    args = build_ffmpeg_args("a.mov", 0.0, 0.5, "t.mov", video_encoder="libx264")
+    assert args[args.index("-c:v") + 1] == "libx264"
+    assert "-b:v" not in args
+    assert args[args.index("-preset") + 1] == "veryfast"
+    assert args[args.index("-crf") + 1] == "18"
+
+
+def test_build_ffmpeg_args_rejects_bad_bitrate() -> None:
+    with pytest.raises(ExportError, match="video_bitrate"):
+        build_ffmpeg_args("a.mov", 0.0, 0.5, "t.mov", video_bitrate="  ")
+    with pytest.raises(ExportError, match="video_bitrate"):
+        build_ffmpeg_args("a.mov", 0.0, 0.5, "t.mov", video_bitrate="bogus")
+
+
+def _hardware_available() -> bool:
+    try:
+        done = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-h", "encoder=h264_videotoolbox"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except OSError:
+        return False
+    return done.returncode == 0
+
+
+NEEDS_VIDEOTOOLBOX = pytest.mark.skipif(
+    not ffmpeg_available() or not _hardware_available(),
+    reason="h264_videotoolbox encoder is required for hardware export tests",
+)
+
+
+def _probe_video_codec(path: Path) -> str:
+    done = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name", "-of",
+            "default=noprint_wrappers=1:nokey=1", str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout.strip()
+
+
+@NEEDS_VIDEOTOOLBOX
+def test_hardware_default_clip_is_valid_portrait_and_landscape(
+    tmp_path: Path,
+) -> None:
+    for orientation in ("landscape", "portrait"):
+        video, meta = _make_source(
+            tmp_path, orientation=orientation, name=f"hw-{orientation}.mov"
+        )
+        plan = ExportPlan.for_source(meta, [MediaRange(0.2, 0.7)])
+        (clip,) = export_clips(
+            video, plan, tmp_path / f"hw-clips-{orientation}", source=meta
+        )
+        assert clip.is_file() and clip.stat().st_size > 0
+        probed = probe_source(clip)
+        assert _probe_video_codec(clip) == "h264"
+        assert (probed.width, probed.height) == (meta.width, meta.height)
+        assert probed.rotation_degrees == meta.rotation_degrees
+        assert probed.duration_seconds == pytest.approx(
+            0.5, abs=_sample_tolerance(meta)
+        )
+
+
+@NEEDS_VIDEOTOOLBOX
+def test_hardware_bitrate_target_within_review_band(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5)])
+    (clip,) = export_clips(video, plan, tmp_path / "hw-rate", source=meta)
+    from serve_review.media import export as export_mod
+
+    target_bps = export_mod._parse_video_bitrate_to_bps(DEFAULT_VIDEO_BITRATE)
+    assert 4_000_000 <= target_bps <= 8_000_000
+    # Tiny synthetic fixtures cannot saturate a 6 Mbps CBR target; the
+    # measured average must simply be sane and below a generous ceiling.
+    measured_bps = 8 * clip.stat().st_size / probe_source(clip).duration_seconds
+    assert measured_bps > 10_000
+    assert measured_bps < 12_000_000
+
+
+@NEEDS_VIDEOTOOLBOX
+def test_hardware_trim_accuracy_matches_software_path(tmp_path: Path) -> None:
+    video, meta = _make_source(tmp_path)
+    ranges = [MediaRange(0.2, 0.7), MediaRange(1.2, 1.8)]
+    plan = ExportPlan.for_source(meta, ranges)
+    tolerance = _sample_tolerance(meta)
+    hw_clips = export_clips(video, plan, tmp_path / "hw-trim", source=meta)
+    sw_clips = export_clips(
+        video, plan, tmp_path / "sw-trim", source=meta,
+        video_encoder="libx264",
+    )
+    assert [p.name for p in hw_clips] == [p.name for p in sw_clips]
+    for hw, sw, expected in zip(hw_clips, sw_clips, ranges):
+        hw_dur = probe_source(hw).duration_seconds
+        sw_dur = probe_source(sw).duration_seconds
+        assert hw_dur == pytest.approx(expected.duration_seconds, abs=tolerance)
+        assert sw_dur == pytest.approx(expected.duration_seconds, abs=tolerance)
+        assert hw_dur == pytest.approx(sw_dur, abs=tolerance)
+
+
+@NEEDS_TOOLS
+def test_hardware_failure_names_encoder_and_cleans_up(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video, meta = _make_source(tmp_path)
+    out_dir = tmp_path / "hw-fail"
+    plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5)])
+    real_run = subprocess.run
+
+    def _fail(args, **kwargs):
+        if str(args[0]).endswith("ffprobe"):
+            return real_run(args, **kwargs)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=1,
+            stdout="",
+            stderr=(
+                "[h264_videotoolbox @ 0x123] Error encoding frame: "
+                "hardware unavailable (-12908)"
+            ),
+        )
+
+    monkeypatch.setattr(export_module.subprocess, "run", _fail)
+    with pytest.raises(ExportError) as excinfo:
+        export_clips(video, plan, out_dir, source=meta)
+    message = str(excinfo.value)
+    assert "h264_videotoolbox" in message
+    assert "hardware unavailable" in message
+    assert not (out_dir / "serve-001.mov").exists()
+    assert _tmp_leftovers(out_dir) == []
