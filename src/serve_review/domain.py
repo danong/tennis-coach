@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 __all__ = [
@@ -22,17 +24,27 @@ __all__ = [
     "EXPORT_PLAN_SCHEMA_VERSION",
     "ATTEMPT_SCHEMA_VERSION",
     "ATTEMPT_DOCUMENT_SCHEMA_VERSION",
+    "PHASE_SCHEMA_VERSION",
+    "STAGE_ORDER",
+    "STAGE_KEYS",
+    "STAGE_AVAILABILITIES",
+    "STAGE_PROVENANCES",
+    "STRUCTURAL_STATUSES",
     "DomainError",
     "SchemaVersionError",
     "SourceMetadataError",
     "RangeError",
     "ExportPlanError",
     "AttemptError",
+    "PhaseError",
     "SourceMetadata",
     "MediaRange",
     "ExportPlan",
     "Attempt",
     "AttemptDocument",
+    "StagePhase",
+    "AttemptPhase",
+    "PhaseDocument",
 ]
 
 SOURCE_SCHEMA_VERSION = 1
@@ -1175,3 +1187,779 @@ class AttemptDocument:
     @classmethod
     def from_json(cls, data: str | bytes | bytearray) -> AttemptDocument:
         return cls.from_dict(_loads_object("attempt_document", data))
+
+
+# --- Kovacs eight-stage phase schema (M4.1) ---------------------------------
+#
+# Pure, versioned, immutable representation for serve-phase analysis.
+# No inference, feature extraction, solver logic, or file I/O lives here.
+#
+# Canonical source time (decimal seconds of the source timeline) is the only
+# temporal authority. Every stage interval/keyframe lies inside its owning
+# unpadded attempt range. Public stage keys are concise; method caveats
+# (body-pose estimates, no racket/ball observation, audio-anchored contact)
+# belong in provenance/evidence/limitations, never in renamed stage keys.
+
+PHASE_SCHEMA_VERSION = 1
+
+STAGE_ORDER: tuple[str, ...] = (
+    "start",
+    "release",
+    "loading",
+    "cocking",
+    "acceleration",
+    "contact",
+    "deceleration",
+    "finish",
+)
+STAGE_KEYS: tuple[str, ...] = STAGE_ORDER
+
+STAGE_AVAILABILITIES: tuple[str, ...] = ("available", "partial", "unavailable")
+STAGE_PROVENANCES: tuple[str, ...] = (
+    "body_pose",
+    "audio_transient",
+    "body_pose_audio",
+    "manual",
+)
+STRUCTURAL_STATUSES: tuple[str, ...] = (
+    "complete",
+    "partial",
+    "incomplete",
+    "unavailable",
+)
+
+_CONTACT_AUDIO_PROVENANCES: tuple[str, ...] = ("audio_transient", "body_pose_audio")
+_CONTACT_ALLOWED_PROVENANCES: tuple[str, ...] = (
+    "audio_transient",
+    "body_pose_audio",
+    "manual",
+)
+
+
+class PhaseError(DomainError):
+    """Raised when a phase stage, attempt phase, or phase document is invalid."""
+
+
+def _check_phase_attempt_id(name: str, value: Any) -> str:
+    try:
+        return _check_attempt_id(name, value)
+    except AttemptError as exc:
+        raise PhaseError(str(exc)) from exc
+
+
+def _check_phase_confidence(name: str, value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise PhaseError(
+            f"{name}: 'confidence' must be a finite number in [0, 1], "
+            f"got {value!r}."
+        )
+    number = float(value)
+    if not math.isfinite(number) or number < 0.0 or number > 1.0:
+        raise PhaseError(
+            f"{name}: 'confidence' must lie in [0, 1], got {value!r}."
+        )
+    return number
+
+
+def _check_phase_keyframe(name: str, value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise PhaseError(
+            f"{name}: 'keyframe_seconds' must be a finite number or null, "
+            f"got {value!r}."
+        )
+    number = float(value)
+    if not math.isfinite(number) or number < 0.0:
+        raise PhaseError(
+            f"{name}: 'keyframe_seconds' must be finite and >= 0, "
+            f"got {value!r}."
+        )
+    return number
+
+
+def _check_phase_uncertainty(name: str, value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise PhaseError(
+            f"{name}: 'temporal_uncertainty_seconds' must be a finite "
+            f"number >= 0 or null, got {value!r}."
+        )
+    number = float(value)
+    if not math.isfinite(number) or number < 0.0:
+        raise PhaseError(
+            f"{name}: 'temporal_uncertainty_seconds' must be finite and "
+            f">= 0, got {value!r}."
+        )
+    return number
+
+
+def _check_str_collection(name: str, key: str, value: Any) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise PhaseError(
+            f"{name}: {key!r} must be a list or tuple of non-blank strings, "
+            f"got {type(value).__name__}."
+        )
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise PhaseError(
+                f"{name}: {key!r} entries must be non-blank strings, "
+                f"got {entry!r}."
+            )
+        if entry in seen:
+            raise PhaseError(
+                f"{name}: {key!r} must not contain duplicates, "
+                f"got {entry!r}."
+            )
+        seen.add(entry)
+        cleaned.append(entry)
+    return tuple(cleaned)
+
+
+def _check_phase_schema_version(name: str, values: dict[str, Any]) -> int:
+    try:
+        return _check_schema_version(name, values, PHASE_SCHEMA_VERSION)
+    except SchemaVersionError:
+        raise
+    except DomainError as exc:
+        raise PhaseError(str(exc)) from exc
+
+
+@dataclass(frozen=True, slots=True)
+class StagePhase:
+    """One immutable estimate for a single Kovacs stage.
+
+    ``interval`` is a half-open ``[start, end)`` source-time range or null.
+    ``keyframe_seconds`` is an optional representative source time inside
+    ``interval``. ``temporal_uncertainty_seconds`` is an optional finite
+    nonnegative uncertainty width. ``evidence``/``limitations`` are
+    machine-readable identifier collections (possibly empty).
+
+    An ``unavailable`` stage honestly carries no observation: ``interval``,
+    ``keyframe_seconds``, and ``temporal_uncertainty_seconds`` are forbidden
+    (must be null). ``confidence``, ``provenance``, ``evidence``, and
+    ``limitations`` are still validated normally. ``available``/``partial``
+    stages require a non-null ``interval``; keyframe/uncertainty are optional
+    except for audio-anchored contact (enforced at the attempt level).
+    """
+
+    availability: str = "unavailable"
+    provenance: str = "body_pose"
+    confidence: float = 0.0
+    interval: MediaRange | None = None
+    keyframe_seconds: float | None = None
+    temporal_uncertainty_seconds: float | None = None
+    evidence: tuple[str, ...] = ()
+    limitations: tuple[str, ...] = ()
+    schema_version: int = PHASE_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        name = "stage_phase"
+        version = self.schema_version
+        if not _is_int(version):
+            raise PhaseError(
+                f"{name}: 'schema_version' must be an integer, got {version!r}."
+            )
+        if version != PHASE_SCHEMA_VERSION:
+            if version > PHASE_SCHEMA_VERSION:
+                raise SchemaVersionError(
+                    f"{name}: unsupported newer schema_version {version!r}; "
+                    f"this build supports version {PHASE_SCHEMA_VERSION}."
+                )
+            raise SchemaVersionError(
+                f"{name}: unsupported schema_version {version!r}; "
+                f"expected version {PHASE_SCHEMA_VERSION}."
+            )
+        if self.availability not in STAGE_AVAILABILITIES:
+            raise PhaseError(
+                f"{name}: 'availability' must be one of "
+                f"{list(STAGE_AVAILABILITIES)}, got {self.availability!r}."
+            )
+        if self.provenance not in STAGE_PROVENANCES:
+            raise PhaseError(
+                f"{name}: 'provenance' must be one of "
+                f"{list(STAGE_PROVENANCES)}, got {self.provenance!r}."
+            )
+        object.__setattr__(
+            self, "confidence", _check_phase_confidence(name, self.confidence)
+        )
+        interval = self.interval
+        if self.availability == "unavailable":
+            if interval is not None:
+                raise PhaseError(
+                    f"{name}: 'interval' must be null for unavailable stages, "
+                    f"got {interval!r}."
+                )
+            if self.keyframe_seconds is not None:
+                raise PhaseError(
+                    f"{name}: 'keyframe_seconds' must be null for unavailable "
+                    f"stages, got {self.keyframe_seconds!r}."
+                )
+            if self.temporal_uncertainty_seconds is not None:
+                raise PhaseError(
+                    f"{name}: 'temporal_uncertainty_seconds' must be null for "
+                    f"unavailable stages, got "
+                    f"{self.temporal_uncertainty_seconds!r}."
+                )
+        else:
+            if not isinstance(interval, MediaRange):
+                raise PhaseError(
+                    f"{name}: 'interval' must be a MediaRange for "
+                    f"{self.availability!r} stages, got {interval!r}."
+                )
+        object.__setattr__(
+            self,
+            "keyframe_seconds",
+            _check_phase_keyframe(name, self.keyframe_seconds),
+        )
+        object.__setattr__(
+            self,
+            "temporal_uncertainty_seconds",
+            _check_phase_uncertainty(name, self.temporal_uncertainty_seconds),
+        )
+        keyframe = self.keyframe_seconds
+        if keyframe is not None:
+            if not isinstance(interval, MediaRange):
+                raise PhaseError(
+                    f"{name}: 'keyframe_seconds' requires a non-null interval."
+                )
+            if not interval.contains(keyframe) and not (
+                keyframe == interval.start_seconds
+            ):
+                # contains() already covers [start, end); keep explicit check
+                # readable for boundary diagnostics.
+                raise PhaseError(
+                    f"{name}: 'keyframe_seconds' ({keyframe!r}) must lie in "
+                    f"interval [{interval.start_seconds!r}, "
+                    f"{interval.end_seconds!r})."
+                )
+            if not (interval.start_seconds <= keyframe < interval.end_seconds):
+                raise PhaseError(
+                    f"{name}: 'keyframe_seconds' ({keyframe!r}) must lie in "
+                    f"interval [{interval.start_seconds!r}, "
+                    f"{interval.end_seconds!r})."
+                )
+        object.__setattr__(
+            self, "evidence", _check_str_collection(name, "'evidence'", self.evidence)
+        )
+        object.__setattr__(
+            self,
+            "limitations",
+            _check_str_collection(name, "'limitations'", self.limitations),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "availability": self.availability,
+            "confidence": self.confidence,
+            "evidence": list(self.evidence),
+            "interval": self.interval.to_dict() if self.interval is not None else None,
+            "keyframe_seconds": self.keyframe_seconds,
+            "limitations": list(self.limitations),
+            "provenance": self.provenance,
+            "schema_version": self.schema_version,
+            "temporal_uncertainty_seconds": self.temporal_uncertainty_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> StagePhase:
+        name = "stage_phase"
+        if not isinstance(values, dict):
+            raise PhaseError(
+                f"{name}: mapping is required, got {type(values).__name__}."
+            )
+        known = {
+            "availability",
+            "confidence",
+            "evidence",
+            "interval",
+            "keyframe_seconds",
+            "limitations",
+            "provenance",
+            "schema_version",
+            "temporal_uncertainty_seconds",
+        }
+        missing = sorted(known - set(values))
+        if missing:
+            raise PhaseError(f"{name}: missing required keys {missing!r}.")
+        try:
+            _check_no_unknown_keys(name, values, known)
+        except DomainError as exc:
+            raise PhaseError(str(exc)) from exc
+        _check_phase_schema_version(name, values)
+        raw_interval = values["interval"]
+        interval: MediaRange | None
+        if raw_interval is None:
+            interval = None
+        elif isinstance(raw_interval, dict):
+            try:
+                interval = MediaRange.from_dict(raw_interval)
+            except DomainError as exc:
+                raise PhaseError(f"{name}: invalid 'interval': {exc}.") from exc
+        else:
+            raise PhaseError(
+                f"{name}: 'interval' must be a range object or null, "
+                f"got {type(raw_interval).__name__}."
+            )
+        return cls(
+            availability=values["availability"],
+            provenance=values["provenance"],
+            confidence=values["confidence"],
+            interval=interval,
+            keyframe_seconds=values["keyframe_seconds"],
+            temporal_uncertainty_seconds=values["temporal_uncertainty_seconds"],
+            evidence=values["evidence"],
+            limitations=values["limitations"],
+            schema_version=values["schema_version"],
+        )
+
+    def to_json(self) -> str:
+        return _dumps_deterministic(self.to_dict())
+
+    @classmethod
+    def from_json(cls, data: str | bytes | bytearray) -> StagePhase:
+        return cls.from_dict(_loads_object("stage_phase", data))
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptPhase:
+    """Phase result for one unpadded attempt range.
+
+    ``attempt_range`` is the owning unpadded half-open source-time range.
+    ``stages`` maps each of the eight concise stage keys to a
+    :class:`StagePhase`, stored as a read-only mapping in canonical
+    :data:`STAGE_ORDER`. ``structural_status`` is ``complete`` iff every
+    stage is ``available``; ``unavailable`` iff every stage is
+    ``unavailable``; ``partial`` iff at least one stage is ``available``
+    without all being ``available``; otherwise ``incomplete`` (some
+    ``partial`` evidence but no ``available`` stage). ``anomalies`` are
+    stable machine-readable identifiers (possibly empty).
+
+    Available/partial stage intervals must lie inside ``attempt_range`` and
+    run chronologically without overlap; keyframes follow the same order.
+    An available/partial ``contact`` must use ``audio_transient``,
+    ``body_pose_audio``, or ``manual`` provenance (never body-only visual
+    contact); audio-anchored contact additionally requires a non-null
+    keyframe inside its interval and a finite nonnegative uncertainty.
+    """
+
+    attempt_id: str = ""
+    attempt_range: MediaRange = field(
+        default_factory=lambda: MediaRange(0.0, 0.1)
+    )
+    method_version: str = ""
+    config_id: str = ""
+    stages: Mapping[str, StagePhase] = field(default_factory=dict)  # type: ignore[assignment]
+    structural_status: str = "unavailable"
+    anomalies: tuple[str, ...] = ()
+    schema_version: int = PHASE_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        name = "attempt_phase"
+        version = self.schema_version
+        if not _is_int(version):
+            raise PhaseError(
+                f"{name}: 'schema_version' must be an integer, got {version!r}."
+            )
+        if version != PHASE_SCHEMA_VERSION:
+            if version > PHASE_SCHEMA_VERSION:
+                raise SchemaVersionError(
+                    f"{name}: unsupported newer schema_version {version!r}; "
+                    f"this build supports version {PHASE_SCHEMA_VERSION}."
+                )
+            raise SchemaVersionError(
+                f"{name}: unsupported schema_version {version!r}; "
+                f"expected version {PHASE_SCHEMA_VERSION}."
+            )
+        object.__setattr__(
+            self, "attempt_id", _check_phase_attempt_id(name, self.attempt_id)
+        )
+        attempt_range = self.attempt_range
+        if not isinstance(attempt_range, MediaRange):
+            raise PhaseError(
+                f"{name}: 'attempt_range' must be a MediaRange, "
+                f"got {type(attempt_range).__name__}."
+            )
+        try:
+            _check_non_blank(name, "method_version", self.method_version)
+        except DomainError as exc:
+            raise PhaseError(str(exc)) from exc
+        try:
+            _check_non_blank(name, "config_id", self.config_id)
+        except DomainError as exc:
+            raise PhaseError(str(exc)) from exc
+        if self.structural_status not in STRUCTURAL_STATUSES:
+            raise PhaseError(
+                f"{name}: 'structural_status' must be one of "
+                f"{list(STRUCTURAL_STATUSES)}, got {self.structural_status!r}."
+            )
+        object.__setattr__(
+            self, "anomalies", _check_str_collection(name, "'anomalies'", self.anomalies)
+        )
+        raw = self.stages
+        if not isinstance(raw, Mapping):
+            raise PhaseError(
+                f"{name}: 'stages' must be a mapping of stage key to "
+                f"StagePhase, got {type(raw).__name__}."
+            )
+        raw_keys = set(raw.keys())
+        expected_keys = set(STAGE_ORDER)
+        if raw_keys != expected_keys:
+            raise PhaseError(
+                f"{name}: 'stages' must contain exactly the eight stage keys "
+                f"{list(STAGE_ORDER)}, got {sorted(raw_keys)!r}."
+            )
+        for key in STAGE_ORDER:
+            entry = raw[key]
+            if not isinstance(entry, StagePhase):
+                raise PhaseError(
+                    f"{name}: stage {key!r} must be a StagePhase, "
+                    f"got {type(entry).__name__}."
+                )
+        ordered = MappingProxyType({key: raw[key] for key in STAGE_ORDER})
+        object.__setattr__(self, "stages", ordered)
+        # Containment inside the unpadded attempt.
+        for key in STAGE_ORDER:
+            stage = ordered[key]
+            if stage.availability in ("available", "partial"):
+                interval = stage.interval
+                assert isinstance(interval, MediaRange)
+                if interval.start_seconds < attempt_range.start_seconds or (
+                    interval.end_seconds > attempt_range.end_seconds
+                ):
+                    raise PhaseError(
+                        f"{name}: stage {key!r} interval "
+                        f"{interval.to_dict()!r} must lie inside attempt range "
+                        f"{attempt_range.to_dict()!r}."
+                    )
+        # Chronological ordering over available/partial intervals/keyframes.
+        previous_end: float | None = None
+        previous_keyframe: float | None = None
+        previous_key: str | None = None
+        for key in STAGE_ORDER:
+            stage = ordered[key]
+            if stage.availability not in ("available", "partial"):
+                continue
+            assert isinstance(stage.interval, MediaRange)
+            start = stage.interval.start_seconds
+            end = stage.interval.end_seconds
+            if previous_end is not None and start < previous_end:
+                assert previous_key is not None
+                raise PhaseError(
+                    f"{name}: stage {key!r} interval starts at {start!r} "
+                    f"before previous stage {previous_key!r} ends at "
+                    f"{previous_end!r}; stages must be chronological."
+                )
+            previous_end = end
+            previous_key = key
+            if stage.keyframe_seconds is not None:
+                if (
+                    previous_keyframe is not None
+                    and stage.keyframe_seconds < previous_keyframe
+                ):
+                    raise PhaseError(
+                        f"{name}: stage {key!r} keyframe "
+                        f"({stage.keyframe_seconds!r}) precedes earlier keyframe "
+                        f"({previous_keyframe!r}); keyframes must be chronological."
+                    )
+                previous_keyframe = stage.keyframe_seconds
+        # Honest contact provenance: never visually observed contact.
+        contact = ordered["contact"]
+        if contact.availability in ("available", "partial"):
+            if contact.provenance not in _CONTACT_ALLOWED_PROVENANCES:
+                raise PhaseError(
+                    f"{name}: contact with {contact.availability!r} availability "
+                    f"must use provenance one of "
+                    f"{list(_CONTACT_ALLOWED_PROVENANCES)}, got "
+                    f"{contact.provenance!r}; body-only contact must never claim "
+                    f"visually observed contact."
+                )
+            if contact.provenance in _CONTACT_AUDIO_PROVENANCES:
+                if contact.keyframe_seconds is None:
+                    raise PhaseError(
+                        f"{name}: contact with {contact.provenance!r} provenance "
+                        f"requires a non-null keyframe_seconds audio anchor."
+                    )
+                if contact.temporal_uncertainty_seconds is None:
+                    raise PhaseError(
+                        f"{name}: contact with {contact.provenance!r} provenance "
+                        f"requires finite nonnegative "
+                        f"temporal_uncertainty_seconds."
+                    )
+        # Structural status consistency.
+        counts = {value: 0 for value in STAGE_AVAILABILITIES}
+        for key in STAGE_ORDER:
+            counts[ordered[key].availability] += 1
+        expected: str
+        if counts["available"] == len(STAGE_ORDER):
+            expected = "complete"
+        elif counts["unavailable"] == len(STAGE_ORDER):
+            expected = "unavailable"
+        elif counts["available"] >= 1:
+            expected = "partial"
+        else:
+            expected = "incomplete"
+        if self.structural_status != expected:
+            raise PhaseError(
+                f"{name}: 'structural_status' {self.structural_status!r} is "
+                f"inconsistent with stage availabilities "
+                f"{counts!r}; expected {expected!r}."
+            )
+
+    def stage(self, key: str) -> StagePhase:
+        """Return the :class:`StagePhase` for canonical stage ``key``."""
+        try:
+            return self.stages[key]  # type: ignore[index]
+        except KeyError as exc:
+            raise PhaseError(
+                f"attempt_phase: unknown stage key {key!r}."
+            ) from exc
+
+    def to_dict(self) -> dict[str, Any]:
+        stages = self.stages
+        assert isinstance(stages, Mapping)
+        return {
+            "anomalies": list(self.anomalies),
+            "attempt_id": self.attempt_id,
+            "attempt_range": self.attempt_range.to_dict(),
+            "config_id": self.config_id,
+            "method_version": self.method_version,
+            "schema_version": self.schema_version,
+            "stages": {key: stages[key].to_dict() for key in STAGE_ORDER},
+            "structural_status": self.structural_status,
+        }
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> AttemptPhase:
+        name = "attempt_phase"
+        if not isinstance(values, dict):
+            raise PhaseError(
+                f"{name}: mapping is required, got {type(values).__name__}."
+            )
+        known = {
+            "anomalies",
+            "attempt_id",
+            "attempt_range",
+            "config_id",
+            "method_version",
+            "schema_version",
+            "stages",
+            "structural_status",
+        }
+        missing = sorted(known - set(values))
+        if missing:
+            raise PhaseError(f"{name}: missing required keys {missing!r}.")
+        try:
+            _check_no_unknown_keys(name, values, known)
+        except DomainError as exc:
+            raise PhaseError(str(exc)) from exc
+        _check_phase_schema_version(name, values)
+        raw_range = values["attempt_range"]
+        if not isinstance(raw_range, dict):
+            raise PhaseError(
+                f"{name}: 'attempt_range' must be a range object, "
+                f"got {type(raw_range).__name__}."
+            )
+        try:
+            attempt_range = MediaRange.from_dict(raw_range)
+        except DomainError as exc:
+            raise PhaseError(f"{name}: invalid 'attempt_range': {exc}.") from exc
+        raw_stages = values["stages"]
+        if not isinstance(raw_stages, dict):
+            raise PhaseError(
+                f"{name}: 'stages' must be a mapping of stage key to object, "
+                f"got {type(raw_stages).__name__}."
+            )
+        parsed: dict[str, StagePhase] = {}
+        for key, payload in raw_stages.items():
+            if key not in STAGE_ORDER:
+                raise PhaseError(
+                    f"{name}: unknown stage key {key!r}."
+                )
+            if not isinstance(payload, dict):
+                raise PhaseError(
+                    f"{name}: stage {key!r} must decode from a mapping, "
+                    f"got {type(payload).__name__}."
+                )
+            try:
+                parsed[key] = StagePhase.from_dict(payload)
+            except DomainError as exc:
+                raise PhaseError(
+                    f"{name}: invalid stage {key!r}: {exc}."
+                ) from exc
+        return cls(
+            attempt_id=values["attempt_id"],
+            attempt_range=attempt_range,
+            method_version=values["method_version"],
+            config_id=values["config_id"],
+            stages=parsed,
+            structural_status=values["structural_status"],
+            anomalies=values["anomalies"],
+            schema_version=values["schema_version"],
+        )
+
+    def to_json(self) -> str:
+        return _dumps_deterministic(self.to_dict())
+
+    @classmethod
+    def from_json(cls, data: str | bytes | bytearray) -> AttemptPhase:
+        return cls.from_dict(_loads_object("attempt_phase", data))
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseDocument:
+    """Versioned, immutable top-level phase result for ``checkpoints.json``.
+
+    ``attempts`` is an ordered tuple of :class:`AttemptPhase` sorted by
+    ``(attempt_range.start, attempt_range.end)`` with unique ``attempt_id``
+    values and pairwise non-overlapping (adjacency allowed) unpadded ranges
+    fully inside ``[0, source_duration_seconds]``. An empty tuple honestly
+    represents no phase results. All times are canonical source times.
+    """
+
+    source_fingerprint: str = ""
+    source_duration_seconds: float = 0.0
+    attempts: tuple[AttemptPhase, ...] = ()
+    schema_version: int = PHASE_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        name = "phase_document"
+        version = self.schema_version
+        if not _is_int(version):
+            raise PhaseError(
+                f"{name}: 'schema_version' must be an integer, got {version!r}."
+            )
+        if version != PHASE_SCHEMA_VERSION:
+            if version > PHASE_SCHEMA_VERSION:
+                raise SchemaVersionError(
+                    f"{name}: unsupported newer schema_version {version!r}; "
+                    f"this build supports version {PHASE_SCHEMA_VERSION}."
+                )
+            raise SchemaVersionError(
+                f"{name}: unsupported schema_version {version!r}; "
+                f"expected version {PHASE_SCHEMA_VERSION}."
+            )
+        try:
+            _check_non_blank(name, "source_fingerprint", self.source_fingerprint)
+        except DomainError as exc:
+            raise PhaseError(str(exc)) from exc
+        try:
+            duration = _check_finite_positive(
+                name, "'source_duration_seconds'", self.source_duration_seconds
+            )
+        except DomainError as exc:
+            raise PhaseError(str(exc)) from exc
+        object.__setattr__(self, "source_duration_seconds", duration)
+        raw = self.attempts
+        if isinstance(raw, AttemptPhase):
+            raise PhaseError(
+                f"{name}: 'attempts' must be a sequence of AttemptPhase, "
+                f"got a single AttemptPhase."
+            )
+        if not isinstance(raw, (list, tuple)):
+            raise PhaseError(
+                f"{name}: 'attempts' must be a list or tuple of AttemptPhase, "
+                f"got {type(raw).__name__}."
+            )
+        normalized = tuple(raw)
+        for entry in normalized:
+            if not isinstance(entry, AttemptPhase):
+                raise PhaseError(
+                    f"{name}: every attempt must be an AttemptPhase, "
+                    f"got {type(entry).__name__}."
+                )
+            if entry.attempt_range.end_seconds > duration:
+                raise PhaseError(
+                    f"{name}: attempt {entry.attempt_id!r} range "
+                    f"{entry.attempt_range.to_dict()!r} extends beyond source "
+                    f"duration ({duration!r})."
+                )
+        object.__setattr__(self, "attempts", normalized)
+        seen = [entry.attempt_id for entry in normalized]
+        if len(set(seen)) != len(seen):
+            raise PhaseError(f"{name}: duplicate attempt_id values {seen!r}.")
+        for first, second in zip(normalized, normalized[1:]):
+            first_key = (
+                first.attempt_range.start_seconds,
+                first.attempt_range.end_seconds,
+            )
+            second_key = (
+                second.attempt_range.start_seconds,
+                second.attempt_range.end_seconds,
+            )
+            if second_key < first_key:
+                raise PhaseError(
+                    f"{name}: attempts must be sorted by attempt range; "
+                    f"{first.attempt_id!r} precedes {second.attempt_id!r}."
+                )
+            if first.attempt_range.overlaps(second.attempt_range):
+                raise PhaseError(
+                    f"{name}: attempt ranges must not overlap; "
+                    f"{first.attempt_range.to_dict()!r} overlaps "
+                    f"{second.attempt_range.to_dict()!r}."
+                )
+
+    def __len__(self) -> int:
+        return len(self.attempts)
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        return iter(self.attempts)
+
+    def __getitem__(self, index):  # type: ignore[no-untyped-def]
+        return self.attempts[index]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "attempts": [entry.to_dict() for entry in self.attempts],
+            "schema_version": self.schema_version,
+            "source_duration_seconds": self.source_duration_seconds,
+            "source_fingerprint": self.source_fingerprint,
+        }
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> PhaseDocument:
+        name = "phase_document"
+        if not isinstance(values, dict):
+            raise PhaseError(
+                f"{name}: mapping is required, got {type(values).__name__}."
+            )
+        known = {
+            "attempts",
+            "schema_version",
+            "source_duration_seconds",
+            "source_fingerprint",
+        }
+        missing = sorted(known - set(values))
+        if missing:
+            raise PhaseError(f"{name}: missing required keys {missing!r}.")
+        try:
+            _check_no_unknown_keys(name, values, known)
+        except DomainError as exc:
+            raise PhaseError(str(exc)) from exc
+        _check_phase_schema_version(name, values)
+        raw_attempts = values["attempts"]
+        if not isinstance(raw_attempts, (list, tuple)):
+            raise PhaseError(
+                f"{name}: 'attempts' must be a list of attempt objects, "
+                f"got {type(raw_attempts).__name__}."
+            )
+        try:
+            parsed = tuple(AttemptPhase.from_dict(entry) for entry in raw_attempts)
+        except DomainError as exc:
+            raise PhaseError(f"{name}: invalid attempt: {exc}.") from exc
+        return cls(
+            source_fingerprint=values["source_fingerprint"],
+            source_duration_seconds=values["source_duration_seconds"],
+            attempts=parsed,
+            schema_version=values["schema_version"],
+        )
+
+    def to_json(self) -> str:
+        return _dumps_deterministic(self.to_dict())
+
+    @classmethod
+    def from_json(cls, data: str | bytes | bytearray) -> PhaseDocument:
+        return cls.from_dict(_loads_object("phase_document", data))
