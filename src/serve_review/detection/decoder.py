@@ -30,9 +30,12 @@ Macro states over ``F_t``:
   accelerates into the overhead quadrant (elbow-speed surge plus
   overhead position with high-confidence elbow geometry present).
 - ``follow_through``: entered from ``acceleration`` only when a
-  validating audio transient ``A_t >= audio_transient_threshold`` lies
-  within ``+-audio_window_seconds`` (default 0.4 s, versioned) of the
-  overhead-acceleration time. Without validation the hypothesis stays in
+  validating audio transient lies within ``+-audio_window_seconds``
+  (default 0.4 s, versioned) of the overhead-acceleration time, where
+  validation is scale-invariant: the peak ``A_t`` energy inside the
+  window must reach ``audio_transient_ratio`` (default 5.0) times the
+  session-median baseline and clear the small ``audio_transient_floor``
+  against near-silence. Without validation the hypothesis stays in
   ``acceleration`` until stillness routes it to ``shadow``.
 
 Exits:
@@ -94,7 +97,14 @@ __all__ = [
 ]
 
 #: Version of the decoder configuration and record schemas.
-DECODER_SCHEMA_VERSION = 1
+#:
+#: Version 2 replaces the absolute ``audio_transient_threshold`` (0.3)
+#: with a scale-invariant relative ratio (``audio_transient_ratio``,
+#: default 5.0, peak vs session-median baseline) plus a small absolute
+#: ``audio_transient_floor`` against near-silence. Version-1 payloads
+#: are rejected (missing keys / version mismatch) rather than silently
+#: reinterpreted.
+DECODER_SCHEMA_VERSION = 2
 
 #: Visibility floor below which a pose frame counts as dropout. Mirrors
 #: ``FeatureConfig.visibility_floor`` (default 0.4) without importing it.
@@ -163,8 +173,13 @@ class DecoderConfig:
       speed is never consulted.
     - ``rest_evidence_threshold``: ``rest_evidence`` level that, with
       ``overhead == 0.0``, votes for the stillness exit.
-    - ``audio_transient_threshold``: minimum ``A_t`` energy that counts
+    - ``audio_transient_ratio``: scale-invariant peak factor -- the
+      maximum ``A_t`` energy inside the audio window must reach this
+      multiple (default 5.0) of the session-median baseline to count
       as a validating impact transient.
+    - ``audio_transient_floor``: small absolute energy floor (default
+      0.01) the window peak must also clear, so near-silence sessions
+      never validate on a ratio against a ~0 baseline.
     - ``audio_window_seconds``: half-width of the ``+-`` source-time
       window around overhead acceleration scanned for the transient.
     - ``dropout_hysteresis_frames``: consecutive dropout frames bridged
@@ -174,7 +189,8 @@ class DecoderConfig:
     torso_displacement_threshold: float = 0.2
     acceleration_elbow_speed_threshold: float = 1.5
     rest_evidence_threshold: float = 0.6
-    audio_transient_threshold: float = 0.3
+    audio_transient_ratio: float = 5.0
+    audio_transient_floor: float = 0.01
     audio_window_seconds: float = 0.4
     dropout_hysteresis_frames: int = 4
     schema_version: int = DECODER_SCHEMA_VERSION
@@ -215,9 +231,16 @@ class DecoderConfig:
         )
         object.__setattr__(
             self,
-            "audio_transient_threshold",
+            "audio_transient_ratio",
+            _finite_positive(
+                "'audio_transient_ratio'", self.audio_transient_ratio
+            ),
+        )
+        object.__setattr__(
+            self,
+            "audio_transient_floor",
             _finite_nonnegative(
-                "'audio_transient_threshold'", self.audio_transient_threshold
+                "'audio_transient_floor'", self.audio_transient_floor
             ),
         )
         object.__setattr__(
@@ -238,7 +261,8 @@ class DecoderConfig:
     def to_dict(self) -> dict[str, Any]:
         return {
             "acceleration_elbow_speed_threshold": self.acceleration_elbow_speed_threshold,
-            "audio_transient_threshold": self.audio_transient_threshold,
+            "audio_transient_floor": self.audio_transient_floor,
+            "audio_transient_ratio": self.audio_transient_ratio,
             "audio_window_seconds": self.audio_window_seconds,
             "dropout_hysteresis_frames": self.dropout_hysteresis_frames,
             "rest_evidence_threshold": self.rest_evidence_threshold,
@@ -255,7 +279,8 @@ class DecoderConfig:
             )
         known = {
             "acceleration_elbow_speed_threshold",
-            "audio_transient_threshold",
+            "audio_transient_floor",
+            "audio_transient_ratio",
             "audio_window_seconds",
             "dropout_hysteresis_frames",
             "rest_evidence_threshold",
@@ -276,7 +301,8 @@ class DecoderConfig:
                 "acceleration_elbow_speed_threshold"
             ],
             rest_evidence_threshold=values["rest_evidence_threshold"],
-            audio_transient_threshold=values["audio_transient_threshold"],
+            audio_transient_ratio=values["audio_transient_ratio"],
+            audio_transient_floor=values["audio_transient_floor"],
             audio_window_seconds=values["audio_window_seconds"],
             dropout_hysteresis_frames=values["dropout_hysteresis_frames"],
             schema_version=values["schema_version"],
@@ -751,24 +777,49 @@ def _is_stillness_exit(frame: FeatureFrame, config: DecoderConfig) -> bool:
     return frame.overhead_evidence == 0.0
 
 
+def _session_baseline(audio: Sequence[AudioEnergy]) -> float:
+    """Return the session-median ``A_t`` baseline (robust to transients).
+
+    The median over every audio sample's energy; ``0.0`` for empty
+    input. A median (not a mean) keeps one narrow impact spike from
+    lifting its own baseline, so a real-scale 0.053 peak over a 0.009
+    bed validates at ratio ~5.9 while skirt-level peaks near the median
+    do not.
+    """
+    energies = sorted(sample.energy for sample in audio)
+    if not energies:
+        return 0.0
+    midpoint = len(energies) // 2
+    if len(energies) % 2 == 1:
+        return energies[midpoint]
+    return (energies[midpoint - 1] + energies[midpoint]) / 2.0
+
+
 def _has_validating_transient(
     accel_time: float,
     audio: Sequence[AudioEnergy],
     config: DecoderConfig,
 ) -> bool:
-    """Return True when an ``A_t`` transient validates acceleration.
+    """Return True when a scale-invariant transient validates acceleration.
 
-    Scans every audio sample by source time: ``|t - accel| <= window``
-    (1e-9 tolerance) with ``energy >= threshold``. Empty or missing
-    audio yields False (unknown, never fabricated).
+    Scans every audio sample by source time: the peak energy with
+    ``|t - accel| <= window`` (1e-9 tolerance) validates when it clears
+    both the small absolute ``audio_transient_floor`` (near-silence
+    guard) and ``audio_transient_ratio`` times the session-median
+    baseline. Empty or missing audio yields False (unknown, never
+    fabricated).
     """
-    window = config.audio_window_seconds
-    threshold = config.audio_transient_threshold
+    peak: float | None = None
     for sample in audio:
-        if abs(sample.time_seconds - accel_time) <= window + 1e-9:
-            if sample.energy >= threshold:
-                return True
-    return False
+        if abs(sample.time_seconds - accel_time) <= config.audio_window_seconds + 1e-9:
+            if peak is None or sample.energy > peak:
+                peak = sample.energy
+    if peak is None:
+        return False
+    if peak < config.audio_transient_floor:
+        return False
+    baseline = _session_baseline(audio)
+    return peak >= baseline * config.audio_transient_ratio
 
 
 def decode_sequence(

@@ -162,8 +162,10 @@ def _valid_serve(start: float = 1.0) -> tuple[list[FeatureFrame], list[AudioEner
 
 
 def test_schema_version_pinned() -> None:
-    assert DECODER_SCHEMA_VERSION == 1
-    assert DecoderConfig().schema_version == 1
+    assert DECODER_SCHEMA_VERSION == 2
+    assert DecoderConfig().schema_version == 2
+    assert DecoderConfig().audio_transient_ratio == pytest.approx(5.0)
+    assert DecoderConfig().audio_transient_floor == pytest.approx(0.01)
 
 
 def test_empty_input_yields_empty_output() -> None:
@@ -397,11 +399,23 @@ def test_config_codec_round_trip() -> None:
     with pytest.raises(DecoderError):
         DecoderConfig(audio_window_seconds=0.0)
     with pytest.raises(DecoderError):
+        DecoderConfig(audio_transient_ratio=0.0)
+    with pytest.raises(DecoderError):
+        DecoderConfig(audio_transient_ratio=-1.0)
+    with pytest.raises(DecoderError):
+        DecoderConfig(audio_transient_floor=-0.001)
+    with pytest.raises(DecoderError):
         DecoderConfig.from_dict({**config.to_dict(), "extra": 1})
     with pytest.raises(DecoderError):
         DecoderConfig.from_dict({"torso_displacement_threshold": 0.2})
     with pytest.raises(DecoderError):
+        DecoderConfig.from_dict(
+            {**config.to_dict(), "audio_transient_threshold": 0.3}
+        )
+    with pytest.raises(DecoderError):
         DecoderConfig(schema_version=999)
+    with pytest.raises(DecoderError):
+        DecoderConfig(schema_version=1)
 
 
 def test_shadow_and_result_codec_round_trip() -> None:
@@ -418,3 +432,127 @@ def test_shadow_and_result_codec_round_trip() -> None:
     assert DecodeResult.from_json(result.to_json()) == result
     empty = DecodeResult(ranges=(), shadows=())
     assert DecodeResult.from_dict(empty.to_dict()) == empty
+
+
+# --- Real-scale phone-audio transients (measured single-serve anchor) ---
+
+# Physical phone-audio scale: a 20 ms impact spike peaks near 0.053
+# over a ~0.009 bed. The version-1 absolute 0.3 threshold sat ~6x above
+# the real peak and forced every such serve into the shadow log.
+REAL_PEAK = 0.053
+REAL_BED = 0.009
+
+
+def _real_scale_serve(
+    start: float = 3.0, *, peak: float = REAL_PEAK, bed: float = REAL_BED
+) -> tuple[list[FeatureFrame], list[AudioEnergy]]:
+    """Serve-shaped pose track with phone-scale audio bed plus one spike."""
+    frames: list[FeatureFrame] = []
+    frames += [_feat(0.0 + i * STEP) for i in range(5)]
+    for i in range(3):
+        frames.append(
+            _feat(
+                start + i * STEP,
+                torso=0.5,
+                overhead=0.0,
+                elbow_speed=0.4,
+                elbow_flex=120.0,
+                rest=0.15,
+            )
+        )
+    accel = start + 0.3
+    frames.append(
+        _feat(
+            accel,
+            torso=0.5,
+            overhead=1.0,
+            elbow_speed=5.0,
+            elbow_flex=170.0,
+            rest=0.1,
+        )
+    )
+    frames.append(
+        _feat(
+            accel + 0.1,
+            torso=0.3,
+            overhead=1.0,
+            elbow_speed=2.0,
+            elbow_flex=160.0,
+            rest=0.2,
+        )
+    )
+    frames.append(
+        _feat(
+            accel + 0.2,
+            torso=0.1,
+            overhead=1.0,
+            elbow_speed=1.0,
+            elbow_flex=150.0,
+            rest=0.4,
+        )
+    )
+    exit_t = start + 0.8
+    frames.append(
+        _feat(
+            exit_t,
+            torso=0.0,
+            overhead=0.0,
+            elbow_speed=0.1,
+            elbow_flex=150.0,
+            rest=0.9,
+        )
+    )
+    frames += [_feat(exit_t + STEP + i * STEP) for i in range(5)]
+    frames.sort(key=lambda f: f.time_seconds)
+    audio = [AudioEnergy(time_seconds=f.time_seconds, energy=bed) for f in frames]
+    audio.append(AudioEnergy(time_seconds=accel + 0.05, energy=peak))
+    audio.sort(key=lambda a: a.time_seconds)
+    return frames, audio
+
+
+def test_real_scale_peak_validates_single_serve() -> None:
+    frames, audio = _real_scale_serve(start=3.0)
+    result = decode_sequence(frames, audio)
+    assert len(result.ranges) == 1
+    assert result.shadows == ()
+    assert result.ranges[0].start_seconds == pytest.approx(3.0)
+    assert result.ranges[0].end_seconds == pytest.approx(3.8)
+
+
+def test_straddled_skirt_level_peak_rejects_to_shadow() -> None:
+    # Coarse pose-grid sampling that straddles the spike reads only the
+    # ~0.009 skirts: no sample rises above the bed, so the hypothesis
+    # must stay a shadow instead of a valid serve.
+    frames, _ = _real_scale_serve(start=3.0)
+    skirts = [AudioEnergy(time_seconds=f.time_seconds, energy=REAL_BED) for f in frames]
+    result = decode_sequence(frames, skirts)
+    assert result.ranges == ()
+    assert len(result.shadows) == 1
+    assert result.shadows[0].reason == REASON_SHADOW
+
+
+def test_absolute_floor_rejects_near_silence() -> None:
+    # A large ratio against a near-zero baseline must not validate:
+    # the 0.004 blip clears ratio 5 over the 0.0005 bed but not the
+    # absolute floor.
+    frames, _ = _real_scale_serve(start=1.0)
+    near_silent = [
+        AudioEnergy(time_seconds=f.time_seconds, energy=0.0005) for f in frames
+    ]
+    near_silent.append(AudioEnergy(time_seconds=1.35, energy=0.004))
+    near_silent.sort(key=lambda a: a.time_seconds)
+    result = decode_sequence(frames, near_silent)
+    assert result.ranges == ()
+    assert len(result.shadows) == 1
+
+
+def test_transient_ratio_is_versioned() -> None:
+    frames, audio = _real_scale_serve(start=3.0)
+    # 0.053 over the 0.009 bed is ratio ~5.9: the default 5.0 passes
+    # while a strict 20.0 rejects to shadow.
+    assert len(decode_sequence(frames, audio).ranges) == 1
+    strict = DecoderConfig(audio_transient_ratio=20.0)
+    rejected = decode_sequence(frames, audio, strict)
+    assert rejected.ranges == ()
+    assert len(rejected.shadows) == 1
+    assert strict.to_dict()["audio_transient_ratio"] == pytest.approx(20.0)

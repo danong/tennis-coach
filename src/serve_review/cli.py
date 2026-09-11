@@ -314,6 +314,8 @@ def cut(args: argparse.Namespace) -> int:
         print(f"ERROR: cut failed at {exc.stage}: {exc.message}.", file=sys.stderr)
         return 1
     print(str(result.attempts_path))
+    if result.shadows_path is not None:
+        print(str(result.shadows_path))
     if result.empty:
         print("no serves detected; wrote empty attempts only (no media output).")
         return 0

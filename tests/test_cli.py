@@ -182,18 +182,42 @@ def test_cut_forwards_overwrite_and_tools(tmp_path: Path, capsys, monkeypatch) -
 def test_cut_integration_generated_media(tmp_path: Path, capsys, monkeypatch) -> None:
     import shutil
 
-    from media_factory import generate_fixture, landscape_spec
+    from media_factory import generate_av_fixture, landscape_spec
     from serve_review.detection.features import FeatureFrame
-    from serve_review.detection.ranges import CandidateRange
     from serve_review.pose import cache as cache_module
     from serve_review.pose import extract as extract_module
     from serve_review.detection import features as features_module
-    from serve_review.detection import ranges as ranges_module
 
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         __import__("pytest").skip("FFmpeg and ffprobe are required")
-    video = generate_fixture(tmp_path / "session.mov", landscape_spec(duration_seconds=2.0))
+    # In-band transient near 0.55 s; the faked pose track accelerates
+    # overhead at 0.5 s so the scale-invariant validator fires.
+    audio_expr = "0.2*sin(2*PI*220*t)+if(lt(abs(t-0.55),0.004),sin(2*PI*2000*t),0)"
+    video = generate_av_fixture(
+        tmp_path / "session.mov",
+        landscape_spec(duration_seconds=2.0),
+        audio_expr=audio_expr,
+    )
     before = video.read_bytes()
+
+    def _feat(moment, *, torso=0.0, overhead=0.0, elbow_speed=0.1, rest=0.9):
+        return FeatureFrame(
+            time_seconds=moment,
+            has_person=True,
+            visible_fraction=1.0,
+            torso_scale=1.0,
+            player_scale=1.0,
+            wrist_speed=0.1,
+            elbow_speed=elbow_speed,
+            body_motion=0.2,
+            overhead_evidence=overhead,
+            rest_evidence=float(rest),
+            motion_evidence=1.0 - float(rest),
+            elbow_flexion_left=150.0,
+            elbow_flexion_right=150.0,
+            shoulder_tilt=0.0,
+            torso_displacement=torso,
+        )
 
     def _fake_extract(video_p, cache_path, **kwargs):
         from types import SimpleNamespace as _NS
@@ -209,18 +233,21 @@ def test_cut_integration_generated_media(tmp_path: Path, capsys, monkeypatch) ->
         return _NS(frames=())
 
     def _fake_features(observations, config):
-        return (
-            FeatureFrame(time_seconds=0.0, has_person=False, visible_fraction=0.0),
-            FeatureFrame(time_seconds=0.5, has_person=False, visible_fraction=0.0),
-        )
-
-    def _fake_candidates(frames, config):
-        return (CandidateRange(0.2, 0.7),)
+        frames = [_feat(0.0), _feat(0.1)]
+        for i in range(3):
+            frames.append(
+                _feat(0.2 + i * 0.1, torso=0.5, overhead=0.0,
+                      elbow_speed=0.4, rest=0.15)
+            )
+        frames.append(_feat(0.5, torso=0.5, overhead=1.0, elbow_speed=5.0, rest=0.1))
+        frames.append(_feat(0.6, torso=0.3, overhead=1.0, elbow_speed=2.0, rest=0.2))
+        frames.append(_feat(1.0))
+        frames.append(_feat(1.1))
+        return tuple(frames)
 
     monkeypatch.setattr(extract_module, "extract_poses", _fake_extract)
     monkeypatch.setattr(cache_module, "load_cache", _fake_load)
     monkeypatch.setattr(features_module, "extract_features", _fake_features)
-    monkeypatch.setattr(ranges_module, "find_candidates", _fake_candidates)
     args = build_parser().parse_args(
         ["cut", str(video), "--padding", "0", "--output", "compilation",
          "--output-dir", str(tmp_path / "output")]
@@ -230,6 +257,7 @@ def test_cut_integration_generated_media(tmp_path: Path, capsys, monkeypatch) ->
     assert (session / "attempts.json").is_file()
     assert (session / "source.json").is_file()
     assert (session / "run.json").is_file()
+    assert (session / "shadows.json").is_file()
     assert (session / "serves.mov").is_file()
     assert video.read_bytes() == before
     out = capsys.readouterr().out
@@ -240,11 +268,9 @@ def test_cut_integration_empty_detection_no_media(tmp_path: Path, capsys, monkey
     import shutil
 
     from media_factory import generate_fixture, landscape_spec
-    from serve_review.detection.features import FeatureFrame
     from serve_review.pose import cache as cache_module
     from serve_review.pose import extract as extract_module
     from serve_review.detection import features as features_module
-    from serve_review.detection import ranges as ranges_module
 
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         __import__("pytest").skip("FFmpeg and ffprobe are required")
@@ -266,13 +292,9 @@ def test_cut_integration_empty_detection_no_media(tmp_path: Path, capsys, monkey
     def _fake_features(observations, config):
         return ()
 
-    def _fake_candidates(frames, config):
-        return ()
-
     monkeypatch.setattr(extract_module, "extract_poses", _fake_extract)
     monkeypatch.setattr(cache_module, "load_cache", _fake_load)
     monkeypatch.setattr(features_module, "extract_features", _fake_features)
-    monkeypatch.setattr(ranges_module, "find_candidates", _fake_candidates)
     args = build_parser().parse_args(
         ["cut", str(video), "--output", "both", "--output-dir", str(tmp_path / "output")]
     )

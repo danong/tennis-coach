@@ -47,6 +47,7 @@ __all__ = [
     "BANDPASS_HIGH_HZ",
     "BANDPASS_LOW_HZ",
     "DEFAULT_WINDOW_SECONDS",
+    "DENSE_AUDIO_STEP_SECONDS",
     "MAX_BUFFERED_SAMPLES",
     "MAX_WINDOW_SECONDS",
     "MIN_WINDOW_SECONDS",
@@ -54,8 +55,10 @@ __all__ = [
     "AudioEnergy",
     "AudioError",
     "AudioStreamInfo",
+    "align_audio_maxpool",
     "audio_filter_graph",
     "build_audio_decode_args",
+    "dense_audio_schedule",
     "iter_audio_energy",
     "probe_audio_stream",
     "rms_energy",
@@ -72,6 +75,11 @@ DEFAULT_WINDOW_SECONDS = 0.010
 MIN_WINDOW_SECONDS = 0.002
 #: Largest accepted RMS window in seconds.
 MAX_WINDOW_SECONDS = 0.100
+#: Dense RMS sampling step in seconds for max-pool alignment. A 5 ms
+#: grid (200 Hz) oversamples a 5-15 ms impact spike so at least one
+#: dense window overlaps the transient even when the coarser pose grid
+#: straddles it.
+DENSE_AUDIO_STEP_SECONDS = 0.005
 #: Maximum number of decoded mono samples held in memory at once
 #: (streaming pipe chunk; ``MAX_BUFFERED_SAMPLES * 4`` bytes of f32le).
 MAX_BUFFERED_SAMPLES = 16384
@@ -655,3 +663,166 @@ def iter_audio_energy(
         ffmpeg_exe,
         is_cancelled,
     )
+
+
+def dense_audio_schedule(
+    duration_seconds: float,
+    step_seconds: float = DENSE_AUDIO_STEP_SECONDS,
+) -> tuple[float, ...]:
+    """Build a dense strictly increasing audio schedule over a session.
+
+    Returns ``(0, step, 2*step, ...)`` clipped to ``[0, duration)``.
+    The default 5 ms grid (200 Hz) oversamples a 5-20 ms impact spike
+    so dense RMS windows overlap the transient even when the coarser
+    pose grid straddles it. Pure and deterministic; raises
+    :class:`AudioError` on invalid duration/step.
+    """
+    if (
+        isinstance(duration_seconds, bool)
+        or not isinstance(duration_seconds, (int, float))
+        or not math.isfinite(float(duration_seconds))
+        or float(duration_seconds) <= 0
+    ):
+        raise AudioError(
+            f"invalid duration_seconds: {duration_seconds!r}; "
+            "expected a finite number greater than zero."
+        )
+    if (
+        isinstance(step_seconds, bool)
+        or not isinstance(step_seconds, (int, float))
+        or not math.isfinite(float(step_seconds))
+        or float(step_seconds) <= 0
+    ):
+        raise AudioError(
+            f"invalid step_seconds: {step_seconds!r}; "
+            "expected a finite number greater than zero."
+        )
+    duration = float(duration_seconds)
+    step = float(step_seconds)
+    if step >= duration:
+        raise AudioError(
+            f"invalid step_seconds: {step_seconds!r}; "
+            "expected a step smaller than the session duration."
+        )
+    times: list[float] = []
+    moment = 0.0
+    while moment < duration:
+        times.append(moment)
+        moment += step
+    # Guard against floating-point drift duplicating or stalling.
+    cleaned = sorted(set(times))
+    if not cleaned or not cleaned[0] == 0.0:
+        raise AudioError("dense audio schedule construction failed.")  # pragma: no cover
+    return tuple(cleaned)
+
+
+def align_audio_maxpool(
+    dense: Sequence[AudioEnergy],
+    frame_times: Sequence[float],
+) -> tuple[AudioEnergy, ...]:
+    """Max-pool dense RMS audio onto pose-frame source times (``F_t``).
+
+    For each pose frame time ``t`` the aligned energy is the maximum
+    dense RMS energy whose source time falls inside the frame interval
+    ``[lo, hi]`` where interior bounds are neighboring midpoints
+    (``lo = (t_{i-1} + t_i) / 2``, ``hi = (t_i + t_{i+1}) / 2``) and
+    edge intervals extend by half the adjacent spacing (``t_0`` reaches
+    ``t_0 - (t_1 - t_0) / 2``; the last frame likewise). A single
+    frame pools every dense sample. The last interval is hi-inclusive;
+    the rest are hi-exclusive for a deterministic partition.
+
+    Max (not mean) pooling preserves a narrow 20 ms impact peak: the
+    dense 5 ms grid always overlaps the spike, and the owning pose
+    frame inherits the peak instead of a diluted skirt average. Frame
+    intervals with no dense sample yield ``0.0`` (honestly quiet, never
+    interpolated). Both inputs must carry strictly increasing finite
+    times ``>= 0``; violations raise :class:`AudioError`. Pure,
+    deterministic, std-lib only. Raw :func:`iter_audio_energy` output
+    stays available untouched for inspection.
+    """
+    if isinstance(dense, (AudioEnergy, str, bytes, bytearray)) or not isinstance(
+        dense, (list, tuple)
+    ):
+        raise AudioError(
+            "invalid dense audio: expected a list/tuple of AudioEnergy, "
+            f"got {type(dense).__name__}."
+        )
+    if isinstance(frame_times, (int, float, bool)) or not isinstance(
+        frame_times, (list, tuple)
+    ):
+        raise AudioError(
+            "invalid frame times: expected a non-empty list/tuple of "
+            f"source times in seconds, got {type(frame_times).__name__}."
+        )
+    dense_list = list(dense)
+    frames = list(frame_times)
+    if not frames:
+        raise AudioError(
+            "invalid frame times: at least one pose frame time is required."
+        )
+    for entry in dense_list:
+        if not isinstance(entry, AudioEnergy):
+            raise AudioError(
+                "invalid dense audio: every entry must be an AudioEnergy, "
+                f"got {type(entry).__name__}."
+            )
+    cleaned_frames: list[float] = []
+    for entry in frames:
+        if (
+            isinstance(entry, bool)
+            or not isinstance(entry, (int, float))
+            or not math.isfinite(float(entry))
+            or float(entry) < 0
+        ):
+            raise AudioError(
+                f"invalid frame time: {entry!r}; "
+                "expected a finite number of seconds >= 0."
+            )
+        cleaned_frames.append(float(entry))
+    for earlier, later in zip(dense_list, dense_list[1:]):
+        if not later.time_seconds > earlier.time_seconds:
+            raise AudioError(
+                "invalid dense audio: times must be strictly increasing, "
+                f"got {earlier.time_seconds!r} followed by "
+                f"{later.time_seconds!r}."
+            )
+    for earlier, later in zip(cleaned_frames, cleaned_frames[1:]):
+        if not later > earlier:
+            raise AudioError(
+                "invalid frame times: times must be strictly increasing, "
+                f"got {earlier!r} followed by {later!r}."
+            )
+    count = len(cleaned_frames)
+    if count == 1:
+        bounds = [(float("-inf"), float("inf"))]
+    else:
+        bounds = []
+        for index, moment in enumerate(cleaned_frames):
+            if index == 0:
+                half = (cleaned_frames[1] - cleaned_frames[0]) / 2.0
+                bounds.append((moment - half, (moment + cleaned_frames[1]) / 2.0))
+            elif index == count - 1:
+                half = (moment - cleaned_frames[index - 1]) / 2.0
+                bounds.append(((cleaned_frames[index - 1] + moment) / 2.0, moment + half))
+            else:
+                bounds.append(
+                    (
+                        (cleaned_frames[index - 1] + moment) / 2.0,
+                        (moment + cleaned_frames[index + 1]) / 2.0,
+                    )
+                )
+    aligned: list[AudioEnergy] = []
+    for position, moment in enumerate(cleaned_frames):
+        lo, hi = bounds[position]
+        last = position == count - 1
+        best = 0.0
+        for sample in dense_list:
+            moment_dense = sample.time_seconds
+            if moment_dense < lo:
+                continue
+            if moment_dense > hi or (moment_dense == hi and not last):
+                continue
+            if sample.energy > best:
+                best = sample.energy
+        aligned.append(AudioEnergy(time_seconds=moment, energy=best))
+    return tuple(aligned)

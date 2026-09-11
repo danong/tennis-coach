@@ -22,12 +22,15 @@ from serve_review.media.audio import (
     BANDPASS_HIGH_HZ,
     BANDPASS_LOW_HZ,
     DEFAULT_WINDOW_SECONDS,
+    DENSE_AUDIO_STEP_SECONDS,
     MAX_BUFFERED_SAMPLES,
     AudioCancelled,
     AudioEnergy,
     AudioError,
+    align_audio_maxpool,
     audio_filter_graph,
     build_audio_decode_args,
+    dense_audio_schedule,
     iter_audio_energy,
     probe_audio_stream,
     rms_energy,
@@ -415,3 +418,91 @@ def test_source_file_is_not_modified(tmp_path: Path) -> None:
     before = (video.stat().st_size, video.stat().st_mtime_ns)
     _sample(video)
     assert (video.stat().st_size, video.stat().st_mtime_ns) == before
+
+
+# --- Max-pooled audio alignment (pure, no media required) ---
+
+
+def test_dense_schedule_shape_and_validation() -> None:
+    assert DENSE_AUDIO_STEP_SECONDS == pytest.approx(0.005)
+    schedule = dense_audio_schedule(1.0)
+    assert schedule[0] == pytest.approx(0.0)
+    assert len(schedule) == 200
+    assert all(later > earlier for earlier, later in zip(schedule, schedule[1:]))
+    assert all(0.0 <= t < 1.0 for t in schedule)
+    assert dense_audio_schedule(1.0) == schedule  # deterministic
+    custom = dense_audio_schedule(0.1, 0.05)
+    assert custom == pytest.approx((0.0, 0.05))
+    for bad_duration in (0, -1.0, float("nan"), float("inf"), "1", None, True):
+        with pytest.raises(AudioError, match="duration"):
+            dense_audio_schedule(bad_duration)  # type: ignore[arg-type]
+    for bad_step in (0, -0.01, float("nan"), "0.005", None, True, 2.0):
+        with pytest.raises(AudioError, match="step"):
+            dense_audio_schedule(1.0, bad_step)  # type: ignore[arg-type]
+
+
+def test_maxpool_preserves_straddled_spike() -> None:
+    # Measured defect: a 20 ms 0.053 transient at ~3.65 s straddles the
+    # 30 Hz pose grid (neighbors at 3.6333/3.6667 read skirt-level
+    # 0.009), while the dense 5 ms grid overlaps the spike.
+    spike_time = 3.65
+    dense = [
+        AudioEnergy(time_seconds=round(t, 6), energy=0.009)
+        for t in [i * 0.005 for i in range(int(4.0 / 0.005))]
+    ]
+    dense = [
+        AudioEnergy(time_seconds=s.time_seconds, energy=0.053)
+        if abs(s.time_seconds - spike_time) < 0.0025
+        else s
+        for s in dense
+    ]
+    frame_times = [3.6 + k / 30.0 for k in range(4)]  # 3.6..3.7 straddle
+    assert all(abs(t - spike_time) > 0.01 for t in frame_times)
+    aligned = align_audio_maxpool(dense, frame_times)
+    assert [a.time_seconds for a in aligned] == frame_times
+    owner = min(frame_times, key=lambda t: abs(t - spike_time))
+    peaked = next(a for a in aligned if a.time_seconds == owner)
+    assert peaked.energy == pytest.approx(0.053)
+    # The diluted alternative (mean over the interval) would read ~0.009.
+    others = [a for a in aligned if a.time_seconds != owner]
+    assert all(a.energy == pytest.approx(0.009) for a in others)
+
+
+def test_maxpool_empty_intervals_yield_zero_without_fabrication() -> None:
+    dense = [AudioEnergy(time_seconds=0.5, energy=0.4)]
+    aligned = align_audio_maxpool(dense, [0.1, 0.9])
+    assert [a.time_seconds for a in aligned] == [0.1, 0.9]
+    assert aligned[0].energy == pytest.approx(0.0)
+    assert aligned[1].energy == pytest.approx(0.4)
+    single = align_audio_maxpool(dense, [0.0])
+    assert single[0].energy == pytest.approx(0.4)
+    assert align_audio_maxpool([], [0.1, 0.2])[0].energy == pytest.approx(0.0)
+
+
+def test_maxpool_rejects_invalid_inputs() -> None:
+    good_dense = [AudioEnergy(time_seconds=0.1, energy=0.1)]
+    with pytest.raises(AudioError, match="[Ff]rame"):
+        align_audio_maxpool(good_dense, [])
+    with pytest.raises(AudioError, match="[Ff]rame"):
+        align_audio_maxpool(good_dense, [0.2, 0.2])
+    with pytest.raises(AudioError, match="[Ff]rame"):
+        align_audio_maxpool(good_dense, [0.3, 0.2])
+    with pytest.raises(AudioError, match="[Ff]rame"):
+        align_audio_maxpool(good_dense, [-0.1])
+    with pytest.raises(AudioError, match="[Dd]ense"):
+        align_audio_maxpool("audio", [0.1])  # type: ignore[arg-type]
+    with pytest.raises(AudioError, match="[Dd]ense"):
+        align_audio_maxpool([AudioEnergy(0.2, 0.1), AudioEnergy(0.2, 0.2)], [0.2])
+    with pytest.raises(AudioError, match="[Dd]ense"):
+        align_audio_maxpool(["x"], [0.1])  # type: ignore[list-item]
+
+
+def test_maxpool_is_deterministic() -> None:
+    dense = tuple(AudioEnergy(time_seconds=i * 0.005, energy=0.01 * (i % 3)) for i in range(40))
+    frames = [0.05, 0.1, 0.15]
+    first = align_audio_maxpool(dense, frames)
+    second = align_audio_maxpool(dense, frames)
+    # AudioEnergy is identity-compared (eq=False): compare field pairs.
+    assert [(a.time_seconds, a.energy) for a in first] == [
+        (a.time_seconds, a.energy) for a in second
+    ]

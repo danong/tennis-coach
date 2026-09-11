@@ -1,17 +1,26 @@
-"""End-to-end serve-cutting pipeline (M3.5).
+"""End-to-end audio-visual serve-cutting pipeline (M3.5 + AV decoder).
 
-Composes probe, cached pose extraction, detection (features, ranges,
-plan), versioned attempts JSON, and requested media export.
+Composes probe, cached pose extraction, v2 features, dense audio
+sampling, max-pooled audio alignment, scale-invariant transient
+decoding, versioned attempts JSON, an inspectable shadow side log,
+and requested media export.
 
 Frozen detector configuration: :class:`FeatureConfig`,
-:class:`RangeConfig`, and :class:`PlanConfig` (padding from the caller)
+:class:`DecoderConfig` (transient ratio/floor, audio window, dropout
+hysteresis), and :class:`PlanConfig` (padding from the caller)
 defaults supplied by the orchestrator. This module never tunes
-thresholds.
+thresholds. The legacy ``range_config``/``candidates_fn`` pose-only
+path remains only as an injected test bypass; the default path is
+the audio-visual decoder.
 
 Behavior:
 
-- ``probe -> cached pose extraction -> features -> candidates ->
-  planned attempts -> attempts.json -> requested export``.
+- ``probe -> cached pose extraction -> features + dense audio ->
+  max-pool align -> decode -> planned attempts -> attempts.json +
+  shadows.json -> requested export``.
+- Valid decoded ranges flow to the existing planner/export;
+  ``aborted``/``shadow`` records flow to ``shadows.json``, an
+  inspectable side log that never alters the ``attempts.json`` schema.
 - Empty detection yields an honest empty attempts document and no
   media output (never substitutes the full video).
 - JSON documents and media outputs are written atomically; temporary
@@ -37,13 +46,16 @@ from pathlib import Path
 from typing import Any, Callable
 
 from serve_review import __version__ as _PACKAGE_VERSION
+from serve_review.detection import decoder as decoder_module
 from serve_review.detection import features as features_module
 from serve_review.detection import plan as plan_module
 from serve_review.detection import ranges as ranges_module
+from serve_review.detection.decoder import DECODER_SCHEMA_VERSION, DecoderConfig
 from serve_review.detection.features import FeatureConfig
 from serve_review.detection.plan import DEFAULT_METHOD_VERSION, PlanConfig
 from serve_review.detection.ranges import RangeConfig
 from serve_review.domain import AttemptDocument, SourceMetadata
+from serve_review.media import audio as audio_module
 from serve_review.media import export as export_module
 from serve_review.media import probe as probe_module
 from serve_review.pose import cache as cache_module
@@ -52,6 +64,7 @@ from serve_review.pose import extract as extract_module
 __all__ = [
     "PIPELINE_VERSION",
     "RUN_SCHEMA_VERSION",
+    "SHADOWS_FILENAME",
     "CutError",
     "CutCancelled",
     "CutResult",
@@ -62,6 +75,9 @@ __all__ = [
 PIPELINE_VERSION = "cut-v1"
 #: Schema version of the run.json document written by this module.
 RUN_SCHEMA_VERSION = 1
+#: Inspectable side-log filename for non-exported shadow/abort records.
+#: ``shadows.json`` never alters the ``attempts.json`` schema.
+SHADOWS_FILENAME = "shadows.json"
 
 
 class CutError(Exception):
@@ -97,6 +113,8 @@ class CutResult:
     compilation: Path | None = None
     clips: tuple[Path, ...] = ()
     empty: bool = False
+    shadows: tuple[Any, ...] = ()
+    shadows_path: Path | None = None
 
 
 def _check_padding(value: object) -> float:
@@ -209,17 +227,29 @@ def run_cut(
     sample_rate_hz: float = extract_module.DEFAULT_SAMPLE_RATE_HZ,
     feature_config: FeatureConfig | None = None,
     range_config: RangeConfig | None = None,
+    decoder_config: DecoderConfig | None = None,
+    audio_step_seconds: float = audio_module.DENSE_AUDIO_STEP_SECONDS,
     probe_fn: Callable[[Path], SourceMetadata] | None = None,
     extract_fn: Callable[..., Any] | None = None,
     load_cache_fn: Callable[[Path], Any] | None = None,
     features_fn: Callable[..., Any] | None = None,
     candidates_fn: Callable[..., Any] | None = None,
+    audio_fn: Callable[..., Any] | None = None,
+    align_fn: Callable[..., Any] | None = None,
+    decode_fn: Callable[..., Any] | None = None,
     plan_fn: Callable[..., AttemptDocument] | None = None,
     export_fn: Callable[..., dict[str, Any]] | None = None,
     progress_callback: Callable[[str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> CutResult:
-    """Run probe, cached pose extraction, detection, JSON, and export.
+    """Run probe, cached pose extraction, AV detection, JSON, and export.
+
+    The default detection path is audio-visual: v2 pose features plus
+    dense band-limited RMS audio, max-pool aligned onto pose-frame
+    source times (``F_t``), decoded with the scale-invariant transient
+    validator. Valid ranges flow to the planner/export; ``aborted`` /
+    ``shadow`` records flow to ``shadows.json`` (inspectable side log,
+    never part of ``attempts.json``).
 
     Args:
         video: Source video path; read only, never modified.
@@ -230,11 +260,18 @@ def run_cut(
         ffmpeg/ffprobe: Tool executables (argument arrays only).
         model_path: Pose model artifact (default approved Heavy path).
         sample_rate_hz: Pose sampling rate in ``(0, 120]``.
-        feature_config/range_config: Frozen detector configuration
-            (defaults ``FeatureConfig()`` / ``RangeConfig()``).
+        feature_config/range_config/decoder_config: Frozen detector
+            configuration (defaults ``FeatureConfig()`` /
+            ``RangeConfig()`` / ``DecoderConfig()``). ``range_config``
+            is consulted only by the legacy ``candidates_fn`` bypass.
+        audio_step_seconds: Dense audio grid step in seconds (default
+            5 ms); must be finite and > 0.
         probe_fn/extract_fn/load_cache_fn/features_fn/candidates_fn/
-        plan_fn/export_fn: Injectable stage functions for tests. When
-            None, the real adapters run.
+        audio_fn/align_fn/decode_fn/plan_fn/export_fn: Injectable stage
+            functions for tests. When None, the real adapters run.
+            ``candidates_fn``, when given, bypasses the audio/decoder
+            stages with pose-only candidates (legacy test path) and
+            yields an empty shadow log.
         progress_callback: Optional ``(stage_message)`` hook.
         is_cancelled: Optional hook; a true return raises
             :class:`CutCancelled` and removes partial media outputs.
@@ -289,6 +326,24 @@ def run_cut(
         range_config = RangeConfig()
     if not isinstance(range_config, RangeConfig):
         raise CutError("validate", "invalid range_config: expected RangeConfig.")
+    if decoder_config is None:
+        decoder_config = DecoderConfig()
+    if not isinstance(decoder_config, DecoderConfig):
+        raise CutError("validate", "invalid decoder_config: expected DecoderConfig.")
+    import math as _math
+
+    if (
+        isinstance(audio_step_seconds, bool)
+        or not isinstance(audio_step_seconds, (int, float))
+        or not _math.isfinite(float(audio_step_seconds))
+        or float(audio_step_seconds) <= 0.0
+    ):
+        raise CutError(
+            "validate",
+            f"invalid audio_step_seconds: {audio_step_seconds!r}; "
+            "expected a finite number > 0.",
+        )
+    audio_step = float(audio_step_seconds)
     plan_config = PlanConfig(padding_seconds=padding)
 
     created_media: list[Path] = []
@@ -336,20 +391,26 @@ def run_cut(
     cache_hit = False
     compilation: Path | None = None
     clips: list[Path] = []
+    shadows: tuple[Any, ...] = ()
     source_out = session_dir / "source.json"
     attempts_out = session_dir / "attempts.json"
+    shadows_out = session_dir / SHADOWS_FILENAME
     run_out = session_dir / "run.json"
 
     def _write_run(status_value: str) -> Path:
         elapsed = time.monotonic() - started
         payload = {
             "attempt_count": len(document) if document is not None else 0,
+            "audio_step_seconds": audio_step,
             "cache_hit": cache_hit,
             "cache_path": str(cache_path),
             "compilation": str(compilation) if compilation is not None else None,
             "clips": [str(path) for path in clips],
+            "decoder_config": decoder_config.to_dict(),
+            "decoder_schema_version": DECODER_SCHEMA_VERSION,
             "error": error_text,
             "error_stage": error_stage,
+            "feature_config": feature_config.to_dict(),
             "method_version": DEFAULT_METHOD_VERSION,
             "mode": mode_name,
             "output_dir": str(session_dir),
@@ -358,6 +419,8 @@ def run_cut(
             "run_seconds": elapsed,
             "schema_version": RUN_SCHEMA_VERSION,
             "serve_review_version": _PACKAGE_VERSION,
+            "shadow_count": len(shadows),
+            "shadows_path": str(shadows_out),
             "source_fingerprint": metadata.fingerprint if metadata is not None else None,
             "stage_timings_seconds": dict(stage_timings),
             "status": status_value,
@@ -481,25 +544,124 @@ def run_cut(
             raise _fail("detect", f"feature extraction failed: {exc}.") from exc
         stage_timings["features"] = time.monotonic() - features_start
 
-        # --- candidate ranges ---
-        _progress("cut: detecting candidates")
+        # --- audio-visual detection: dense audio -> max-pool -> decode ---
+        # Legacy injected ``candidates_fn`` bypasses the audio/decoder
+        # stages with pose-only candidates (existing unit-test path)
+        # and yields an empty shadow log.
+        _progress("cut: detecting serve candidates (audio-visual)")
         if _cancelled():
             raise CutCancelled("detect", "cut was cancelled before detection.")
         detect_start = time.monotonic()
-        try:
-            if candidates_fn is not None:
+        if candidates_fn is not None:
+            try:
                 candidates = tuple(candidates_fn(feature_frames, range_config))
-            else:
-                candidates = tuple(
-                    ranges_module.find_candidates(feature_frames, range_config)
-                )
-        except CutCancelled:
-            raise
-        except CutError:
-            raise
-        except Exception as exc:
-            raise _fail("detect", f"candidate detection failed: {exc}.") from exc
-        stage_timings["detect"] = time.monotonic() - detect_start
+            except CutCancelled:
+                raise
+            except CutError:
+                raise
+            except Exception as exc:
+                raise _fail("detect", f"candidate detection failed: {exc}.") from exc
+            shadows = ()
+            stage_timings["detect"] = time.monotonic() - detect_start
+        else:
+            frame_times = [frame.time_seconds for frame in feature_frames]
+            try:
+                if not frame_times:
+                    decode_result = decoder_module.decode_sequence((), ())
+                else:
+                    if _cancelled():
+                        raise CutCancelled(
+                            "audio", "cut was cancelled before audio sampling."
+                        )
+                    audio_start = time.monotonic()
+                    dense_schedule = audio_module.dense_audio_schedule(
+                        metadata.duration_seconds, audio_step
+                    )
+                    try:
+                        if audio_fn is not None:
+                            dense_audio = tuple(
+                                audio_fn(
+                                    video_path,
+                                    dense_schedule,
+                                    ffmpeg=ffmpeg,
+                                    ffprobe=ffprobe,
+                                    is_cancelled=is_cancelled,
+                                )
+                            )
+                        else:
+                            dense_audio = tuple(
+                                audio_module.iter_audio_energy(
+                                    video_path,
+                                    dense_schedule,
+                                    ffmpeg=ffmpeg,
+                                    ffprobe=ffprobe,
+                                    is_cancelled=is_cancelled,
+                                )
+                            )
+                    except CutCancelled:
+                        raise
+                    except CutError:
+                        raise
+                    except audio_module.AudioCancelled as exc:
+                        raise CutCancelled(
+                            "audio", f"audio sampling was cancelled: {exc}."
+                        ) from exc
+                    except audio_module.AudioError as exc:
+                        raise _fail("audio", f"audio sampling failed: {exc}.") from exc
+                    except Exception as exc:
+                        raise _fail("audio", f"audio sampling failed: {exc}.") from exc
+                    stage_timings["audio"] = time.monotonic() - audio_start
+                    if _cancelled():
+                        raise CutCancelled(
+                            "detect", "cut was cancelled before decoding."
+                        )
+                    try:
+                        if align_fn is not None:
+                            aligned_audio = tuple(
+                                align_fn(dense_audio, tuple(frame_times))
+                            )
+                        else:
+                            aligned_audio = audio_module.align_audio_maxpool(
+                                dense_audio, tuple(frame_times)
+                            )
+                    except CutCancelled:
+                        raise
+                    except CutError:
+                        raise
+                    except Exception as exc:
+                        raise _fail(
+                            "detect", f"audio alignment failed: {exc}."
+                        ) from exc
+                    try:
+                        if decode_fn is not None:
+                            decode_result = decode_fn(
+                                feature_frames, aligned_audio, decoder_config
+                            )
+                        else:
+                            decode_result = decoder_module.decode_sequence(
+                                feature_frames, aligned_audio, decoder_config
+                            )
+                    except CutCancelled:
+                        raise
+                    except CutError:
+                        raise
+                    except Exception as exc:
+                        raise _fail("detect", f"decoding failed: {exc}.") from exc
+                    if not isinstance(
+                        decode_result, decoder_module.DecodeResult
+                    ):
+                        raise _fail(
+                            "detect",
+                            f"decoder returned {type(decode_result).__name__}; "
+                            "expected DecodeResult.",
+                        )
+            except CutCancelled:
+                raise
+            except CutError:
+                raise
+            candidates = tuple(decode_result.ranges)
+            shadows = tuple(decode_result.shadows)
+            stage_timings["detect"] = time.monotonic() - detect_start
 
         # --- padding plan ---
         _progress("cut: planning attempts")
@@ -523,13 +685,31 @@ def run_cut(
                 "expected AttemptDocument.",
             )
 
-        # --- attempts.json (atomic) ---
+        # --- attempts.json (atomic; schema unchanged, never carries shadows) ---
         try:
             _write_text_atomic(attempts_out, document.to_json())
         except CutError as exc:
             raise _fail("attempts", str(exc.message)) from exc
         except Exception as exc:
             raise _fail("attempts", f"could not write attempts.json: {exc}.") from exc
+
+        # --- shadows.json (atomic inspectable side log; never alters
+        # attempts.json) ---
+        try:
+            shadow_payload = {
+                "decoder_schema_version": DECODER_SCHEMA_VERSION,
+                "schema_version": DECODER_SCHEMA_VERSION,
+                "shadows": [item.to_dict() for item in shadows],
+                "source_fingerprint": metadata.fingerprint,
+            }
+            _write_text_atomic(
+                shadows_out,
+                json.dumps(shadow_payload, sort_keys=True, indent=2) + "\n",
+            )
+        except CutError as exc:
+            raise _fail("shadows", str(exc.message)) from exc
+        except Exception as exc:
+            raise _fail("shadows", f"could not write shadows.json: {exc}.") from exc
 
         # --- empty detection: honest empty, no media ---
         if len(document) == 0 or not document.export_ranges:
@@ -550,6 +730,8 @@ def run_cut(
                 compilation=None,
                 clips=(),
                 empty=True,
+                shadows=shadows,
+                shadows_path=shadows_out,
             )
 
         # --- export ---
@@ -627,6 +809,8 @@ def run_cut(
             compilation=compilation,
             clips=tuple(clips),
             empty=False,
+            shadows=shadows,
+            shadows_path=shadows_out,
         )
     except CutCancelled as exc:
         error_stage = exc.stage

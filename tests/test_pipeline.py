@@ -14,11 +14,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from serve_review.detection.decoder import DecoderConfig
 from serve_review.detection.features import FeatureConfig, FeatureFrame
 from serve_review.detection.plan import PlanConfig
 from serve_review.detection.ranges import CandidateRange, RangeConfig
 from serve_review.domain import AttemptDocument, SourceMetadata
 from serve_review.media import export as export_module
+from serve_review.media.audio import AudioEnergy
 from serve_review.pipeline import CutCancelled, CutError, run_cut
 
 
@@ -601,3 +603,241 @@ def test_cut_integration_deterministic_attempts(tmp_path: Path) -> None:
         candidates_fn=cands2,
     )
     assert first.attempts_path.read_bytes() == second.attempts_path.read_bytes()
+
+
+# --- audio-visual decoder path (default; no candidates_fn bypass) ---
+
+
+def _av_feature(
+    moment: float,
+    *,
+    torso: float | None = 0.0,
+    overhead: float | None = 0.0,
+    elbow_speed: float | None = 0.1,
+    rest: float | None = 0.9,
+) -> FeatureFrame:
+    if rest is None:
+        return FeatureFrame(
+            time_seconds=moment,
+            has_person=True,
+            visible_fraction=1.0,
+            torso_scale=1.0,
+            player_scale=1.0,
+            wrist_speed=0.1,
+            elbow_speed=elbow_speed,
+            body_motion=0.2,
+            overhead_evidence=overhead,
+            rest_evidence=None,
+            motion_evidence=None,
+            elbow_flexion_left=150.0,
+            elbow_flexion_right=150.0,
+            shoulder_tilt=0.0,
+            torso_displacement=torso,
+        )
+    return FeatureFrame(
+        time_seconds=moment,
+        has_person=True,
+        visible_fraction=1.0,
+        torso_scale=1.0,
+        player_scale=1.0,
+        wrist_speed=0.1,
+        elbow_speed=elbow_speed,
+        body_motion=0.2,
+        overhead_evidence=overhead,
+        rest_evidence=float(rest),
+        motion_evidence=1.0 - float(rest),
+        elbow_flexion_left=150.0,
+        elbow_flexion_right=150.0,
+        shoulder_tilt=0.0,
+        torso_displacement=torso,
+    )
+
+
+def _single_serve_like_features() -> tuple[FeatureFrame, ...]:
+    """One valid serve (prep 1.0, accel 1.3, exit 1.8) plus a silent tail."""
+    frames: list[FeatureFrame] = [_av_feature(i * 0.1) for i in range(5)]
+    for i in range(3):
+        frames.append(
+            _av_feature(
+                1.0 + i * 0.1, torso=0.5, overhead=0.0,
+                elbow_speed=0.4, rest=0.15,
+            )
+        )
+    frames.append(
+        _av_feature(1.3, torso=0.5, overhead=1.0, elbow_speed=5.0, rest=0.1)
+    )
+    frames.append(
+        _av_feature(1.4, torso=0.3, overhead=1.0, elbow_speed=2.0, rest=0.2)
+    )
+    frames.append(
+        _av_feature(1.5, torso=0.1, overhead=1.0, elbow_speed=1.0, rest=0.4)
+    )
+    frames.append(_av_feature(1.8))
+    for i in range(5):
+        frames.append(_av_feature(2.0 + i * 0.1))
+    # Silent overhead tail: preparation-like lift, overhead acceleration,
+    # stillness exit, but no transient anywhere near it -> shadow.
+    for i in range(3):
+        frames.append(
+            _av_feature(
+                4.0 + i * 0.1, torso=0.5, overhead=0.0,
+                elbow_speed=0.4, rest=0.15,
+            )
+        )
+    frames.append(
+        _av_feature(4.3, torso=0.5, overhead=1.0, elbow_speed=5.0, rest=0.1)
+    )
+    frames.append(_av_feature(4.8))
+    frames.append(_av_feature(4.9))
+    frames.sort(key=lambda f: f.time_seconds)
+    return tuple(frames)
+
+
+def _spiked_dense_audio(schedule) -> tuple[AudioEnergy, ...]:
+    """Phone-scale bed (0.009) with one 0.053 spike at 1.35."""
+    out: list[AudioEnergy] = []
+    for moment in schedule:
+        energy = 0.053 if abs(float(moment) - 1.35) < 0.0025 else 0.009
+        out.append(AudioEnergy(time_seconds=float(moment), energy=energy))
+    return tuple(out)
+
+
+def run_av_faked(tmp_path: Path, **overrides):
+    """Run the decoder path with synthetic pose audio (no media tools)."""
+    video = make_source(tmp_path, "av-session.mov")
+    metadata = make_metadata(duration=6.0)
+    probe, extract, load, _, _, export, seen = fake_stages(
+        metadata, candidates=(CandidateRange(1.0, 2.0),)
+    )
+    seen["export_calls"] = []
+
+    def _features(observations, config):
+        assert isinstance(config, FeatureConfig)
+        return _single_serve_like_features()
+
+    def _audio(video_p, schedule, **kwargs):
+        seen["audio_schedule_len"] = len(tuple(schedule))
+        return _spiked_dense_audio(tuple(schedule))
+
+    params = dict(
+        output_dir=tmp_path / "output",
+        padding_seconds=0.0,
+        mode="clips",
+        probe_fn=probe,
+        extract_fn=extract,
+        load_cache_fn=load,
+        features_fn=_features,
+        audio_fn=_audio,
+        export_fn=export,
+    )
+    params.update(overrides)
+    result = run_cut(video, **params)
+    return video, metadata, result, seen
+
+
+def test_av_decoder_path_yields_single_valid_range(tmp_path: Path) -> None:
+    _, _, result, seen = run_av_faked(tmp_path)
+    assert result.empty is False
+    assert len(result.attempts_document) == 1
+    attempt = result.attempts_document.attempts[0]
+    # Anchored at the transient: preparation entry through stillness exit.
+    assert attempt.detected_range.start_seconds == pytest.approx(1.0)
+    assert attempt.detected_range.end_seconds == pytest.approx(1.8)
+    assert seen["audio_schedule_len"] > 100  # dense grid, not the pose grid
+    assert len(result.clips) == 1
+
+
+def test_av_shadow_tail_logged_separately_attempts_schema_unchanged(
+    tmp_path: Path,
+) -> None:
+    video, _, result, _ = run_av_faked(tmp_path)
+    session = tmp_path / "output" / video.stem
+    shadows_path = session / "shadows.json"
+    assert result.shadows_path == shadows_path
+    assert shadows_path.is_file()
+    payload = json.loads(shadows_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == DecoderConfig().schema_version
+    assert len(payload["shadows"]) == 1
+    assert payload["shadows"][0]["reason"] == "shadow"
+    assert payload["shadows"][0]["start_seconds"] == pytest.approx(4.0)
+    assert result.shadows[0].reason == "shadow"
+    # attempts.json schema is unchanged: no shadow records leak into it.
+    attempts_payload = json.loads((session / "attempts.json").read_text(encoding="utf-8"))
+    assert "shadows" not in attempts_payload
+    assert len(attempts_payload["attempts"]) == 1
+    run_payload = json.loads((session / "run.json").read_text(encoding="utf-8"))
+    assert run_payload["shadow_count"] == 1
+    assert run_payload["decoder_config"] == DecoderConfig().to_dict()
+    assert run_payload["decoder_schema_version"] == DecoderConfig().schema_version
+
+
+def test_av_silent_session_stays_honest_empty(tmp_path: Path) -> None:
+    video = make_source(tmp_path, "quiet.mov")
+    metadata = make_metadata(duration=6.0)
+    probe, extract, load, _, _, export, seen = fake_stages(
+        metadata, candidates=(CandidateRange(1.0, 2.0),)
+    )
+
+    def _features(observations, config):
+        return _single_serve_like_features()
+
+    def _quiet_audio(video_p, schedule, **kwargs):
+        return tuple(
+            AudioEnergy(time_seconds=float(t), energy=0.009) for t in schedule
+        )
+
+    result = run_cut(
+        video,
+        output_dir=tmp_path / "output",
+        padding_seconds=0.0,
+        mode="both",
+        probe_fn=probe,
+        extract_fn=extract,
+        load_cache_fn=load,
+        features_fn=_features,
+        audio_fn=_quiet_audio,
+        export_fn=export,
+    )
+    assert result.empty is True
+    assert result.compilation is None
+    assert result.clips == ()
+    assert seen["export_calls"] == []
+    session = tmp_path / "output" / video.stem
+    assert (session / "shadows.json").is_file()
+    stored = AttemptDocument.from_json(
+        (session / "attempts.json").read_text(encoding="utf-8")
+    )
+    assert len(stored) == 0
+
+
+def test_av_audio_failure_is_stage_error(tmp_path: Path) -> None:
+    video = make_source(tmp_path, "boom.mov")
+    metadata = make_metadata(duration=6.0)
+    probe, extract, load, _, _, export, _ = fake_stages(
+        metadata, candidates=(CandidateRange(1.0, 2.0),)
+    )
+
+    def _features(observations, config):
+        return _single_serve_like_features()
+
+    def _boom_audio(video_p, schedule, **kwargs):
+        raise RuntimeError("fake decode failure")
+
+    with pytest.raises(CutError) as excinfo:
+        run_cut(
+            video,
+            output_dir=tmp_path / "output",
+            probe_fn=probe,
+            extract_fn=extract,
+            load_cache_fn=load,
+            features_fn=_features,
+            audio_fn=_boom_audio,
+            export_fn=export,
+        )
+    assert excinfo.value.stage == "audio"
+
+
+def test_av_bypass_path_still_writes_empty_shadow_log(tmp_path: Path) -> None:
+    _, _, result, _ = run_faked(tmp_path)
+    assert result.shadows == ()
+    assert result.shadows_path is not None and result.shadows_path.is_file()
