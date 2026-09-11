@@ -46,3 +46,12 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 - **Environment/result:** macOS/Apple Silicon; JJ 0.45.1; Python 3.11.16; model `opencode/muse-spark-1.3-contributor-free`; 14 turns; verified.
 - **Evidence/review:** exact two-file diff only, no generated binary or dependency change; deterministic bounded FFmpeg fixture factory and real temporary portrait/landscape tests; stored verifier/binding passed; approved, acceptance pending.
 - **Finding:** generated tiny fixtures give M1.4 media integration tests a private-footage-free foundation.
+
+### 2026-09-11 — M4.1 Kovacs eight-stage schema
+
+- **Identity:** accepted run `73efa0fb-71b0-4f75-b953-db3b20a9e3da`; base `a920ed2c`; captured candidate `28e751d61a2a`; integrated `e769cb6b98d6`; model `opencode/muse-spark-1.3-contributor-free`; 35 turns.
+- **Evidence/review:** exactly three allowed files changed. Candidate verification passed 720 tests. Exact review confirmed canonical eight-stage names; immutable stage/attempt/source documents; strict availability, provenance, range, ordering, status, source, and version validation; audio contact requires an anchor plus uncertainty; direct mutation of the stage mapping is rejected.
+- **Lifecycle:** approved and accepted through Tau; worker workspace released; default working copy rebased onto `main`. Per owner instruction, no redundant post-acceptance full-suite run was performed.
+- **Intervention:** first candidate (`c0d3b280-e8dc-4524-95d3-e5b4c875058e`) was rejected for missing audio-anchor and top-level source-document constraints; repair preparation failed before binding (`64c8ff43-976a-45ae-8208-73ad5fdc1425`). A corrected candidate (`98763a68-35aa-474f-ae2d-d1df2f9344c9`) passed 720 tests but Tau acceptance verification timed out twice and left no integration. A second corrected candidate (`fbd11111-d256-4909-af17-ed8e146cecac`) was rejected because its frozen dataclass exposed a mutable stage dictionary. The accepted retry added a read-only mapping and direct regression coverage.
+- **Cost/attention:** three full candidate runs were required; measured inference cost unavailable. Human acceptance unavailable.
+- **Finding:** schema immutability must cover nested containers, not only frozen dataclass attributes; focused integration verification avoids repeating an already-passed full candidate suite during acceptance.
