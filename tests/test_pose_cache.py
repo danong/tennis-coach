@@ -495,3 +495,96 @@ def test_writer_rejects_out_of_order_and_bad_rows(tmp_path: Path) -> None:
         writer.append(make_frame(9.0))
     with pytest.raises(CacheError):
         writer.commit()
+
+
+# --- Sampler orientation quarantine ----------------------------------------
+
+
+def test_header_pins_sampler_orientation_version() -> None:
+    from serve_review.media.frames import SAMPLER_ORIENTATION_VERSION
+
+    assert SAMPLER_ORIENTATION_VERSION == 2
+    header = header_to_dict(make_identity())
+    assert header["sampler_orientation_version"] == 2
+    assert header_from_dict(header) == make_identity()
+
+
+def test_matching_orientation_header_hits_and_resumes(tmp_path: Path) -> None:
+    identity = make_identity()
+    frames = make_frames(3)
+    path = tmp_path / "pose-v1.jsonl"
+    write_complete_cache(path, identity, frames)
+    stored_header = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert stored_header["sampler_orientation_version"] == 2
+    snapshot = load_cache(path)
+    assert snapshot.complete is True
+    require_matching_identity(snapshot.identity, identity)
+    # Partial cache with matching v2 resumes.
+    partial = tmp_path / "partial.jsonl"
+    write_partial_cache(partial, identity, frames[:2])
+    rest = make_frames(1, start=frames[1].time_seconds + 1 / 30.0)
+    append_frames(partial, identity, rest)
+    assert load_cache(partial).complete is False
+    finalize_cache(partial, identity)
+    assert load_cache(partial).complete is True
+
+
+def test_header_missing_orientation_quarantines_as_stale(tmp_path: Path) -> None:
+    identity = make_identity()
+    header = header_to_dict(identity)
+    del header["sampler_orientation_version"]
+    with pytest.raises(CacheStaleError, match="sampler_orientation_version"):
+        header_from_dict(header)
+    # End to end: a complete cache file without the field fails closed.
+    path = tmp_path / "pose-v1.jsonl"
+    lines = [json.dumps(header, sort_keys=True) + "\n"]
+    for frame in make_frames(2):
+        lines.append(_frame_line(frame))
+    lines.append(
+        json.dumps(
+            {"complete": True, "frame_count": 2, "schema_version": 1, "type": "footer"},
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    _write_lines(path, lines)
+    with pytest.raises(CacheStaleError):
+        load_cache(path)
+    # Partial cache without the field is also stale, never resumable.
+    partial = tmp_path / "partial.jsonl"
+    _write_lines(partial, lines[:2])
+    with pytest.raises(CacheStaleError):
+        load_cache(partial)
+    with pytest.raises(CacheStaleError):
+        append_frames(partial, identity, make_frames(1, start=5.0))
+
+
+@pytest.mark.parametrize("bad", [1, 0, 3, 999, "2", 2.0, True, None])
+def test_header_orientation_mismatch_quarantines_as_stale(tmp_path: Path, bad) -> None:
+    identity = make_identity()
+    header = {**header_to_dict(identity), "sampler_orientation_version": bad}
+    with pytest.raises(CacheStaleError, match="sampler_orientation_version"):
+        header_from_dict(header)
+    path = tmp_path / "pose-v1.jsonl"
+    lines = [json.dumps(header, sort_keys=True) + "\n"]
+    for frame in make_frames(1):
+        lines.append(_frame_line(frame))
+    _write_lines(path, lines)
+    with pytest.raises(CacheStaleError):
+        load_cache(path)
+    with pytest.raises(CacheStaleError):
+        append_frames(path, identity, make_frames(1, start=5.0))
+    with pytest.raises(CacheStaleError):
+        finalize_cache(path, identity)
+
+
+def test_orientation_header_validation_errors(tmp_path: Path) -> None:
+    with pytest.raises(CacheError):
+        header_to_dict("not-an-identity")  # type: ignore[arg-type]
+    with pytest.raises(CacheError):
+        require_matching_identity("x", make_identity())  # type: ignore[arg-type]
+    with pytest.raises(CacheError):
+        require_matching_identity(make_identity(), "x")  # type: ignore[arg-type]
+    header = header_to_dict(make_identity())
+    with pytest.raises(CacheCorruptError):
+        header_from_dict({**header, "unexpected": 1})

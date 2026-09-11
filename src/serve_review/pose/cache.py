@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from serve_review.media.frames import SAMPLER_ORIENTATION_VERSION
 from serve_review.pose.schema import (
     POSE_SCHEMA_VERSION,
     CacheIdentity,
@@ -109,6 +110,7 @@ def header_to_dict(identity: CacheIdentity) -> dict[str, Any]:
         "model_name": identity.model_name,
         "model_version": identity.model_version,
         "pose_schema_version": POSE_SCHEMA_VERSION,
+        "sampler_orientation_version": SAMPLER_ORIENTATION_VERSION,
         "sampling_rate_hz": identity.sampling_rate_hz,
         "sampling_start_seconds": identity.sampling_start_seconds,
         "schema_version": CACHE_SCHEMA_VERSION,
@@ -129,6 +131,7 @@ def header_from_dict(values: dict[str, Any]) -> CacheIdentity:
         "model_name",
         "model_version",
         "pose_schema_version",
+        "sampler_orientation_version",
         "sampling_rate_hz",
         "sampling_start_seconds",
         "schema_version",
@@ -138,6 +141,24 @@ def header_from_dict(values: dict[str, Any]) -> CacheIdentity:
     unknown = sorted(set(values) - known)
     if unknown:
         raise CacheCorruptError(f"{name}: unknown keys {unknown!r}.")
+    orientation = values.get("sampler_orientation_version", None)
+    if (
+        isinstance(orientation, bool)
+        or not isinstance(orientation, int)
+        or orientation != SAMPLER_ORIENTATION_VERSION
+    ):
+        if "sampler_orientation_version" not in values:
+            raise CacheStaleError(
+                f"{name}: missing sampler_orientation_version; this cache "
+                "predates the sampler orientation contract "
+                f"(current version {SAMPLER_ORIENTATION_VERSION}); "
+                "it is stale: quarantine and re-extract."
+            )
+        raise CacheStaleError(
+            f"{name}: stale sampler_orientation_version {orientation!r}; "
+            f"this build requires version {SAMPLER_ORIENTATION_VERSION}. "
+            "Quarantine and re-extract rather than reusing flipped rows."
+        )
     if values.get("type") != "header":
         raise CacheCorruptError(
             f"{name}: first record must be a header "
@@ -194,7 +215,16 @@ def _dumps_line(payload: dict[str, Any]) -> str:
 def require_matching_identity(
     stored: CacheIdentity, expected: CacheIdentity
 ) -> None:
-    """Raise :class:`CacheStaleError` when any identity field differs."""
+    """Raise :class:`CacheStaleError` when any identity field differs.
+
+    The sampler orientation contract (``SAMPLER_ORIENTATION_VERSION``) is
+    enforced at the header layer by :func:`header_from_dict`: any cached
+    header missing the field or carrying a different version raises
+    :class:`CacheStaleError` on load, so stale flipped rows never validate.
+    This check additionally compares an attached
+    ``sampler_orientation_version`` attribute when present (forward
+    compatibility) and otherwise requires the five core fields to match.
+    """
     if not isinstance(stored, CacheIdentity):
         raise CacheError(
             "invalid stored identity: expected CacheIdentity, "
@@ -217,6 +247,16 @@ def require_matching_identity(
         for field in fields
         if getattr(stored, field) != getattr(expected, field)
     ]
+    stored_orientation = getattr(stored, "sampler_orientation_version", SAMPLER_ORIENTATION_VERSION)
+    expected_orientation = getattr(expected, "sampler_orientation_version", SAMPLER_ORIENTATION_VERSION)
+    if stored_orientation != expected_orientation:
+        mismatched.append("sampler_orientation_version")
+    if "sampler_orientation_version" in mismatched:
+        raise CacheStaleError(
+            "pose cache identity is stale: sampler_orientation_version "
+            f"(cached={stored_orientation!r} != requested={expected_orientation!r}). "
+            "Re-extract rather than reusing cached rows."
+        )
     if mismatched:
         details = ", ".join(
             f"{field} (cached={getattr(stored, field)!r} "

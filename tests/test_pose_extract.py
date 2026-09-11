@@ -506,3 +506,121 @@ def test_frame_source_is_streamed_not_retained(tmp_path: Path) -> None:
     )
     assert received == ["called"]
     assert result.frame_count == 6
+
+
+# --- Sampler orientation quarantine -----------------------------------------
+
+
+def _write_cache_lines(path: Path, header: dict, frames: list, *, complete: bool) -> None:
+    import json as _json
+
+    lines = [_json.dumps(header, sort_keys=True) + "\n"]
+    for frame in frames:
+        lines.append(
+            _json.dumps({"observation": frame.to_dict(), "type": "frame"}, sort_keys=True)
+            + "\n"
+        )
+    if complete:
+        lines.append(
+            _json.dumps(
+                {
+                    "complete": True,
+                    "frame_count": len(frames),
+                    "schema_version": 1,
+                    "type": "footer",
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+    path.write_text("".join(lines), encoding="utf-8")
+
+
+def test_old_header_without_orientation_is_quarantined(tmp_path: Path) -> None:
+    import json as _json
+
+    video = _touch_video(tmp_path)
+    cache = tmp_path / "pose-v1.jsonl"
+    meta = make_metadata(duration=0.2)
+    backend_probe = FakeBackend()
+    identity = CacheIdentity(
+        source_fingerprint=meta.fingerprint,
+        model_name=backend_probe.model_name,
+        model_version=backend_probe.model_version,
+        sampling_rate_hz=30.0,
+        sampling_start_seconds=0.0,
+    )
+    header = cache_module.header_to_dict(identity)
+    del header["sampler_orientation_version"]
+    _write_cache_lines(cache, header, [make_frame_observation(0.0)], complete=True)
+    backend = FakeBackend()
+    result = extract_poses(
+        video, cache, probe_fn=make_probe(meta),
+        frame_factory=make_frame_factory(), backend_factory=lambda: backend,
+    )
+    assert result.cache_hit is False
+    assert result.frame_count == 6
+    assert (tmp_path / "pose-v1.jsonl.corrupt").is_file()
+    stored_header = _json.loads(cache.read_text(encoding="utf-8").splitlines()[0])
+    assert stored_header["sampler_orientation_version"] == 2
+    assert cache_module.load_cache(cache).complete is True
+
+
+def test_orientation_mismatch_is_quarantined_and_resume_refused(tmp_path: Path) -> None:
+    import json as _json
+
+    video = _touch_video(tmp_path)
+    cache = tmp_path / "pose-v1.jsonl"
+    meta = make_metadata(duration=0.2)
+    from serve_review.media.frames import build_uniform_schedule
+
+    full = build_uniform_schedule(0.2, 30.0)
+    backend_probe = FakeBackend()
+    identity = CacheIdentity(
+        source_fingerprint=meta.fingerprint,
+        model_name=backend_probe.model_name,
+        model_version=backend_probe.model_version,
+        sampling_rate_hz=30.0,
+        sampling_start_seconds=0.0,
+    )
+    stale_header = {**cache_module.header_to_dict(identity), "sampler_orientation_version": 1}
+    partial = [make_frame_observation(t) for t in full[:2]]
+    _write_cache_lines(cache, stale_header, partial, complete=False)
+    with __import__("pytest").raises(cache_module.CacheStaleError):
+        cache_module.load_cache(cache)
+    backend = FakeBackend()
+    result = extract_poses(
+        video, cache, probe_fn=make_probe(meta),
+        frame_factory=make_frame_factory(), backend_factory=lambda: backend,
+    )
+    assert result.cache_hit is False
+    assert result.cached_frames == 0
+    assert result.inferred_frames == 6
+    assert (tmp_path / "pose-v1.jsonl.corrupt").is_file()
+    stored_header = _json.loads(cache.read_text(encoding="utf-8").splitlines()[0])
+    assert stored_header["sampler_orientation_version"] == 2
+
+
+def test_matching_v2_header_hits_and_round_trips(tmp_path: Path) -> None:
+    import json as _json
+
+    video = _touch_video(tmp_path)
+    cache = tmp_path / "pose-v1.jsonl"
+    meta = make_metadata(duration=0.2)
+    first = FakeBackend()
+    first_result = extract_poses(
+        video, cache, probe_fn=make_probe(meta),
+        frame_factory=make_frame_factory(), backend_factory=lambda: first,
+    )
+    assert first_result.cache_hit is False
+    stored_header = _json.loads(cache.read_text(encoding="utf-8").splitlines()[0])
+    assert stored_header["sampler_orientation_version"] == 2
+    round_tripped = cache_module.header_from_dict(stored_header)
+    assert round_tripped == cache_module.load_cache(cache).identity
+    second = FakeBackend()
+    result = extract_poses(
+        video, cache, probe_fn=make_probe(meta),
+        frame_factory=make_frame_factory(), backend_factory=lambda: second,
+    )
+    assert result.cache_hit is True
+    assert second.calls == []

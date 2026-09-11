@@ -585,12 +585,27 @@ def extract_poses(
             )
         except Exception as exc:
             raise ExtractionError(f"invalid cache identity: {exc}.") from exc
+        # The cache header pins the sampler orientation contract via
+        # cache.header_to_dict; read the pinned version here so a broken
+        # contract fails closed instead of silently validating flipped rows.
+        orientation_version = frames_module.SAMPLER_ORIENTATION_VERSION
+        if isinstance(orientation_version, bool) or not isinstance(
+            orientation_version, int
+        ):
+            raise ExtractionError(
+                "invalid sampler orientation version: "
+                f"{orientation_version!r}; expected an integer."
+            )
 
         # 4. Existing cache: hit, resume, or quarantine-and-restart.
         cached: list[Any] = []
         if cache_target.is_file() and not overwrite:
             try:
                 snapshot = cache_module.load_cache(cache_target)
+            except cache_module.CacheStaleError as exc:
+                _quarantine_quietly(cache_target)
+                snapshot = None
+                _note_quarantine = exc
             except cache_module.CacheCorruptError as exc:
                 _quarantine_quietly(cache_target)
                 snapshot = None
@@ -641,7 +656,7 @@ def extract_poses(
             # Fresh start: quarantine corrupt files, otherwise remove.
             try:
                 snapshot = cache_module.load_cache(cache_target)
-            except cache_module.CacheCorruptError:
+            except (cache_module.CacheCorruptError, cache_module.CacheStaleError):
                 _quarantine_quietly(cache_target)
             except cache_module.CacheError:
                 try:
