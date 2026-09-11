@@ -229,9 +229,16 @@ def extract_poses_cmd(args: argparse.Namespace) -> int:
     else:
         cache_path = extract_module.default_cache_path_for(source, args.output_dir)
     model_path = args.model.expanduser()
+    overlay = args.overlay.expanduser() if args.overlay is not None else None
 
     def _progress(done: int, total: int, observation: object) -> None:
         print(f"extract-poses: {done}/{total} frames", file=sys.stderr)
+
+    def _overlay_progress(done: int, total: int | None) -> None:
+        if total is None:
+            print(f"overlay: {done} frames", file=sys.stderr)
+        else:
+            print(f"overlay: {done}/{total} frames", file=sys.stderr)
 
     try:
         result = extract_module.extract_poses(
@@ -243,6 +250,8 @@ def extract_poses_cmd(args: argparse.Namespace) -> int:
             ffprobe=args.ffprobe,
             overwrite=args.overwrite,
             progress_callback=_progress,
+            overlay_path=overlay,
+            overlay_progress_callback=_overlay_progress if overlay is not None else None,
         )
     except extract_module.ExtractionCancelled as exc:
         print(f"ERROR: pose extraction was cancelled: {exc}.", file=sys.stderr)
@@ -259,6 +268,8 @@ def extract_poses_cmd(args: argparse.Namespace) -> int:
             f"to {result.cache_path}"
         )
     print(str(result.cache_path))
+    if result.overlay_path is not None:
+        print(f"overlay: {result.overlay_path}")
     return 0
 
 
@@ -469,6 +480,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help="destination pose cache file (default: <output-dir>/<source-stem>/cache/pose-v1.jsonl)",
+    )
+    poses_parser.add_argument(
+        "--overlay",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "optional diagnostic .mp4: render the sampled upright frames "
+            "with pose landmarks and skeleton lines via the system ffmpeg "
+            "(default: off)"
+        ),
     )
     poses_parser.add_argument(
         "--output-dir",

@@ -43,6 +43,7 @@ from serve_review.media import frames as frames_module
 from serve_review.media import probe as probe_module
 from serve_review.pose import cache as cache_module
 from serve_review.pose import mediapipe as mediapipe_module
+from serve_review.pose import overlay as overlay_module
 from serve_review.pose.schema import CacheIdentity
 
 __all__ = [
@@ -93,6 +94,7 @@ class ExtractionResult:
     inferred_frames: int
     cache_hit: bool
     complete: bool
+    overlay_path: Path | None = None
 
 
 def default_cache_path_for(video: Path | str, output_dir: Path | str = "output") -> Path:
@@ -152,6 +154,213 @@ def _quarantine_quietly(path: Path) -> Path | None:
         return None
 
 
+def _render_overlay_for_observations(
+    video_path: Path,
+    overlay_target: Path,
+    full_schedule: tuple[float, ...],
+    metadata: Any,
+    observations: list[Any],
+    *,
+    rate_hz: float,
+    ffmpeg: str,
+    ffprobe: str,
+    frame_factory: Callable[[tuple[float, ...], Any], Iterator[Any]] | None,
+    progress_callback: Callable[[int, int | None], None] | None,
+    is_cancelled: Callable[[], bool] | None,
+) -> Path:
+    """Render the diagnostic overlay MP4 for the full observation set.
+
+    Streams the upright frames for ``full_schedule`` (the extraction
+    sample rate), pairs each frame with its observation by exact
+    canonical time, renders dots/skeleton lines via
+    :mod:`serve_review.pose.overlay`, and encodes an H.264 MP4 with the
+    same dimensions as the sampled frames. Requires
+    ``len(full_schedule) == len(observations)`` and exact per-frame
+    time equality; anything else raises instead of emitting a
+    misaligned overlay. The complete pose cache is already published
+    when this runs, so overlay failures never invalidate it.
+    """
+    total = len(observations)
+    if total == 0:
+        raise ExtractionError(
+            "cannot write pose overlay: no observations are available; "
+            "refusing to emit an empty overlay."
+        )
+    if len(full_schedule) != total:
+        raise ExtractionError(
+            "cannot write pose overlay: the sampling schedule holds "
+            f"{len(full_schedule)} frames but {total} observations are "
+            "available; refusing to misalign the overlay."
+        )
+    if frame_factory is not None:
+        try:
+            frame_source = frame_factory(full_schedule, metadata)
+        except Exception as exc:
+            raise ExtractionError(
+                f"could not sample frames for pose overlay: {exc}."
+            ) from exc
+    else:
+        try:
+            frame_source = frames_module.iter_sampled_frames(
+                video_path,
+                full_schedule,
+                source=metadata,
+                ffmpeg=ffmpeg,
+                ffprobe=ffprobe,
+                is_cancelled=is_cancelled,
+            )
+        except Exception as exc:
+            raise ExtractionError(
+                f"could not sample frames for pose overlay: {exc}."
+            ) from exc
+    try:
+        iterator = iter(frame_source)
+    except TypeError as exc:
+        raise ExtractionError(
+            f"overlay frame source is not iterable: {exc}."
+        ) from exc
+
+    try:
+        first = next(iterator)
+    except StopIteration:
+        raise ExtractionError(
+            "overlay frame source produced no frames; refusing to emit "
+            "an empty overlay."
+        ) from None
+    except ExtractionError:
+        raise
+    except frames_module.FrameCancelled as exc:
+        raise ExtractionCancelled(
+            f"pose overlay was cancelled: {exc}."
+        ) from exc
+    except Exception as exc:
+        raise ExtractionError(
+            f"could not sample frames for pose overlay: {exc}."
+        ) from exc
+    try:
+        first_time = float(first.time_seconds)  # type: ignore[union-attr]
+        first_width = int(first.width)  # type: ignore[union-attr]
+        first_height = int(first.height)  # type: ignore[union-attr]
+        first_image = first.image  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ExtractionError(
+            f"overlay frame source yielded a malformed frame: {exc}."
+        ) from exc
+    try:
+        first_obs_time = float(observations[0].time_seconds)  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ExtractionError(
+            f"pose overlay encountered a malformed observation: {exc}."
+        ) from exc
+    if first_time != first_obs_time:
+        raise ExtractionError(
+            f"cannot write pose overlay: frame t={first_time!r} does not "
+            f"match observation t={first_obs_time!r}; refusing to misalign "
+            "the overlay."
+        )
+
+    def _annotated() -> Iterator[Any]:
+        try:
+            yield overlay_module.render_frame(first_image, observations[0])
+        except overlay_module.OverlayError as exc:
+            raise ExtractionError(
+                f"could not render pose overlay: {exc}."
+            ) from exc
+        for index in range(1, total):
+            try:
+                frame = next(iterator)
+            except StopIteration:
+                raise ExtractionError(
+                    f"overlay frame source ended after {index} of {total} "
+                    "frames; refusing to emit a truncated overlay."
+                ) from None
+            except ExtractionError:
+                raise
+            except frames_module.FrameCancelled as exc:
+                raise ExtractionCancelled(
+                    f"pose overlay was cancelled: {exc}."
+                ) from exc
+            except Exception as exc:
+                raise ExtractionError(
+                    f"could not sample frames for pose overlay: {exc}."
+                ) from exc
+            try:
+                moment = float(frame.time_seconds)  # type: ignore[union-attr]
+                width = int(frame.width)  # type: ignore[union-attr]
+                height = int(frame.height)  # type: ignore[union-attr]
+                image = frame.image  # type: ignore[union-attr]
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise ExtractionError(
+                    f"overlay frame source yielded a malformed frame: {exc}."
+                ) from exc
+            if width != first_width or height != first_height:
+                raise ExtractionError(
+                    f"cannot write pose overlay: frame {index} dimensions "
+                    f"({width}x{height}) differ from the first frame "
+                    f"({first_width}x{first_height}); refusing to encode "
+                    "mixed dimensions."
+                )
+            try:
+                obs_time = float(observations[index].time_seconds)  # type: ignore[union-attr]
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise ExtractionError(
+                    f"pose overlay encountered a malformed observation: {exc}."
+                ) from exc
+            if moment != obs_time:
+                raise ExtractionError(
+                    f"cannot write pose overlay: frame t={moment!r} does "
+                    f"not match observation t={obs_time!r}; refusing to "
+                    "misalign the overlay."
+                )
+            try:
+                yield overlay_module.render_frame(image, observations[index])
+            except overlay_module.OverlayError as exc:
+                raise ExtractionError(
+                    f"could not render pose overlay: {exc}."
+                ) from exc
+        try:
+            _extra = next(iterator)
+        except StopIteration:
+            return
+        except ExtractionCancelled:
+            raise
+        except ExtractionError:
+            raise
+        except frames_module.FrameCancelled as exc:
+            raise ExtractionCancelled(
+                f"pose overlay was cancelled: {exc}."
+            ) from exc
+        except Exception as exc:
+            raise ExtractionError(
+                f"could not sample frames for pose overlay: {exc}."
+            ) from exc
+        raise ExtractionError(
+            f"overlay frame source produced extra frames beyond {total} "
+            "observations; refusing to emit a misaligned overlay."
+        )
+
+    try:
+        return overlay_module.write_overlay_video(
+            _annotated(),
+            overlay_target,
+            width=first_width,
+            height=first_height,
+            fps=rate_hz,
+            ffmpeg=ffmpeg,
+            total_frames=total,
+            progress_callback=progress_callback,
+            is_cancelled=is_cancelled,
+        )
+    except overlay_module.OverlayCancelled as exc:
+        raise ExtractionCancelled(
+            f"pose overlay was cancelled: {exc}."
+        ) from exc
+    except overlay_module.OverlayError as exc:
+        raise ExtractionError(
+            f"could not write pose overlay to {overlay_target}: {exc}."
+        ) from exc
+
+
 def extract_poses(
     video: Path | str,
     cache_path: Path | str,
@@ -167,6 +376,8 @@ def extract_poses(
     backend_factory: Callable[[], Any] | None = None,
     progress_callback: Callable[[int, int, Any], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
+    overlay_path: Path | str | None = None,
+    overlay_progress_callback: Callable[[int, int | None], None] | None = None,
 ) -> ExtractionResult:
     """Extract pose observations for ``video`` into ``cache_path``.
 
@@ -192,6 +403,16 @@ def extract_poses(
         is_cancelled: Optional hook polled before each frame and each
             inference; a true return raises :class:`ExtractionCancelled`
             and leaves a resumable partial cache.
+        overlay_path: Optional diagnostic ``.mp4`` destination. When set,
+            the upright sampled frames (extraction sample rate) are
+            rendered with pose dots/skeleton lines and encoded as an
+            H.264 MP4 via the system FFmpeg after the complete cache is
+            published. The overlay always covers the full final frame
+            set, including cache-hit runs (frames are re-streamed, never
+            re-inferred). Defaults to None (off).
+        overlay_progress_callback: Optional ``(done, total)`` hook for
+            overlay encoding progress (``total`` is the overlay frame
+            count).
 
     Returns:
         An :class:`ExtractionResult`; ``cache_hit`` is True only when a
@@ -239,6 +460,48 @@ def extract_poses(
     if backend_factory is not None and not callable(backend_factory):
         raise ExtractionError(
             f"invalid backend_factory: {backend_factory!r}; expected a callable or None."
+        )
+    if overlay_path is None:
+        overlay_target: Path | None = None
+    elif isinstance(overlay_path, Path):
+        overlay_target = overlay_path.expanduser()
+    elif isinstance(overlay_path, str):
+        if not overlay_path.strip():
+            raise ExtractionError(
+                "invalid overlay path: expected a non-blank path."
+            )
+        overlay_target = Path(overlay_path.strip()).expanduser()
+    else:
+        raise ExtractionError(
+            f"invalid overlay path: {overlay_path!r}; expected a path or None."
+        )
+    if overlay_target is not None:
+        if not str(overlay_target).strip():
+            raise ExtractionError(
+                "invalid overlay path: expected a non-blank path."
+            )
+        if overlay_target.exists() and overlay_target.is_dir():
+            raise ExtractionError(
+                f"invalid overlay path {overlay_target}: destination is "
+                "a directory."
+            )
+        if overlay_target.suffix.lower() != ".mp4":
+            raise ExtractionError(
+                f"invalid overlay path {overlay_target}: expected an "
+                "'.mp4' destination."
+            )
+        try:
+            overlay_target.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ExtractionError(
+                f"could not write pose overlay to {overlay_target}: {exc}."
+            ) from exc
+    if overlay_progress_callback is not None and not callable(
+        overlay_progress_callback
+    ):
+        raise ExtractionError(
+            f"invalid overlay_progress_callback: {overlay_progress_callback!r}; "
+            "expected a callable or None."
         )
 
     # 1. Probe (fingerprint + duration) without modifying the source.
@@ -344,6 +607,21 @@ def extract_poses(
                     snapshot = None
                 else:
                     if snapshot.complete:
+                        overlay_dest: Path | None = None
+                        if overlay_target is not None:
+                            overlay_dest = _render_overlay_for_observations(
+                                video_path,
+                                overlay_target,
+                                full_schedule,
+                                metadata,
+                                list(snapshot.frames),
+                                rate_hz=rate,
+                                ffmpeg=ffmpeg,
+                                ffprobe=ffprobe,
+                                frame_factory=frame_factory,
+                                progress_callback=overlay_progress_callback,
+                                is_cancelled=is_cancelled,
+                            )
                         return ExtractionResult(
                             video=video_path,
                             cache_path=cache_target,
@@ -356,6 +634,7 @@ def extract_poses(
                             inferred_frames=0,
                             cache_hit=True,
                             complete=True,
+                            overlay_path=overlay_dest,
                         )
                     cached = list(snapshot.frames)
         elif cache_target.is_file() and overwrite:
@@ -579,6 +858,21 @@ def extract_poses(
             raise ExtractionError(
                 f"could not write pose cache to {cache_target}: {exc}."
             ) from exc
+        overlay_dest = None
+        if overlay_target is not None:
+            overlay_dest = _render_overlay_for_observations(
+                video_path,
+                overlay_target,
+                full_schedule,
+                metadata,
+                all_obs,
+                rate_hz=rate,
+                ffmpeg=ffmpeg,
+                ffprobe=ffprobe,
+                frame_factory=frame_factory,
+                progress_callback=overlay_progress_callback,
+                is_cancelled=is_cancelled,
+            )
         return ExtractionResult(
             video=video_path,
             cache_path=cache_target,
@@ -591,6 +885,7 @@ def extract_poses(
             inferred_frames=inferred,
             cache_hit=False,
             complete=True,
+            overlay_path=overlay_dest,
         )
     finally:
         closer = getattr(backend, "close", None)

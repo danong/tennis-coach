@@ -964,3 +964,148 @@ def test_extract_poses_reports_failures_actionably(tmp_path: Path, capsys, monke
 
     assert extract_poses_cmd(args) == 1
     assert "ERROR" in capsys.readouterr().err
+
+
+# --- extract-poses --overlay diagnostic flag ---
+
+def test_extract_poses_overlay_defaults_off() -> None:
+    args = build_parser().parse_args(["extract-poses", "session.mov"])
+
+    assert args.overlay is None
+
+
+def test_extract_poses_help_documents_overlay(capsys) -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(["extract-poses", "--help"])
+    assert excinfo.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--overlay" in help_text
+
+
+def test_extract_poses_forwards_overlay_path(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.cli import extract_poses_cmd
+    from serve_review.pose import extract as extract_module
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake-video")
+    overlay = tmp_path / "overlay.mp4"
+    cache = tmp_path / "pose-v1.jsonl"
+    seen: dict = {}
+
+    def _fake_extract(video, cache_path, **kwargs):
+        from pathlib import Path as _Path
+
+        seen["overlay_path"] = kwargs.get("overlay_path")
+        seen["overlay_progress"] = kwargs.get("overlay_progress_callback")
+        overlay_dest = _Path(kwargs.get("overlay_path"))
+        return extract_module.ExtractionResult(
+            video=_Path(video),
+            cache_path=_Path(cache_path),
+            model_name="m",
+            model_version="v",
+            sampling_rate_hz=30.0,
+            sampling_start_seconds=0.0,
+            frame_count=2,
+            cached_frames=0,
+            inferred_frames=2,
+            cache_hit=False,
+            complete=True,
+            overlay_path=overlay_dest,
+        )
+
+    monkeypatch.setattr(extract_module, "extract_poses", _fake_extract)
+    args = build_parser().parse_args(
+        ["extract-poses", str(source), "--cache", str(cache),
+         "--overlay", str(overlay)]
+    )
+
+    assert extract_poses_cmd(args) == 0
+    assert seen["overlay_path"] == overlay.expanduser()
+    assert callable(seen["overlay_progress"])
+    out = capsys.readouterr().out
+    assert "overlay:" in out
+    assert str(overlay) in out
+
+
+def test_extract_poses_without_overlay_passes_none(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.cli import extract_poses_cmd
+    from serve_review.pose import extract as extract_module
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake-video")
+    cache = tmp_path / "pose-v1.jsonl"
+    seen: dict = {}
+
+    def _fake_extract(video, cache_path, **kwargs):
+        from pathlib import Path as _Path
+
+        seen["overlay_path"] = kwargs.get("overlay_path")
+        seen["overlay_progress"] = kwargs.get("overlay_progress_callback")
+        return extract_module.ExtractionResult(
+            video=_Path(video),
+            cache_path=_Path(cache_path),
+            model_name="m",
+            model_version="v",
+            sampling_rate_hz=30.0,
+            sampling_start_seconds=0.0,
+            frame_count=1,
+            cached_frames=0,
+            inferred_frames=1,
+            cache_hit=False,
+            complete=True,
+        )
+
+    monkeypatch.setattr(extract_module, "extract_poses", _fake_extract)
+    args = build_parser().parse_args(
+        ["extract-poses", str(source), "--cache", str(cache)]
+    )
+
+    assert extract_poses_cmd(args) == 0
+    assert seen["overlay_path"] is None
+    assert seen["overlay_progress"] is None
+    assert "overlay:" not in capsys.readouterr().out
+
+
+def test_extract_poses_reports_overlay_failure(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.cli import extract_poses_cmd
+    from serve_review.pose import extract as extract_module
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake-video")
+
+    def _boom(video, cache_path, **kwargs):
+        raise extract_module.ExtractionError(
+            "could not write pose overlay to overlay.mp4: ffmpeg failed."
+        )
+
+    monkeypatch.setattr(extract_module, "extract_poses", _boom)
+    args = build_parser().parse_args(
+        ["extract-poses", str(source), "--cache", str(tmp_path / "p.jsonl"),
+         "--overlay", str(tmp_path / "overlay.mp4")]
+    )
+
+    assert extract_poses_cmd(args) == 1
+    err = capsys.readouterr().err
+    assert "ERROR" in err
+    assert "overlay" in err
+
+
+def test_extract_poses_reports_overlay_cancellation(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.cli import extract_poses_cmd
+    from serve_review.pose import extract as extract_module
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake-video")
+
+    def _cancelled(video, cache_path, **kwargs):
+        raise extract_module.ExtractionCancelled("pose overlay was cancelled.")
+
+    monkeypatch.setattr(extract_module, "extract_poses", _cancelled)
+    args = build_parser().parse_args(
+        ["extract-poses", str(source), "--cache", str(tmp_path / "p.jsonl"),
+         "--overlay", str(tmp_path / "overlay.mp4")]
+    )
+
+    assert extract_poses_cmd(args) == 1
+    assert "cancelled" in capsys.readouterr().err
