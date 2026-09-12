@@ -1,13 +1,15 @@
-# Technical Design Document: Automated Tennis Serve Phase Detection Pipeline
+# M5 Proposal: Learned Tennis Serve Phase Detection
+
+> **Status:** proposed post-M4 experiment; not the current implementation plan. M4 remediation is deliberately limited to native 120 fps, right-handed, rear-view footage with existing body pose and audio. This document covers the later, separately gated learned-model path.
 
 ## 1. System Overview & Scope
 
-This document specifies the technical architecture for an automated, high-precision tennis serve phase checkpointing engine. The system operates on monocular smartphone video captured across variable frame rates (30–240 fps), arbitrary camera setups (rear, left-side, right-side), and varied serve styles or player demographics (platform vs. pinpoint, full-loop vs. abbreviated takebacks, jumping vs. non-jumping/standing servers).
+This document specifies a proposed technical architecture for an automated, high-precision tennis serve phase checkpointing engine. The system operates on monocular smartphone video captured across variable frame rates (30–240 fps), arbitrary camera setups (rear, left-side, right-side), and varied serve styles or player demographics (platform vs. pinpoint, full-loop vs. abbreviated takebacks, jumping vs. non-jumping/standing servers).
 
 The pipeline serves a three-tier system architecture:
 
 * **Macro Level (Goal 1 - Active):** Auto-splicing raw video clips into discrete serve attempt boundaries.
-* **Micro Level (Goal 2 - Target Scope):** Extracting exact physical presentation timestamps (`timestamp_us`) for the eight Kovacs serve stages with sub-50 ms temporal accuracy.
+* **Micro Level (M5 target scope):** Estimate source presentation timestamps (`timestamp_us`) for the eight operational checkpoints, with reported uncertainty. Sub-50 ms accuracy is an evaluation target only where native cadence, visual evidence, and label uncertainty support it.
 * **Downstream Analytics (Goal 3 - Future Context):** Supplying deterministic, scale-invariant kinematic data to a relational store and LLM coaching engine. (Downstream database schemas, 3D lifting passes, and LLM prompt design are explicitly out-of-scope for this document).
 
 ---
@@ -179,7 +181,9 @@ Because the TCN operates on lightweight pre-computed feature vectors rather than
 
 ---
 
-## 6. Implementation Roadmap
+## 6. Proposed M5 Implementation Roadmap
+
+This work starts only after M4 remediation has a frozen operational rubric, dense-pose baseline, sufficient session-disjoint labels, and a documented deterministic baseline. It must not replace or retune M4 merely because a learned model is available.
 
 ### Phase 1: Core Timebase & Preprocessing Infrastructure
 

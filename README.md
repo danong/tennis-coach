@@ -15,7 +15,9 @@ Everything runs locally. The project does not prescribe practice protocols, scor
 ## Documents
 
 - [Design](docs/design.md): offline behavior, media rules, architecture, detection, checkpoints, and evaluation.
-- [Roadmap](docs/roadmap.md): single-run Tau leaves, dependencies, allowed scope, checks, and milestone gates.
+- [Roadmap](docs/roadmap.md): single-run leaves, dependencies, allowed scope, checks, and milestone gates.
+- [M4 remediation plan](docs/m4-remediation-plan.md): current dense body-pose/audio repair under a narrow 120 fps rear-view contract.
+- [M5 TCN proposal](docs/m5-tcn-phase-detection.md): deferred learned multi-view phase-detection experiment.
 
 The design is the behavioral source of truth. The roadmap defines delivery order and evidence required to mark work complete. If they conflict, resolve and update both before implementation.
 

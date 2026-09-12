@@ -291,7 +291,7 @@ M4 is non-blocking with respect to M3: phase completeness and structural anomaly
 - Reproduce the local baseline with `mise run cut`, `mise run analyze`, `mise run review-phases`, `mise run phase-annotate`, and `mise run phase-evaluate`. The review renderer is the human-facing artifact; its report is the deterministic record.
 - The reviewed development exemplar has three manually available stages emitted as unavailable. The remaining pre-contact body stages are systematically early; contact is near the manual frame but outside its one-frame accepted interval; finish is late. The exact report records the individual errors.
 - This is a feature-evidence/chronology failure, **not** evidence that 30 Hz observed pose cadence is the limiting factor. M4.7 remains deferred.
-- **Next leaf:** first write a bounded diagnosis from the cached M4.2 grid and M4.3 candidates at the manual keyframes; then repair only the implicated M4.3 evidence and/or M4.4 transition/skip scoring. Freeze the label manifest and compare the same report before considering any held-out run. M3 attempts, clips, and exports remain untouchable.
+- **Next leaf:** follow [the M4 remediation plan](m4-remediation-plan.md): first write a bounded diagnosis from the cached grid/candidates at frozen manual keyframes, then add dense native 120 fps attempt observations before repairing only implicated body-proxy evidence and/or transition/skip scoring. Freeze the label manifest and compare the same report before considering any held-out run. M3 attempts, clips, and exports remain untouchable. The learned multi-view proposal is deferred to [M5](m5-tcn-phase-detection.md).
 
 ### M4.7 — Conditional focused denser pose extraction
 
