@@ -788,6 +788,15 @@ def _run_selected(
                 image=np.ascontiguousarray(upright, dtype=np.uint8),
             )
     finally:
+        # A caller may stop after an early selected frame. In that case
+        # FFmpeg can be blocked writing later raw frames into our unread
+        # stdout pipe. Close the read end before waiting so it receives
+        # SIGPIPE rather than consuming the five-second termination grace.
+        try:
+            if proc.stdout is not None:
+                proc.stdout.close()
+        except OSError:
+            pass
         try:
             if proc.poll() is None:
                 proc.terminate()
@@ -796,11 +805,6 @@ def _run_selected(
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=5)
-        except OSError:
-            pass
-        try:
-            if proc.stdout is not None:
-                proc.stdout.close()
         except OSError:
             pass
         try:
