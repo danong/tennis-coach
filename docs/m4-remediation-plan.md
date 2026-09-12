@@ -24,20 +24,20 @@ Private labels and exact-decoded-PTS manifests live under ignored `refs/annotati
 
 ## 3. Operational body-only checkpoints
 
-These are reproducible **proxies**, not claims of observed ball release, racket orientation, or shoulder axial rotation.
+M4 uses only body pose and audio. The serving arm is right and the tossing arm is left; no handedness or view inference is attempted. These are the concrete checkpoint rules to implement and evaluate.
 
-| Stage | M4 remediation operational definition | Required limitations |
+| Stage | Checkpoint | Score or selection rule |
 | --- | --- | --- |
-| `start` | Last stable local low point of the tossing wrist before sustained upward motion. Image-space low means maximum wrist `y`. | `body_pose_estimate`, `camera_relative_only` |
-| `release` | First sustained upward crossing of a face/head-height proxy by the tossing wrist after `start`. It is a toss-elevation proxy, not observed ball separation. | `ball_unobserved`, `release_is_body_proxy` |
-| `loading` | Best pre-contact body-loading configuration from knee flexion plus rear-view torso/shoulder configuration, inside a broad contact-relative window. | `body_pose_estimate`, `camera_relative_only` |
-| `cocking` | Latest credible pre-contact serving-arm configuration with elbow flexion, low wrist relative to shoulder/elbow, and trajectory reversal into the upward contact path. | `shoulder_axial_rotation_unobserved`, `racket_tip_unobserved`, `cocking_is_body_configuration_proxy` |
-| `acceleration` | Half cumulative 2D serving-wrist arc length between selected `cocking` and audio contact. | `derived_wrist_arc_checkpoint`, `camera_relative_only` |
-| `contact` | Raw-source audio transient anchor with explicit uncertainty; compatible body pose can support, never visually prove, impact. | `audio_anchor_not_visual_contact` |
-| `deceleration` | Half cumulative 2D serving-wrist arc length between contact and selected `finish`. | `derived_wrist_arc_checkpoint`, `camera_relative_only` |
-| `finish` | First sustained post-contact low-motion/follow-through completion after the serving wrist and torso leave their kinetic-drive period. | `body_pose_estimate`, `camera_relative_only` |
+| `start` | Start of the toss motion | The last stable local **low point** of the left wrist before sustained upward motion. In image coordinates, low means maximum wrist `y`. Require an upward velocity run and meaningful upward displacement afterwards. |
+| `release` | Toss-height proxy | The first sustained upward crossing of the left wrist through a face-height threshold after `start`. The threshold is halfway between the eye line and an estimated crown line derived from visible face landmarks. This is a repeatable proxy for release while ball tracking is absent. |
+| `loading` | Maximum body loading | The maximum pre-contact composite of: (1) combined knee flexion, (2) lateral shoulder-line tilt, (3) hip-line tilt, and (4) image-plane shoulder--hip line angle difference. Normalize each stream within the attempt before applying fixed versioned weights; select the best score in the broad middle pre-contact region. |
+| `cocking` | Arm-cocking proxy | The latest high-scoring pre-contact configuration combining: (1) right-elbow flexion, (2) the right wrist low relative to the right shoulder and elbow, and (3) a wrist-trajectory reversal into sustained upward motion. This is the available 2D body proxy for the bent-elbow/racket-drop portion of the motion. |
+| `acceleration` | Mid-acceleration | The point at 50% cumulative 2D right-wrist arc length from selected `cocking` to audio contact. It is derived only after both endpoints are available. |
+| `contact` | Impact anchor | The strongest raw-source audio transient, with explicit timing uncertainty. Dense body pose may support the surrounding arm configuration but does not replace the audio anchor. |
+| `deceleration` | Mid-deceleration | The point at 50% cumulative 2D right-wrist arc length from contact to selected `finish`. It is derived only after both endpoints are available. |
+| `finish` | Follow-through completion | The first sustained post-contact interval where right-wrist speed and torso rotation proxy both return below versioned, attempt-relative low-motion thresholds. |
 
-The serving arm is right and tossing arm is left for this plan. No handedness or view inference is attempted.
+The output remains explicit that `release` is a body proxy and that `cocking` is not a direct observation of racket orientation or shoulder axial rotation. Those caveats belong in provenance/limitations on the result, not in the checkpoint-definition table.
 
 ## 4. Dense native attempt observations
 
