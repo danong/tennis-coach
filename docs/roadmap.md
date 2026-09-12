@@ -8,19 +8,11 @@ Status: active plan, 2026-09-12. M1–M3 implementation is complete; M4 implemen
 - M4 phase analysis, checkpoint evaluation, and automatic overlay review are implemented; the development phase-timing gate remains failed and remediation is next.
 - An ignored professional-serve YouTube corpus exists under `refs/corpus/`, but it is not used for anything yet.
 
-Every numbered leaf below is scoped for exactly one isolated Tau run. Run only one at a time with `opencode/muse-spark-1.3-contributor-free`, review its exact candidate diff, integrate it, and make the integrated revision the dependency for the next run. Gates are orchestrator/user reviews, not delegated implementation items.
+Every numbered leaf below is scoped for one isolated Tau run. Use the approved free model, a committed base, and one leaf at a time; gates are orchestrator/user reviews rather than delegated implementation items.
 
 ## Tau execution contract
 
-Before dispatch, the orchestrator must have a committed base and stable bookmark. For each leaf:
-
-1. Create a task JSON outside the repository. Copy the leaf's objective, dependency, allowed/forbidden scope, behavior, and checks into `goal`; workers do not inherit this roadmap or conversation automatically.
-2. Tell the worker to read `AGENT.md`, `docs/design.md`, and the named adjacent code/tests. Setup is `mise install && mise run setup` in its fresh workspace.
-3. Set the task verifier to the leaf's focused check followed by `mise run check`, with no skipped checks. Workers do not commit, move bookmarks, edit docs to excuse divergence, access `refs/`, or add dependencies unless the leaf explicitly allows it.
-4. Run with model `opencode/muse-spark-1.3-contributor-free`, JJ workspace isolation, a fixed base revision, and that base as an immutable head.
-5. Inspect and review the exact captured revision. Integrate only approved work, rerun `mise run check`, record the run ID/status in the table, append bounded feedback to `docs/tau-dogfood.md`, and release only after retaining or rejecting the candidate safely.
-
-Default worker yield: summary, changed files, checks/results, deviations, and remaining risks. Request rescue rather than inventing a contract, weakening a test, touching private footage, or introducing an undeclared package.
+Give Tau a concise task specification outside the repository that names the outcome, allowed files, forbidden scope, and focused/regression checks. Run it in a fresh JJ workspace, inspect the exact candidate diff and verifier result, then integrate only approved work and rerun `mise run check`. Record the run and outcome in this roadmap and `docs/tau-dogfood.md`; do not treat a worker's prose or a passing check as approval. Workers should not commit, move bookmarks, touch large local footage, or add dependencies without explicit authorization. Ask for rescue rather than inventing a contract or weakening a check.
 
 ## Tracking
 

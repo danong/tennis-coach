@@ -21,8 +21,8 @@ Use mise task entrypoints and `uv run ...`; do not rely on system Python or manu
 - Modify only paths explicitly allowed by that leaf/task.
 - Do not redesign contracts, alter adjacent modules, weaken checks, or broaden scope.
 - Do not make VCS commits, move bookmarks, or modify JJ configuration as a worker.
-- Do not access, inspect, copy, rename, or report metadata from `refs/`; it contains private footage/reference material.
-- Do not commit media, model weights, caches, outputs, local manifests, absolute private paths, credentials, or Tau state.
+- Treat `refs/` as local working storage for footage and reference material; do not add large media artifacts to normal source changes.
+- Keep generated media, caches, outputs, local manifests, absolute machine paths, credentials, and Tau state out of commits unless a task explicitly calls for a small, portable fixture or aggregate result.
 - Tests must be deterministic, offline, and independent of private footage. Generate tiny media fixtures in temporary directories when media is required.
 - Use subprocess argument arrays rather than shell interpolation. Never mutate source videos.
 - Preserve source timestamps and rational media metadata; do not derive canonical source time from frame index/assumed FPS.
@@ -38,4 +38,4 @@ Use mise task entrypoints and `uv run ...`; do not rely on system Python or manu
 
 ## Tau worker completion
 
-Report changed files, exact checks/results, assumptions, deviations, and remaining risks through `tau_yield`. If requirements conflict, a prerequisite is absent, private data appears necessary, or an undeclared dependency seems required, stop and use `tau_request_rescue` instead of improvising.
+For delegated work, give Tau a concise task specification with allowed files and checks, run the required focused and regression checks, and finish with `tau_yield` reporting changed files, results, assumptions, deviations, and risks. Ask for rescue instead of improvising when requirements conflict, private footage is required, or an undeclared dependency seems necessary.

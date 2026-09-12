@@ -16,7 +16,7 @@ The user controls symmetric context padding in seconds. The intended command is:
 mise run cut -- refs/sessions/dev/2026-09-08-00.mov --padding 1 --output both
 ```
 
-A later analysis command adds review checkpoints within each detected serve. Everything runs locally on an Apple-silicon Mac. Footage, annotations, model caches, and results are not uploaded.
+A later analysis command adds review checkpoints within each detected serve. Everything runs locally on an Apple-silicon Mac.
 
 ## 2. Scope and success
 
@@ -121,7 +121,7 @@ Add dependencies only in the ticket that first uses them. Expected inference dep
 - an exported person detector plus RTMPose-family body model;
 - Core ML Tools only during a later conversion experiment.
 
-MMPose, MMCV, and OpenMIM are not runtime dependencies. Model files are downloaded into ignored storage from a pinned source with a recorded license, exact version, SHA-256, input/output contract, and attribution. No model is accepted solely because it has a high benchmark score: it must be useful on representative serve footage and have a credible Core ML path.
+MMPose, MMCV, and OpenMIM are not runtime dependencies. Model files live in local ignored storage with a recorded version, checksum, input/output contract, and attribution. No model is accepted solely because it has a high benchmark score: it must be useful on representative serve footage and have a credible Core ML path.
 
 ## 7. Detection strategy
 
@@ -142,13 +142,13 @@ Development begins with the local supplied sessions. Before calling automatic cu
 
 Checkpoint evaluation reports each checkpoint separately against manually reviewed uncertainty intervals. Manual labels are kept locally under ignored `refs/annotations/<split>/`: label zero-based decoded source frames, then convert them through `mise run phase-annotate`, which resolves actual FFprobe timestamps and validates source fingerprint/duration against `attempts.json`. Never make canonical times from `frame_index / nominal_fps`. `mise run phase-evaluate` writes the deterministic report without mutating checkpoints or annotations. A useful-body-checkpoint gate may pass while racket/contact checkpoints remain unavailable.
 
-## 9. Testing and privacy
+## 9. Testing and local storage
 
 Testing layers are:
 
 1. pure unit tests for schemas, times, features, ranges, and command errors;
 2. generated tiny media fixtures for probe/export/timestamp behavior;
-3. local private-video smoke tests whose paths/results are not committed;
+3. local video smoke tests whose paths/results are not committed;
 4. user review of compilations and checkpoints.
 
 `refs/`, `models/`, `output/`, caches, local manifests, `.tau/`, and Tau workspaces/state remain ignored. Tests must not require private footage or network access. Aggregate sanitized metrics may be committed.

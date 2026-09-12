@@ -10,7 +10,7 @@ A local command-line tool for finding serve attempts in long iPhone slow-motion 
 
 **Checkpoint analysis:** after cutting is reliable, identify optional review moments such as loading, upward swing, estimated contact, follow-through, and landing. Racket/ball-dependent claims remain unavailable until supported by appropriate visual evidence.
 
-Everything runs locally. The project does not prescribe practice protocols, score technique, generate coaching, estimate speed, or upload footage.
+Everything runs locally. The project does not prescribe practice protocols, score technique, generate coaching, or estimate speed.
 
 ## Documents
 
@@ -47,18 +47,16 @@ Current commands:
 | `mise run phase-evaluate -- --checkpoints <checkpoints.json> --annotations <annotations.json> --output <report.json>` | Write the deterministic local phase-gate report. |
 | `uv run python tools/export_segments.py <video> <segments.json> --output-dir <dir>` | Export manually selected corpus segments. |
 
-Use `uv run python` for ad-hoc Python commands rather than an unversioned system `python`. Keep user labels and generated annotation manifests under ignored `refs/annotations/`; use decoded source timestamps, never `frame / assumed_fps`. Private source videos, downloaded models, caches, and generated outputs are ignored.
+Use `uv run python` for ad-hoc Python commands rather than an unversioned system `python`. Keep user labels and generated annotation manifests under local `refs/annotations/`; use decoded source timestamps, never `frame / assumed_fps`. Large source videos, downloaded models, caches, and generated outputs are kept out of normal source changes.
 
 The archived iOS-first plan is retained in `old-docs/` for reference but is not an active implementation specification.
 
-## Footage and privacy
+## Footage and local storage
 
-Development uses user-supplied practice footage kept in ignored local storage. Commit synthetic fixtures, annotation schemas, and aggregate test results; do not commit private videos, absolute private paths, credentials, or signing settings. Do not upload footage or send it to a model/service without explicit authorization.
-
-The existing self-analysis Markdown, NeuraSkill HTML, and serve-evaluation PDF are reference material, not validated training labels or executable requirements. Do not bulk-print the self-analysis file: it embeds large base64 images.
+Development footage and downloaded reference videos live in local `refs/` storage because they are large. Keep source videos, absolute machine paths, credentials, and generated media out of normal source changes; a future Git LFS setup can provide versioned media provenance when useful. Synthetic fixtures, annotation schemas, and aggregate test results are suitable for the repository.
 
 ## Working with models
 
-Roadmap leaves are designed as single isolated Tau runs using the explicitly authorized free model `opencode/muse-spark-1.3-contributor-free`. Run one leaf at a time. The orchestrator reviews and integrates exact candidate diffs and owns architecture, model/license selection, private-footage evaluation, and milestone gates.
+Roadmap leaves are designed as single isolated Tau runs using the explicitly authorized free model `opencode/muse-spark-1.3-contributor-free`. Run one leaf at a time. The orchestrator reviews and integrates exact candidate diffs and owns architecture, model selection, local-footage evaluation, and milestone gates.
 
 See the [Tau execution contract](docs/roadmap.md#tau-execution-contract). A ticket is complete only when its verifier, exact-diff review, integrated checks, dogfood record, and cleanup evidence are complete.
