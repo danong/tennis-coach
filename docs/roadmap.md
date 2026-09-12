@@ -1,6 +1,12 @@
 # Serve Review offline roadmap
 
-Status: active plan, 2026-09-09. This replaces the archived iOS-first roadmap in `old-docs/`.
+Status: active plan, 2026-09-12. M1–M3 implementation is complete; M4 implementation is complete but its development gate is currently failed. This replaces the archived iOS-first roadmap in `old-docs/`.
+
+## Current state
+
+- M1–M3 cutting, export, pose extraction, detection, and evaluation are implemented and covered by the offline test suite.
+- M4 phase analysis, checkpoint evaluation, and automatic overlay review are implemented; the development phase-timing gate remains failed and remediation is next.
+- An ignored professional-serve YouTube corpus exists under `refs/corpus/`, but it is not used for anything yet.
 
 Every numbered leaf below is scoped for exactly one isolated Tau run. Run only one at a time with `opencode/muse-spark-1.3-contributor-free`, review its exact candidate diff, integrate it, and make the integrated revision the dependency for the next run. Gates are orchestrator/user reviews, not delegated implementation items.
 
@@ -23,20 +29,20 @@ Default worker yield: summary, changed files, checks/results, deviations, and re
 | Foundation | done | direct | initial base | mise/uv/CLI scaffold |
 | M1.1 | done | `9caa1fad-e7b3-4deb-9a95-c91caef22e19` | `40540f728c0b` | reviewed, integrated, and released after topology repair |
 | M1.2 | done | `99203706-0a25-4975-a8b3-9954f5d4243e` | `4bb98f3bbe28` | accepted; Display Matrix rotation coverage and integrated check passed |
-| M1.3 | accepting | `0356c0d0-15f5-4cfb-81e8-0e2c3bb7fbcb` | — | reviewed synthetic fixture generator |
-| M1.4 | accepting | `eb2adaa8-2201-4dfb-9a42-c672c7f56e07` | — | reviewed individual clip exporter |
-| M1.5 | accepting | `447ec8e3-d675-4a39-b2f2-d2575d198169` | — | reviewed compilation exporter and manual export CLI |
-| M2.1 | not started | — | — | — |
-| M2.2 | not started | — | — | — |
+| M1.3 | done | existing history | — | synthetic fixture generator accepted |
+| M1.4 | done | existing history | — | individual clip exporter accepted |
+| M1.5 | done | existing history | — | compilation exporter and manual export CLI accepted |
+| M2.1 | done | existing history | — | timestamped frame sampler accepted |
+| M2.2 | done | existing history | — | pose observation and cache schemas accepted |
 | M2.3 | deferred | — | — | reproducible downloader deferred; local approved Heavy artifact is present |
-| M2.4 | not started | — | — | — |
-| M2.5 | not started | — | — | — |
-| M2.6 | not started | — | — | — |
-| M3.1 | not started | — | — | — |
-| M3.2 | not started | — | — | — |
-| M3.3 | not started | — | — | — |
-| M3.4 | not started | — | — | — |
-| M3.5 | not started | — | — | — |
+| M2.4 | done | existing history | — | MediaPipe Pose Landmarker adapter accepted |
+| M2.5 | done | existing history | — | pose extraction coordinator and diagnostic command accepted |
+| M2.6 | retired | — | — | absorbed by M2.5/M3.5; no separate implementation |
+| M3.1 | done | existing history | — | temporal feature extraction accepted |
+| M3.2 | done | existing history | — | candidate range state machine accepted |
+| M3.3 | done | existing history | — | attempt document and padding planner accepted |
+| M3.4 | done | existing history | — | evaluation matching and reports accepted |
+| M3.5 | done | existing history | — | end-to-end `cut` command accepted |
 | M4.1 | done | `73efa0fb-71b0-4f75-b953-db3b20a9e3da` | history rewritten; see run ID | eight-stage domain accepted |
 | M4.2 | done | `2591024a-7455-4fd5-8b71-137b46e7bd6f` and repairs | history rewritten; see run IDs | cadence-aware feature grid accepted |
 | M4.3 | done | `00055168-4215-428d-878f-60b9918627ab` | history rewritten; see run ID | scale-invariant contact evidence accepted |

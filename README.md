@@ -2,7 +2,7 @@
 
 A local command-line tool for finding serve attempts in long iPhone slow-motion recordings and exporting the useful footage without dead time.
 
-**Status:** M1–M3 cutting and M4 phase-analysis code are implemented locally. The current M4 manual gate has failed on development footage; phase heuristics/chronology need a narrow repair before any held-out phase evaluation. A later iPhone application is out of the current roadmap.
+**Status:** M1–M3 cutting and export, pose extraction, detection, and evaluation are complete. M4 phase-analysis code and review tooling are implemented, but the current development phase-timing gate has failed and needs a narrow heuristic/chronology repair before held-out evaluation. A later iPhone application is out of the current roadmap.
 
 ## What we are building
 
@@ -45,6 +45,7 @@ Current commands:
 | `mise run review-phases -- <video>` | Render labeled pose-overlay keyframes for manual phase review. |
 | `mise run phase-annotate -- <video> --attempts <attempts.json> --labels <labels.json> --output <annotations.json>` | Convert zero-based decoded-frame labels to exact-PTS private annotations. |
 | `mise run phase-evaluate -- --checkpoints <checkpoints.json> --annotations <annotations.json> --output <report.json>` | Write the deterministic local phase-gate report. |
+| `uv run python tools/export_segments.py <video> <segments.json> --output-dir <dir>` | Export manually selected corpus segments. |
 
 Use `uv run python` for ad-hoc Python commands rather than an unversioned system `python`. Keep user labels and generated annotation manifests under ignored `refs/annotations/`; use decoded source timestamps, never `frame / assumed_fps`. Private source videos, downloaded models, caches, and generated outputs are ignored.
 
