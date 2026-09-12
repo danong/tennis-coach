@@ -1308,3 +1308,162 @@ def test_analyze_cancellation_reports_stage(tmp_path: Path, capsys, monkeypatch)
     assert analyze(args) == 1
     err = capsys.readouterr().err
     assert "cancelled at audio" in err
+
+
+# --- review-phases command ----------------------------------------------------
+
+
+def test_review_phases_defaults() -> None:
+    args = build_parser().parse_args(["review-phases", "session.mov"])
+
+    assert args.video == Path("session.mov")
+    assert args.checkpoints is None
+    assert args.output_dir == Path("output")
+    assert args.output is None
+    assert args.cache is None
+    assert args.overwrite is False
+    assert args.ffmpeg == "ffmpeg"
+    assert args.ffprobe == "ffprobe"
+
+
+def test_review_phases_help_documents_options(capsys) -> None:
+    top_help = build_parser().format_help()
+    assert "review-phases" in top_help
+
+    parser = build_parser()
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(["review-phases", "--help"])
+    assert excinfo.value.code == 0
+    out = capsys.readouterr().out
+    assert "--checkpoints" in out
+    assert "--output" in out
+    assert "--cache" in out
+    assert "--overwrite" in out
+    assert "review.json" in out.lower() or "review" in out.lower()
+
+
+def test_review_phases_rejects_missing_video(tmp_path: Path, capsys) -> None:
+    from serve_review.cli import review_phases
+
+    args = build_parser().parse_args(["review-phases", str(tmp_path / "missing.mov")])
+
+    assert review_phases(args) == 2
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_review_phases_rejects_missing_checkpoints_file(tmp_path: Path, capsys) -> None:
+    from serve_review.cli import review_phases
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+    args = build_parser().parse_args(
+        ["review-phases", str(source), "--checkpoints", str(tmp_path / "nope.json")]
+    )
+
+    assert review_phases(args) == 2
+    assert "checkpoints file does not exist" in capsys.readouterr().err
+
+
+def test_review_phases_success_reports_index(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review import phase_review as review_module
+    from serve_review.cli import review_phases
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+    review_dir = tmp_path / "output" / source.stem / "review-phases"
+    result = SimpleNamespace(
+        review_json=review_dir / "review.json",
+        index_html=review_dir / "index.html",
+        review_dir=review_dir,
+        image_count=3,
+        entry_count=8,
+        empty=False,
+    )
+    seen: dict = {}
+
+    def _fake_run_review(video, **kwargs):
+        seen.update(kwargs)
+        seen["video"] = Path(video)
+        return result
+
+    monkeypatch.setattr(review_module, "run_review", _fake_run_review)
+    args = build_parser().parse_args(
+        [
+            "review-phases",
+            str(source),
+            "--checkpoints",
+            str(tmp_path / "ck.json"),
+            "--output",
+            str(review_dir),
+            "--cache",
+            str(tmp_path / "pose.jsonl"),
+            "--output-dir",
+            str(tmp_path / "output"),
+            "--overwrite",
+        ]
+    )
+    (tmp_path / "ck.json").write_text("{}", encoding="utf-8")
+    assert review_phases(args) == 0
+    out = capsys.readouterr().out
+    assert str(review_dir / "review.json") in out
+    assert "3 image(s)" in out
+    assert seen["overwrite"] is True
+    assert seen["output"] == review_dir
+
+
+def test_review_phases_empty_result_reports_empty_index(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review import phase_review as review_module
+    from serve_review.cli import review_phases
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+    review_dir = tmp_path / "output" / source.stem / "review-phases"
+    result = SimpleNamespace(
+        review_json=review_dir / "review.json",
+        index_html=review_dir / "index.html",
+        review_dir=review_dir,
+        image_count=0,
+        entry_count=0,
+        empty=True,
+    )
+    monkeypatch.setattr(review_module, "run_review", lambda video, **k: result)
+    args = build_parser().parse_args(["review-phases", str(source)])
+
+    assert review_phases(args) == 0
+    assert "empty review index" in capsys.readouterr().out
+
+
+def test_review_phases_stage_error_reports_stage(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review import phase_review as review_module
+    from serve_review.cli import review_phases
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+
+    def _boom(video, **kwargs):
+        raise review_module.ReviewError("pose", "pose cache is stale: fake.")
+
+    monkeypatch.setattr(review_module, "run_review", _boom)
+    args = build_parser().parse_args(["review-phases", str(source)])
+
+    assert review_phases(args) == 1
+    err = capsys.readouterr().err
+    assert "phase review failed at pose" in err
+    assert "stale" in err
+
+
+def test_review_phases_cancellation_reports_stage(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review import phase_review as review_module
+    from serve_review.cli import review_phases
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+
+    def _cancelled(video, **kwargs):
+        raise review_module.ReviewCancelled("review", "cancelled during rendering.")
+
+    monkeypatch.setattr(review_module, "run_review", _cancelled)
+    args = build_parser().parse_args(["review-phases", str(source)])
+
+    assert review_phases(args) == 1
+    assert "cancelled during rendering" in capsys.readouterr().err

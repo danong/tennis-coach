@@ -386,6 +386,63 @@ def analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def review_phases(args: argparse.Namespace) -> int:
+    from serve_review.phase_review import (
+        ReviewCancelled,
+        ReviewError,
+        run_review,
+    )
+
+    source = args.video.expanduser()
+    if not source.is_file():
+        print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
+        return 2
+    checkpoints = args.checkpoints.expanduser() if args.checkpoints is not None else None
+    if checkpoints is not None and not checkpoints.is_file():
+        print(f"ERROR: checkpoints file does not exist: {checkpoints}", file=sys.stderr)
+        return 2
+    cache = args.cache.expanduser() if args.cache is not None else None
+    output = args.output.expanduser() if args.output is not None else None
+
+    def _progress(message: str) -> None:
+        print(message, file=sys.stderr)
+
+    try:
+        result = run_review(
+            source,
+            output_dir=args.output_dir,
+            checkpoints_path=checkpoints,
+            output=output,
+            cache_path=cache,
+            overwrite=args.overwrite,
+            ffmpeg=args.ffmpeg,
+            ffprobe=args.ffprobe,
+            progress_callback=_progress,
+        )
+    except ReviewCancelled as exc:
+        print(
+            f"ERROR: phase review was cancelled at {exc.stage}: {exc.message}.",
+            file=sys.stderr,
+        )
+        return 1
+    except ReviewError as exc:
+        print(
+            f"ERROR: phase review failed at {exc.stage}: {exc.message}.",
+            file=sys.stderr,
+        )
+        return 1
+    print(str(result.review_json))
+    print(str(result.index_html))
+    if result.empty:
+        print("no phases to review; wrote empty review index.")
+        return 0
+    print(
+        f"rendered {result.image_count} image(s) for "
+        f"{result.entry_count} phase(s): {result.review_dir}",
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="serve-review",
@@ -626,6 +683,80 @@ def build_parser() -> argparse.ArgumentParser:
         help="ffprobe executable (default: ffprobe)",
     )
     analyze_parser.set_defaults(handler=analyze)
+
+    review_parser = subparsers.add_parser(
+        "review-phases",
+        help="render phase keyframes with skeleton overlays for review",
+        description=(
+            "Sample the original upright source at each available/partial "
+            "phase keyframe, pair it with the nearest cached pose "
+            "observation within a bounded tolerance, render the existing "
+            "skeleton overlay, burn a deterministic raster caption into a "
+            "JPEG (attempt ID, stage, source times, confidence/provenance, "
+            "availability, anomalies), and write a deterministic review "
+            "index (review.json, index.html, MANIFEST.txt). Unavailable or "
+            "unsupported phases produce no image but appear in the index. "
+            "Contact is labelled with provenance and source time and is "
+            "never claimed as exact visual observation. Never modifies "
+            "checkpoints.json, attempts.json, clips, or the compilation."
+        ),
+    )
+    review_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
+    review_parser.add_argument(
+        "--checkpoints",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "explicit checkpoints JSON file (default: "
+            "output/<source-stem>/checkpoints.json from analyze)"
+        ),
+    )
+    review_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("output"),
+        help="generated output directory (default: output)",
+    )
+    review_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "explicit final review directory (default: "
+            "output/<source-stem>/review-phases)"
+        ),
+    )
+    review_parser.add_argument(
+        "--cache",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "explicit pose cache file (default: "
+            "<output-dir>/<source-stem>/cache/pose-v1.jsonl); must be a "
+            "complete cache with matching identity, never re-inferred"
+        ),
+    )
+    review_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace an existing review directory (default: fail on collision)",
+    )
+    review_parser.add_argument(
+        "--ffmpeg",
+        default="ffmpeg",
+        metavar="EXE",
+        help="ffmpeg executable (default: ffmpeg)",
+    )
+    review_parser.add_argument(
+        "--ffprobe",
+        default="ffprobe",
+        metavar="EXE",
+        help="ffprobe executable (default: ffprobe)",
+    )
+    review_parser.set_defaults(handler=review_phases)
     return parser
 
 
