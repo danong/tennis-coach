@@ -16,6 +16,7 @@ from serve_review.checkpoints.phase_features import (
     PhaseFeaturesConfig,
     PhaseFeaturesError,
     build_phase_feature_grid,
+    resolve_direct_observation_tolerance_seconds,
     window_samples_for_seconds,
 )
 from serve_review.domain import MediaRange
@@ -97,8 +98,8 @@ def _attempt(start: float = 10.0, end: float = 12.0) -> MediaRange:
 
 
 def test_schema_version_pinned() -> None:
-    assert PHASE_FEATURES_SCHEMA_VERSION == 1
-    assert PhaseFeaturesConfig().schema_version == 1
+    assert PHASE_FEATURES_SCHEMA_VERSION == 2
+    assert PhaseFeaturesConfig().schema_version == 2
     assert PhaseFeatureGrid(
         attempt_range=_attempt(0.0, 0.5),
         source_frame_rate_hz=120.0,
@@ -106,8 +107,9 @@ def test_schema_version_pinned() -> None:
         grid_rate_hz=30.0,
         position_window_samples=1,
         derivative_window_samples=1,
+        direct_observation_tolerance_seconds=0.015,
         samples=(),
-    ).schema_version == 1
+    ).schema_version == 2
 
 
 def test_config_validation() -> None:
@@ -119,6 +121,10 @@ def test_config_validation() -> None:
         PhaseFeaturesConfig(visibility_floor=1.5)
     with pytest.raises(PhaseFeaturesError):
         PhaseFeaturesConfig(position_smoothing_seconds=0.0)
+    with pytest.raises(PhaseFeaturesError):
+        PhaseFeaturesConfig(direct_observation_tolerance_seconds=0.0)
+    with pytest.raises(PhaseFeaturesError):
+        PhaseFeaturesConfig(direct_observation_tolerance_seconds=-0.01)
     with pytest.raises(PhaseFeaturesError):
         PhaseFeaturesConfig(config_id="  ")
     with pytest.raises(PhaseFeaturesError):
@@ -446,4 +452,249 @@ def test_rejects_unordered_and_bad_inputs() -> None:
             _attempt(10.0, 11.0),
             audio_energies=(AudioEnergy(time_seconds=0.2, energy=0.1), AudioEnergy(time_seconds=0.1, energy=0.2)),
             config=cfg,
+        )
+
+
+# --- M4.2 repair: bounded direct-observation alignment ----------------------
+
+
+def _drift_observations(
+    *, start: float, count: int, rate_hz: float
+) -> list[FrameObservation]:
+    step = 1.0 / rate_hz
+    return [_frame(start + n * step, _skeleton()) for n in range(count)]
+
+
+def test_real_pose_cadence_29_979hz_classifies_direct() -> None:
+    # Smoke pattern: 145 genuine 29.979 Hz samples on a nominal 30 Hz grid
+    # must classify nearly all as direct observations, not interpolation.
+    start, grid_hz, src_hz = 10.0, 30.0, 29.979
+    count = 145
+    obs = _drift_observations(start=start, count=count, rate_hz=src_hz)
+    end = start + count / grid_hz  # 145 grid points over the same span
+    cfg = PhaseFeaturesConfig(grid_rate_hz=grid_hz)
+    grid = build_phase_feature_grid(
+        obs, MediaRange(start_seconds=start, end_seconds=end), config=cfg,
+        source_frame_rate_hz=120.0,
+    )
+    assert len(grid) == count
+    observed = [s for s in grid if s.observed]
+    # Nearly all compatible samples are direct-observed.
+    assert len(observed) >= 130
+    for sample in observed:
+        assert sample.interpolation_span_seconds == 0.0
+        assert sample.wrist_left_x is not None
+        assert sample.observation_quality > 0.0
+        assert abs(sample.source_time_offset_seconds) <= (
+            grid.direct_observation_tolerance_seconds + 1e-12
+        )
+        assert sample.temporal_uncertainty_seconds + 1e-12 >= abs(
+            sample.source_time_offset_seconds
+        )
+    # Canonical grid coordinates are preserved (uniform, half-open).
+    step = 1.0 / grid_hz
+    for index, sample in enumerate(grid):
+        assert sample.time_seconds == pytest.approx(start + index * step, abs=1e-9)
+    assert all(start <= s.time_seconds < end for s in grid)
+    # Effective tolerance never bridges distinct frames/gaps.
+    assert grid.direct_observation_tolerance_seconds < step / 2.0 + 1e-12
+    assert grid.direct_observation_tolerance_seconds < 1.0 / src_hz / 2.0 + 1e-12
+
+
+def test_direct_alignment_consumes_each_source_at_most_once() -> None:
+    start, grid_hz, src_hz = 10.0, 30.0, 29.979
+    obs = _drift_observations(start=start, count=145, rate_hz=src_hz)
+    end = start + 145 / grid_hz
+    cfg = PhaseFeaturesConfig(grid_rate_hz=grid_hz)
+    grid = build_phase_feature_grid(
+        obs, MediaRange(start_seconds=start, end_seconds=end), config=cfg,
+        source_frame_rate_hz=120.0,
+    )
+    source_times = sorted(
+        (s.time_seconds + s.source_time_offset_seconds)
+        for s in grid if s.observed
+    )
+    # Deterministic ties, no double consumption: each source time unique
+    # and coincident with a genuine qualified input observation.
+    assert len(source_times) == len(set(round(t, 9) for t in source_times))
+    obs_times = [f.time_seconds for f in obs]
+    for claimed in source_times:
+        assert min(abs(claimed - t) for t in obs_times) <= 1e-9
+    assert len(source_times) <= len(obs_times)
+    # Deterministic rerun consumes identically.
+    again = build_phase_feature_grid(
+        obs, MediaRange(start_seconds=start, end_seconds=end), config=cfg,
+        source_frame_rate_hz=120.0,
+    )
+    assert [s.source_time_offset_seconds for s in grid] == [
+        s.source_time_offset_seconds for s in again
+    ]
+
+
+def test_direct_alignment_tolerance_boundary_rejects() -> None:
+    cfg = PhaseFeaturesConfig(grid_rate_hz=30.0)
+    step = 1.0 / 30.0
+    # Two qualified sources bracketing a grid point; the nearer sits just
+    # outside the effective tolerance so the grid point must not observe.
+    effective = resolve_direct_observation_tolerance_seconds(
+        cfg, grid_rate_hz=30.0, qualified_source_times=(10.0, 10.0 + step),
+    )
+    assert 0.0 < effective < step / 2.0
+    just_outside = effective + 0.001
+    assert just_outside < step / 2.0
+    grid_time = 10.0 + step
+    # Third source stays >33 ms from the probe so the global minimum gap
+    # (and hence the effective tolerance) stays at the grid-capped value.
+    obs = [
+        _frame(10.0, _skeleton()),
+        _frame(grid_time + just_outside, _skeleton()),
+        _frame(10.099, _skeleton()),
+    ]
+    grid = build_phase_feature_grid(
+        obs, MediaRange(start_seconds=10.0, end_seconds=10.10),
+        config=cfg, source_frame_rate_hz=120.0,
+    )
+    by_time = {round(s.time_seconds, 9): s for s in grid}
+    target = by_time[round(grid_time, 9)]
+    assert target.observed is False
+    assert target.source_time_offset_seconds == 0.0
+    # Just inside the boundary the same geometry must observe.
+    just_inside_offset = effective - 0.001
+    assert just_inside_offset > 0.0
+    obs2 = [
+        _frame(10.0, _skeleton()),
+        _frame(grid_time + just_inside_offset, _skeleton()),
+        _frame(10.099, _skeleton()),
+    ]
+    grid2 = build_phase_feature_grid(
+        obs2, MediaRange(start_seconds=10.0, end_seconds=10.10),
+        config=cfg, source_frame_rate_hz=120.0,
+    )
+    by_time2 = {round(s.time_seconds, 9): s for s in grid2}
+    target2 = by_time2[round(grid_time, 9)]
+    assert target2.observed is True
+    assert target2.source_time_offset_seconds == pytest.approx(
+        just_inside_offset, abs=1e-9
+    )
+
+
+def test_direct_alignment_bounded_by_cadence() -> None:
+    cfg = PhaseFeaturesConfig(
+        grid_rate_hz=30.0, direct_observation_tolerance_seconds=1.0
+    )
+    # Even a wildly broad configured tolerance is capped below half steps.
+    effective = resolve_direct_observation_tolerance_seconds(
+        cfg, grid_rate_hz=30.0,
+        qualified_source_times=tuple(10.0 + n / 30.0 for n in range(5)),
+    )
+    assert effective < (1.0 / 30.0) / 2.0 + 1e-12
+    assert effective < 0.15 / 2.0 + 1e-12
+    # Dense 120 Hz sources cap by the source spacing as well.
+    dense = tuple(10.0 + n / 120.0 for n in range(9))
+    effective_dense = resolve_direct_observation_tolerance_seconds(
+        cfg, grid_rate_hz=30.0, qualified_source_times=dense,
+    )
+    assert effective_dense < (1.0 / 120.0) / 2.0 + 1e-12
+
+
+@pytest.mark.parametrize("rate_hz", [30.0, 60.0, 120.0])
+def test_direct_alignment_dense_and_irregular_cadence(rate_hz: float) -> None:
+    cfg = PhaseFeaturesConfig(grid_rate_hz=30.0)
+    obs = _sine_observations(start=10.0, end=11.0, rate_hz=rate_hz)
+    grid = build_phase_feature_grid(
+        obs, _attempt(10.0, 11.0), config=cfg, source_frame_rate_hz=120.0
+    )
+    assert len(grid) == 30
+    observed = [s for s in grid if s.observed]
+    # Dense sources always offer a nearby qualified sample per grid point.
+    assert len(observed) >= 25
+    source_times = [
+        s.time_seconds + s.source_time_offset_seconds for s in observed
+    ]
+    assert len(set(round(t, 9) for t in source_times)) == len(source_times)
+    for sample in observed:
+        assert sample.temporal_uncertainty_seconds + 1e-12 >= abs(
+            sample.source_time_offset_seconds
+        )
+    # Irregular cadence: 30 Hz base with deterministic ±5 ms jitter stays
+    # within the bounded tolerance and remains mostly direct-observed.
+    if rate_hz == 30.0:
+        jittered: list[FrameObservation] = []
+        for i, frame in enumerate(obs):
+            person = frame.persons[0] if frame.has_person else None
+            delta = 0.0 if i in (0, len(obs) - 1) else (0.005 if i % 2 == 0 else -0.005)
+            t = frame.time_seconds + delta
+            jittered.append(
+                FrameObservation(
+                    time_seconds=t,
+                    timestamp_ms=int(round(t * 1000)),
+                    persons=(person,) if person is not None else (),
+                )
+            )
+        jittered.sort(key=lambda f: f.time_seconds)
+        grid_j = build_phase_feature_grid(
+            [f for f in jittered if 10.0 <= f.time_seconds < 11.0],
+            _attempt(10.0, 11.0), config=cfg, source_frame_rate_hz=120.0,
+        )
+        assert sum(1 for s in grid_j if s.observed) >= 20
+
+
+def test_source_offset_and_uncertainty_honesty() -> None:
+    cfg = PhaseFeaturesConfig(grid_rate_hz=30.0)
+    step = 1.0 / 30.0
+    # Exact grid times claim zero offset but still carry spacing honesty.
+    obs = _sine_observations(start=10.0, end=11.0, rate_hz=30.0)
+    grid = build_phase_feature_grid(
+        obs, _attempt(10.0, 11.0), config=cfg, source_frame_rate_hz=120.0
+    )
+    for sample in grid:
+        assert math.isfinite(sample.source_time_offset_seconds)
+        assert math.isfinite(sample.temporal_uncertainty_seconds)
+        assert sample.temporal_uncertainty_seconds >= 0.0
+        assert sample.temporal_uncertainty_seconds + 1e-12 >= abs(
+            sample.source_time_offset_seconds
+        )
+        assert sample.temporal_uncertainty_seconds + 1e-12 >= (
+            sample.interpolation_span_seconds / 2.0
+        )
+        if sample.observed:
+            assert sample.interpolation_span_seconds == 0.0
+            assert sample.temporal_uncertainty_seconds + 1e-12 >= step / 2.0 - 1e-9 or abs(
+                sample.source_time_offset_seconds
+            ) <= grid.direct_observation_tolerance_seconds + 1e-12
+        else:
+            assert sample.source_time_offset_seconds == 0.0
+            if sample.wrist_left_x is None:
+                assert sample.observation_quality == 0.0
+    # Grid coordinates stay canonical; source time is recoverable.
+    for sample in [s for s in grid if s.observed]:
+        source_time = sample.time_seconds + sample.source_time_offset_seconds
+        assert min(abs(source_time - f.time_seconds) for f in obs) <= 1e-9
+    assert PhaseFeatureGrid.from_dict(grid.to_dict()) == grid
+    assert grid.method_version == "phase-features-v2"
+
+
+def test_sample_and_grid_codecs_validate_offset_honesty() -> None:
+    base = PhaseFeatureSample(time_seconds=10.0)
+    assert base.source_time_offset_seconds == 0.0
+    with pytest.raises(PhaseFeaturesError):
+        PhaseFeatureSample(time_seconds=10.0, source_time_offset_seconds=0.01)
+    with pytest.raises(PhaseFeaturesError):
+        PhaseFeatureSample(
+            time_seconds=10.0, observed=True, source_time_offset_seconds=0.01,
+            temporal_uncertainty_seconds=0.001,
+        )
+    with pytest.raises(PhaseFeaturesError):
+        PhaseFeatureSample(
+            time_seconds=10.0, observed=False, observation_quality=0.5,
+            interpolation_span_seconds=0.10, temporal_uncertainty_seconds=0.01,
+        )
+    good = PhaseFeatureSample(
+        time_seconds=10.0, observed=True, observation_quality=0.9,
+        source_time_offset_seconds=0.005, temporal_uncertainty_seconds=0.016,
+    )
+    assert PhaseFeatureSample.from_dict(good.to_dict()) == good
+    with pytest.raises(PhaseFeaturesError):
+        PhaseFeatureSample.from_dict(
+            {k: v for k, v in good.to_dict().items() if k != "source_time_offset_seconds"}
         )

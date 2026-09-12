@@ -27,6 +27,7 @@ from serve_review.checkpoints.phase_features import (
     PhaseFeaturesConfig,
     PhaseFeaturesError,
     build_phase_feature_grid,
+    resolve_direct_observation_tolerance_seconds,
     window_samples_for_seconds,
 )
 
@@ -49,5 +50,6 @@ __all__ = [
     "PhaseFeaturesConfig",
     "PhaseFeaturesError",
     "build_phase_feature_grid",
+    "resolve_direct_observation_tolerance_seconds",
     "window_samples_for_seconds",
 ]

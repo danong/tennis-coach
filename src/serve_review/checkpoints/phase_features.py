@@ -57,13 +57,14 @@ __all__ = [
     "PhaseFeatureSample",
     "PhaseFeatureGrid",
     "window_samples_for_seconds",
+    "resolve_direct_observation_tolerance_seconds",
     "build_phase_feature_grid",
 ]
 
 #: Version of the phase-feature configuration and grid schemas.
-PHASE_FEATURES_SCHEMA_VERSION = 1
+PHASE_FEATURES_SCHEMA_VERSION = 2
 #: Method identity recorded on every grid.
-PHASE_FEATURES_METHOD_VERSION = "phase-features-v1"
+PHASE_FEATURES_METHOD_VERSION = "phase-features-v2"
 
 #: Visibility-gated trajectory joints (left/right pairs).
 TRACKED_JOINT_NAMES: tuple[str, ...] = (
@@ -97,6 +98,13 @@ _LEFT_ANKLE = JOINT_INDEX["left_ankle"]
 _RIGHT_ANKLE = JOINT_INDEX["right_ankle"]
 
 _EXACT_TOLERANCE_SECONDS = 1e-9
+
+#: Fraction of the limiting cadence step bounding direct alignment.
+#: Effective tolerance stays strictly below half a step so one source
+#: observation can align with at most one grid point and vice versa.
+_DIRECT_ALIGNMENT_FRACTION = 0.45
+#: Numerical slack for inclusive tolerance comparison.
+_DIRECT_TOLERANCE_EPSILON_SECONDS = 1e-12
 
 #: Channels smoothed with the position window (raw interpolated values).
 _POSITION_CHANNELS: tuple[str, ...] = (
@@ -184,6 +192,64 @@ def window_samples_for_seconds(window_seconds: float, grid_rate_hz: float) -> in
     return count
 
 
+def resolve_direct_observation_tolerance_seconds(
+    config: PhaseFeaturesConfig,
+    *,
+    grid_rate_hz: float | None = None,
+    qualified_source_times: Sequence[float] = (),
+) -> float:
+    """Resolve the effective bounded direct-observation tolerance.
+
+    The effective tolerance is the configured
+    ``direct_observation_tolerance_seconds`` capped deterministically by
+    the physical cadence so it can never bridge distinct frames or gaps:
+    ``_DIRECT_ALIGNMENT_FRACTION`` (0.45) times the uniform grid step,
+    times 0.45 of the configured ``max_interpolation_gap_seconds``, and
+    times 0.45 of the minimum positive qualified source gap when at
+    least two qualified source times are supplied. The result is finite
+    and strictly positive; deterministic in its inputs.
+    """
+    if not isinstance(config, PhaseFeaturesConfig):
+        raise PhaseFeaturesError(
+            "resolve_direct_observation_tolerance: 'config' must be a "
+            f"PhaseFeaturesConfig, got {type(config).__name__}."
+        )
+    rate = float(config.grid_rate_hz) if grid_rate_hz is None else float(grid_rate_hz)
+    if grid_rate_hz is not None:
+        if isinstance(grid_rate_hz, bool) or not isinstance(grid_rate_hz, (int, float)):
+            raise PhaseFeaturesError(
+                "resolve_direct_observation_tolerance: 'grid_rate_hz' must be a "
+                f"number > 0, got {grid_rate_hz!r}."
+            )
+    if not math.isfinite(rate) or rate <= 0.0:
+        raise PhaseFeaturesError(
+            "resolve_direct_observation_tolerance: 'grid_rate_hz' must be finite "
+            f"and > 0, got {grid_rate_hz!r}."
+        )
+    grid_step = 1.0 / rate
+    cap = min(
+        float(config.direct_observation_tolerance_seconds),
+        _DIRECT_ALIGNMENT_FRACTION * grid_step,
+        _DIRECT_ALIGNMENT_FRACTION * float(config.max_interpolation_gap_seconds),
+    )
+    times = [float(t) for t in list(qualified_source_times)]
+    if len(times) >= 2:
+        ordered = sorted(times)
+        min_gap: float | None = None
+        for earlier, later in zip(ordered, ordered[1:]):
+            gap = later - earlier
+            if math.isfinite(gap) and gap > 0.0:
+                min_gap = gap if min_gap is None else min(min_gap, gap)
+        if min_gap is not None and min_gap > 0.0:
+            cap = min(cap, _DIRECT_ALIGNMENT_FRACTION * min_gap)
+    if not math.isfinite(cap) or cap <= 0.0:
+        raise PhaseFeaturesError(
+            "resolve_direct_observation_tolerance: effective tolerance must be "
+            f"finite and > 0, got {cap!r}."
+        )
+    return float(cap)
+
+
 def _check_rate(name: str, value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise PhaseFeaturesError(
@@ -223,7 +289,8 @@ class PhaseFeaturesConfig:
     visibility_floor: float = 0.4
     position_smoothing_seconds: float = 0.12
     derivative_window_seconds: float = 0.12
-    config_id: str = "phase-features-default-v1"
+    direct_observation_tolerance_seconds: float = 0.015
+    config_id: str = "phase-features-default-v2"
     schema_version: int = PHASE_FEATURES_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -253,6 +320,13 @@ class PhaseFeaturesConfig:
             self, "derivative_window_seconds",
             _check_rate("'derivative_window_seconds'", self.derivative_window_seconds),
         )
+        object.__setattr__(
+            self, "direct_observation_tolerance_seconds",
+            _check_rate(
+                "'direct_observation_tolerance_seconds'",
+                self.direct_observation_tolerance_seconds,
+            ),
+        )
         if not isinstance(self.config_id, str) or not self.config_id.strip():
             raise PhaseFeaturesError(
                 "phase_features_config: 'config_id' must be a non-blank string, "
@@ -271,6 +345,7 @@ class PhaseFeaturesConfig:
         return {
             "config_id": self.config_id,
             "derivative_window_seconds": self.derivative_window_seconds,
+            "direct_observation_tolerance_seconds": self.direct_observation_tolerance_seconds,
             "grid_rate_hz": self.grid_rate_hz,
             "max_interpolation_gap_seconds": self.max_interpolation_gap_seconds,
             "position_smoothing_seconds": self.position_smoothing_seconds,
@@ -288,6 +363,7 @@ class PhaseFeaturesConfig:
         known = {
             "config_id",
             "derivative_window_seconds",
+            "direct_observation_tolerance_seconds",
             "grid_rate_hz",
             "max_interpolation_gap_seconds",
             "position_smoothing_seconds",
@@ -310,6 +386,7 @@ class PhaseFeaturesConfig:
             visibility_floor=values["visibility_floor"],
             position_smoothing_seconds=values["position_smoothing_seconds"],
             derivative_window_seconds=values["derivative_window_seconds"],
+            direct_observation_tolerance_seconds=values["direct_observation_tolerance_seconds"],
             config_id=values["config_id"],
             schema_version=values["schema_version"],
         )
@@ -378,8 +455,14 @@ class PhaseFeatureSample:
     coordinates (translation/scale invariant); angles are interior
     joint angles in degrees; torso displacement/rotation proxies stay
     explicitly camera-relative; audio carries aligned transient energy
-    plus a candidate flag. ``observed`` is True only for grid times
-    coinciding with a gated pose observation. ``observation_quality``
+    plus a candidate flag. ``observed`` is True only when one gated pose
+    observation lies within the bounded direct-observation tolerance of
+    the canonical grid time (at most one source per grid point and vice
+    versa; ties deterministic). ``source_time_offset_seconds`` records
+    the signed source-minus-grid offset (0.0 when not observed) and
+    ``temporal_uncertainty_seconds`` is never narrower than
+    ``abs(offset)`` or half the supporting span, so canonical grid times
+    never claim precision finer than the direct support. ``observation_quality``
     in [0, 1] is reduced for interpolated samples and zero for
     missing samples. ``derivative_confidence``/``derivative_quality``
     in [0, 1] degrade at boundaries and gaps.
@@ -389,6 +472,8 @@ class PhaseFeatureSample:
     observed: bool = False
     observation_quality: float = 0.0
     interpolation_span_seconds: float = 0.0
+    source_time_offset_seconds: float = 0.0
+    temporal_uncertainty_seconds: float = 0.0
     derivative_confidence: float = 0.0
     derivative_quality: float = 0.0
     # Normalized trajectories (camera-relative, scale-normalized).
@@ -511,6 +596,48 @@ class PhaseFeatureSample:
                 f"got {span!r}."
             )
         object.__setattr__(self, "interpolation_span_seconds", span_number)
+        offset = self.source_time_offset_seconds
+        if isinstance(offset, bool) or not isinstance(offset, (int, float)):
+            raise PhaseFeaturesError(
+                f"{name}: 'source_time_offset_seconds' must be a finite number, "
+                f"got {offset!r}."
+            )
+        offset_number = float(offset)
+        if not math.isfinite(offset_number):
+            raise PhaseFeaturesError(
+                f"{name}: 'source_time_offset_seconds' must be finite, got {offset!r}."
+            )
+        object.__setattr__(self, "source_time_offset_seconds", offset_number)
+        uncertainty = self.temporal_uncertainty_seconds
+        if isinstance(uncertainty, bool) or not isinstance(uncertainty, (int, float)):
+            raise PhaseFeaturesError(
+                f"{name}: 'temporal_uncertainty_seconds' must be a number >= 0, "
+                f"got {uncertainty!r}."
+            )
+        uncertainty_number = float(uncertainty)
+        if not math.isfinite(uncertainty_number) or uncertainty_number < 0.0:
+            raise PhaseFeaturesError(
+                f"{name}: 'temporal_uncertainty_seconds' must be finite and >= 0, "
+                f"got {uncertainty!r}."
+            )
+        object.__setattr__(self, "temporal_uncertainty_seconds", uncertainty_number)
+        if not self.observed and offset_number != 0.0:
+            raise PhaseFeaturesError(
+                f"{name}: non-observed samples must carry source_time_offset_seconds "
+                f"== 0.0, got {offset_number!r}."
+            )
+        if uncertainty_number + 1e-12 < abs(offset_number):
+            raise PhaseFeaturesError(
+                f"{name}: 'temporal_uncertainty_seconds' must be >= "
+                f"abs(source_time_offset_seconds), got {uncertainty_number!r} vs "
+                f"{offset_number!r}."
+            )
+        if uncertainty_number + 1e-12 < span_number / 2.0:
+            raise PhaseFeaturesError(
+                f"{name}: 'temporal_uncertainty_seconds' must be >= "
+                f"interpolation_span_seconds / 2, got {uncertainty_number!r} vs "
+                f"{span_number!r}."
+            )
         if self.observed and self.interpolation_span_seconds != 0.0:
             raise PhaseFeaturesError(
                 f"{name}: observed samples must carry interpolation_span_seconds "
@@ -576,7 +703,8 @@ class PhaseFeatureSample:
         payload: dict[str, Any] = {}
         for field_name in (
             "time_seconds", "observed", "observation_quality",
-            "interpolation_span_seconds", "derivative_confidence",
+            "interpolation_span_seconds", "source_time_offset_seconds",
+            "temporal_uncertainty_seconds", "derivative_confidence",
             "derivative_quality",
             "wrist_left_x", "wrist_left_y", "wrist_right_x", "wrist_right_y",
             "elbow_left_x", "elbow_left_y", "elbow_right_x", "elbow_right_y",
@@ -615,7 +743,8 @@ class PhaseFeatureSample:
             )
         known = {
             "time_seconds", "observed", "observation_quality",
-            "interpolation_span_seconds", "derivative_confidence",
+            "interpolation_span_seconds", "source_time_offset_seconds",
+            "temporal_uncertainty_seconds", "derivative_confidence",
             "derivative_quality",
             "wrist_left_x", "wrist_left_y", "wrist_right_x", "wrist_right_y",
             "elbow_left_x", "elbow_left_y", "elbow_right_x", "elbow_right_y",
@@ -661,12 +790,13 @@ class PhaseFeatureGrid:
 
     attempt_range: MediaRange = None  # type: ignore[assignment]
     method_version: str = PHASE_FEATURES_METHOD_VERSION
-    config_id: str = "phase-features-default-v1"
+    config_id: str = "phase-features-default-v2"
     source_frame_rate_hz: float = 0.0
     pose_observation_rate_hz: float = 0.0
     grid_rate_hz: float = 0.0
     position_window_samples: int = 1
     derivative_window_samples: int = 1
+    direct_observation_tolerance_seconds: float = 0.015
     samples: tuple[PhaseFeatureSample, ...] = ()
     schema_version: int = PHASE_FEATURES_SCHEMA_VERSION
 
@@ -720,6 +850,19 @@ class PhaseFeatureGrid:
                 f"{name}: 'pose_observation_rate_hz' must be finite and >= 0."
             )
         object.__setattr__(self, "pose_observation_rate_hz", pose_number)
+        tolerance = self.direct_observation_tolerance_seconds
+        if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)):
+            raise PhaseFeaturesError(
+                f"{name}: 'direct_observation_tolerance_seconds' must be a number > 0, "
+                f"got {tolerance!r}."
+            )
+        tolerance_number = float(tolerance)
+        if not math.isfinite(tolerance_number) or tolerance_number <= 0.0:
+            raise PhaseFeaturesError(
+                f"{name}: 'direct_observation_tolerance_seconds' must be finite and > 0, "
+                f"got {tolerance!r}."
+            )
+        object.__setattr__(self, "direct_observation_tolerance_seconds", tolerance_number)
         for key in ("position_window_samples", "derivative_window_samples"):
             value = getattr(self, key)
             if not _is_int(value) or value < 1 or value % 2 == 0:
@@ -765,6 +908,7 @@ class PhaseFeatureGrid:
             "attempt_range": self.attempt_range.to_dict(),
             "config_id": self.config_id,
             "derivative_window_samples": self.derivative_window_samples,
+            "direct_observation_tolerance_seconds": self.direct_observation_tolerance_seconds,
             "grid_rate_hz": self.grid_rate_hz,
             "method_version": self.method_version,
             "pose_observation_rate_hz": self.pose_observation_rate_hz,
@@ -785,6 +929,7 @@ class PhaseFeatureGrid:
             "attempt_range",
             "config_id",
             "derivative_window_samples",
+            "direct_observation_tolerance_seconds",
             "grid_rate_hz",
             "method_version",
             "pose_observation_rate_hz",
@@ -831,6 +976,7 @@ class PhaseFeatureGrid:
             grid_rate_hz=values["grid_rate_hz"],
             position_window_samples=values["position_window_samples"],
             derivative_window_samples=values["derivative_window_samples"],
+            direct_observation_tolerance_seconds=values["direct_observation_tolerance_seconds"],
             samples=samples,
             schema_version=values["schema_version"],
         )
@@ -1286,30 +1432,72 @@ def build_phase_feature_grid(
     observed_flags: list[bool] = [False] * len(grid_times)
     qualities: list[float] = [0.0] * len(grid_times)
     spans: list[float] = [0.0] * len(grid_times)
+    offsets: list[float] = [0.0] * len(grid_times)
+    uncertainties: list[float] = [step / 2.0] * len(grid_times)
     candidate_flags: list[bool] = [False] * len(grid_times)
 
     audio_times = [entry.time_seconds for entry in audio_list]
     audio_values = [entry.energy for entry in audio_list]
 
+    qualified_indices = [
+        idx
+        for idx, (has_person, quality) in enumerate(
+            zip(sliced_has_person, sliced_quality)
+        )
+        if has_person and quality > 0.0
+    ]
+    qualified_times = tuple(sliced_times[idx] for idx in qualified_indices)
+    effective_tolerance = resolve_direct_observation_tolerance_seconds(
+        cfg, grid_rate_hz=grid_rate, qualified_source_times=qualified_times
+    )
+    # Deterministic bounded direct alignment: at most one qualified source
+    # per grid point and at most one grid point per source. Grid order is
+    # canonical; candidates sort by (|offset|, source time, source index).
+    # The effective tolerance stays below half a step so conflicts are
+    # structurally impossible, but consumption is still enforced.
+    assigned_source: list[int] = [-1] * len(grid_times)
+    consumed_sources: set[int] = set()
     for position, moment in enumerate(grid_times):
-        exact = -1
-        for candidate_index, obs_time in enumerate(sliced_times):
-            if abs(obs_time - moment) <= _EXACT_TOLERANCE_SECONDS:
-                exact = candidate_index
-                break
-        if exact >= 0:
-            has_person = sliced_has_person[exact]
-            quality = sliced_quality[exact]
-            if has_person and quality > 0.0:
-                observed_flags[position] = True
-                qualities[position] = quality
-                spans[position] = 0.0
-                for key in _POSITION_CHANNELS:
-                    raw_values[key][position] = sliced_channels[exact][key]
-            else:
-                observed_flags[position] = False
-                qualities[position] = 0.0
-                spans[position] = 0.0
+        best: list[tuple[float, float, int, float]] = []
+        for qualified_pos, source_idx in enumerate(qualified_indices):
+            if source_idx in consumed_sources:
+                continue
+            offset = sliced_times[source_idx] - moment
+            distance = abs(offset)
+            if distance <= effective_tolerance + _DIRECT_TOLERANCE_EPSILON_SECONDS:
+                best.append((distance, sliced_times[source_idx], source_idx, offset))
+        if best:
+            best.sort(key=lambda entry: (entry[0], entry[1], entry[2]))
+            chosen = best[0]
+            assigned_source[position] = chosen[2]
+            consumed_sources.add(chosen[2])
+    qualified_rank = {source_idx: rank for rank, source_idx in enumerate(qualified_indices)}
+
+    for position, moment in enumerate(grid_times):
+        source_idx = assigned_source[position]
+        if source_idx >= 0:
+            offset_value = sliced_times[source_idx] - moment
+            observed_flags[position] = True
+            qualities[position] = sliced_quality[source_idx]
+            spans[position] = 0.0
+            offsets[position] = offset_value
+            rank = qualified_rank[source_idx]
+            neighbor_gaps: list[float] = []
+            if rank > 0:
+                neighbor_gaps.append(
+                    sliced_times[source_idx] - sliced_times[qualified_indices[rank - 1]]
+                )
+            if rank + 1 < len(qualified_indices):
+                neighbor_gaps.append(
+                    sliced_times[qualified_indices[rank + 1]] - sliced_times[source_idx]
+                )
+            local_half = step / 2.0
+            for gap_value in neighbor_gaps:
+                if math.isfinite(gap_value) and gap_value > 0.0:
+                    local_half = max(local_half, gap_value / 2.0)
+            uncertainties[position] = max(abs(offset_value), step / 2.0, local_half)
+            for key in _POSITION_CHANNELS:
+                raw_values[key][position] = sliced_channels[source_idx][key]
         else:
             prev_index = -1
             next_index = -1
@@ -1355,15 +1543,21 @@ def build_phase_feature_grid(
                         if qualities[position] >= 1.0:
                             qualities[position] = 0.999
                         spans[position] = gap
+                        uncertainties[position] = max(gap / 2.0, step / 2.0)
                     observed_flags[position] = False
+                    offsets[position] = 0.0
                 else:
                     observed_flags[position] = False
                     qualities[position] = 0.0
                     spans[position] = 0.0
+                    offsets[position] = 0.0
+                    uncertainties[position] = step / 2.0
             else:
                 observed_flags[position] = False
                 qualities[position] = 0.0
                 spans[position] = 0.0
+                offsets[position] = 0.0
+                uncertainties[position] = step / 2.0
 
         # Aligned audio energy: exact echo else short-span linear blend.
         if audio_list:
@@ -1497,6 +1691,8 @@ def build_phase_feature_grid(
                 if not observed_flags[position] and quality >= 1.0
                 else quality,
                 interpolation_span_seconds=spans[position],
+                source_time_offset_seconds=offsets[position],
+                temporal_uncertainty_seconds=uncertainties[position],
                 derivative_confidence=confidence,
                 derivative_quality=derivative_quality,
                 wrist_left_x=smoothed_values["wrist_left_x"][position],
@@ -1569,5 +1765,6 @@ def build_phase_feature_grid(
         grid_rate_hz=grid_rate,
         position_window_samples=_cap_window(position_window, len(grid_times)),
         derivative_window_samples=derivative_window_capped,
+        direct_observation_tolerance_seconds=effective_tolerance,
         samples=frozen_samples,
     )
