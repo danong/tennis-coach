@@ -160,6 +160,38 @@ _DERIVATIVE_ANGLE_KEYS: tuple[str, ...] = (
     "knee_angle_right",
 )
 
+#: Bounded physical joint-angle channels (degrees) that must remain in
+#: ``[0, 180]`` after post-smoothing emission. Raw observations already
+#: lie in range (interior angle via ``acos``); only the local-quadratic
+#: smoothing fit can overshoot near a 0/180 extremum.
+_BOUNDED_ANGLE_KEYS: tuple[str, ...] = (
+    "elbow_angle_left",
+    "elbow_angle_right",
+    "knee_angle_left",
+    "knee_angle_right",
+)
+
+
+def _clamp_physical_angle(value: float | None) -> float | None:
+    """Clamp one smoothed physical angle into ``[0, 180]``.
+
+    Deterministic post-smoothing feature-boundary repair: ``None`` stays
+    ``None`` (honest missingness); non-finite input maps to ``None``
+    rather than emitting an unphysical value; finite input is clamped
+    to ``[0, 180]``. Schema validation (``_optional_angle``) stays
+    strict and is never weakened by this helper.
+    """
+    if value is None:
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        return None
+    if number < 0.0:
+        return 0.0
+    if number > 180.0:
+        return 180.0
+    return number
+
 
 class PhaseFeaturesError(ValueError):
     """Raised when phase-feature input or configuration is invalid."""
@@ -1618,10 +1650,29 @@ def build_phase_feature_grid(
                 smoothed_values[pair[0]][position] = unit[0]
                 smoothed_values[pair[1]][position] = unit[1]
 
+    # Post-smoothing physical-bounds repair: local-quadratic smoothing
+    # can overshoot near a 0/180 extremum (for example valid near-180
+    # inputs fitting to 180.05+), which strict schema validation must
+    # still reject if constructed externally. Clamp only the emitted
+    # smoothed angle positions here at the post-smoothing feature
+    # boundary. Derivatives below deliberately stay on the raw
+    # timestamp-aware local fits (unclamped) so they remain
+    # timestamp-aware and deterministic; near a clamped extremum a
+    # velocity/acceleration may therefore point beyond the bound while
+    # staying finite and consistent with the local slope, rather than
+    # being artificially flattened by the clamp.
+    for _angle_key in _BOUNDED_ANGLE_KEYS:
+        _series = smoothed_values[_angle_key]
+        for _position in range(len(grid_times)):
+            _series[_position] = _clamp_physical_angle(_series[_position])
+
     derivative_vel: dict[str, list[float | None]] = {}
     derivative_acc: dict[str, list[float | None]] = {}
     derivative_counts: dict[str, list[int]] = {}
     for key in _DERIVATIVE_POSITION_KEYS + _DERIVATIVE_ANGLE_KEYS:
+        # Timestamp-aware local-quadratic derivatives from the raw
+        # (pre-clamp) values and true grid times; never from clamped
+        # positions, preserving deterministic slope semantics at extrema.
         vel, acc, counts = _derivative_series(raw_values[key], grid_times, derivative_window)
         derivative_vel[key] = vel
         derivative_acc[key] = acc

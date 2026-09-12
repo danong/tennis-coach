@@ -698,3 +698,130 @@ def test_sample_and_grid_codecs_validate_offset_honesty() -> None:
         PhaseFeatureSample.from_dict(
             {k: v for k, v in good.to_dict().items() if k != "source_time_offset_seconds"}
         )
+
+
+# --- M4.2 numerical-bounds repair: post-smoothing physical clamp ---------
+
+
+def test_smoothing_extrema_overshoot_clamped_to_physical_bounds() -> None:
+    """Near-180 plateau overshoots the quadratic fit; emission stays bounded.
+
+    Valid raw elbow angles ``[~179, 180, 180, 180, ~179]`` (wrist ``x``
+    0.361 gives ~179 deg, 0.360 gives exactly 180 deg) fit to ~180.17
+    at the centre without a post-smoothing bound, which strict schema
+    validation correctly rejects. The repair clamps only the emitted
+    smoothed angle positions to [0, 180] at the post-smoothing feature
+    boundary; externally constructed out-of-range values must still
+    reject.
+    """
+    wrist_xs = [0.361, 0.360, 0.360, 0.360, 0.361]
+    obs = [
+        _frame(10.0 + i / 30.0, _skeleton(wrist_left=(x, 0.50)))
+        for i, x in enumerate(wrist_xs)
+    ]
+    cfg = PhaseFeaturesConfig(
+        grid_rate_hz=30.0,
+        position_smoothing_seconds=0.12,  # 5-sample odd window at 30 Hz
+        derivative_window_seconds=0.12,
+    )
+    # Would raise PhaseFeaturesError("... must lie in [0, 180] ... got
+    # 180.17...") before the post-smoothing clamp.
+    grid = build_phase_feature_grid(
+        obs,
+        MediaRange(start_seconds=10.0, end_seconds=10.0 + 5 / 30.0),
+        config=cfg,
+        source_frame_rate_hz=30.0,
+    )
+    assert len(grid) == 5
+    for sample in grid:
+        for key in (
+            "elbow_angle_left",
+            "elbow_angle_right",
+            "knee_angle_left",
+            "knee_angle_right",
+        ):
+            value = getattr(sample, key)
+            assert value is None or 0.0 <= value <= 180.0
+    centre = grid[2]
+    assert centre.elbow_angle_left is not None
+    assert centre.elbow_angle_left <= 180.0
+    assert centre.elbow_angle_left == pytest.approx(180.0, abs=1e-9)
+    # Strict schema validation is not weakened: externally constructed
+    # overshoots still reject on every bounded channel.
+    with pytest.raises(PhaseFeaturesError):
+        PhaseFeatureSample(time_seconds=10.0, elbow_angle_left=180.054901949318)
+    with pytest.raises(PhaseFeaturesError):
+        PhaseFeatureSample(time_seconds=10.0, elbow_angle_left=200.0)
+    with pytest.raises(PhaseFeaturesError):
+        PhaseFeatureSample(time_seconds=10.0, elbow_angle_right=180.05)
+    with pytest.raises(PhaseFeaturesError):
+        PhaseFeatureSample(time_seconds=10.0, knee_angle_left=180.05)
+    with pytest.raises(PhaseFeaturesError):
+        PhaseFeatureSample(time_seconds=10.0, knee_angle_right=-0.5)
+    assert PhaseFeatureGrid.from_dict(grid.to_dict()) == grid
+
+
+def test_clamped_extrema_derivatives_stay_timestamp_aware() -> None:
+    """Derivatives near a clamped extremum stay finite and slope-consistent.
+
+    Deliberate treatment: derivatives come from the raw timestamp-aware
+    local-quadratic fits (pre-clamp grid times), never from the clamped
+    positions, so they remain deterministic and timestamp-aware. Near a
+    clamped 180-degree peak the velocity stays finite and near zero
+    while the acceleration stays finite and negative (peak curvature)
+    instead of being artificially flattened by the clamp.
+    """
+    wrist_xs = [0.361, 0.360, 0.360, 0.360, 0.361]
+    obs = [
+        _frame(10.0 + i / 30.0, _skeleton(wrist_left=(x, 0.50)))
+        for i, x in enumerate(wrist_xs)
+    ]
+    cfg = PhaseFeaturesConfig(
+        grid_rate_hz=30.0,
+        position_smoothing_seconds=0.12,
+        derivative_window_seconds=0.12,
+    )
+    grid = build_phase_feature_grid(
+        obs,
+        MediaRange(start_seconds=10.0, end_seconds=10.0 + 5 / 30.0),
+        config=cfg,
+        source_frame_rate_hz=30.0,
+    )
+    centre = grid[2]
+    assert centre.elbow_angle_left == pytest.approx(180.0, abs=1e-9)
+    assert centre.elbow_angle_left_vel is not None
+    assert centre.elbow_angle_left_acc is not None
+    assert math.isfinite(centre.elbow_angle_left_vel)
+    assert math.isfinite(centre.elbow_angle_left_acc)
+    # Peak consistency: near-zero slope with negative curvature.
+    assert abs(centre.elbow_angle_left_vel) < 5.0
+    assert centre.elbow_angle_left_acc < 0.0
+    for sample in grid:
+        for key in (
+            "elbow_angle_left_vel",
+            "elbow_angle_right_vel",
+            "knee_angle_left_vel",
+            "knee_angle_right_vel",
+            "elbow_angle_left_acc",
+            "elbow_angle_right_acc",
+            "knee_angle_left_acc",
+            "knee_angle_right_acc",
+        ):
+            value = getattr(sample, key)
+            assert value is None or math.isfinite(value)
+    # Deterministic rerun yields identical derivatives.
+    again = build_phase_feature_grid(
+        obs,
+        MediaRange(start_seconds=10.0, end_seconds=10.0 + 5 / 30.0),
+        config=cfg,
+        source_frame_rate_hz=30.0,
+    )
+    assert [s.elbow_angle_left_vel for s in grid] == [
+        s.elbow_angle_left_vel for s in again
+    ]
+    assert [s.elbow_angle_left_acc for s in grid] == [
+        s.elbow_angle_left_acc for s in again
+    ]
+    assert [s.elbow_angle_left for s in grid] == [
+        s.elbow_angle_left for s in again
+    ]
