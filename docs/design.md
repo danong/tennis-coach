@@ -1,6 +1,6 @@
 # Serve Review offline pipeline design
 
-Status: implementation specification, 2026-09-09. The command-line scaffold exists; media export and inference do not.
+Status: implementation specification. M1–M4 code exists locally; the M4 development gate is currently failed and requires a narrow heuristic/chronology repair before held-out phase evaluation.
 
 ## 1. Product contract
 
