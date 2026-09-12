@@ -64,6 +64,7 @@ serve-review probe VIDEO
 serve-review export VIDEO --ranges ranges.json --output {compilation,clips,both}
 serve-review cut VIDEO --padding SECONDS --output {compilation,clips,both}
 serve-review analyze VIDEO [--attempts attempts.json]
+serve-review review-phases VIDEO [--checkpoints checkpoints.json]
 ```
 
 `probe` and `export` are explicit lower-level commands so media behavior can be validated before inference. `cut` composes probe, cached pose extraction, detection, and export.
