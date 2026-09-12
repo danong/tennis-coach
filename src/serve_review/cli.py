@@ -326,6 +326,66 @@ def cut(args: argparse.Namespace) -> int:
     return 0
 
 
+def analyze(args: argparse.Namespace) -> int:
+    from serve_review.analysis_pipeline import (
+        AnalyzeCancelled,
+        AnalyzeError,
+        run_analyze,
+    )
+
+    source = args.video.expanduser()
+    if not source.is_file():
+        print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
+        return 2
+    attempts = args.attempts.expanduser() if args.attempts is not None else None
+    if attempts is not None and not attempts.is_file():
+        print(f"ERROR: attempts file does not exist: {attempts}", file=sys.stderr)
+        return 2
+
+    def _progress(message: str) -> None:
+        print(message, file=sys.stderr)
+
+    try:
+        result = run_analyze(
+            source,
+            output_dir=args.output_dir,
+            attempts_path=attempts,
+            overwrite=args.overwrite,
+            ffmpeg=args.ffmpeg,
+            ffprobe=args.ffprobe,
+            progress_callback=_progress,
+        )
+    except AnalyzeCancelled as exc:
+        print(
+            f"ERROR: analyze was cancelled at {exc.stage}: {exc.message}.",
+            file=sys.stderr,
+        )
+        return 1
+    except AnalyzeError as exc:
+        print(
+            f"ERROR: analyze failed at {exc.stage}: {exc.message}.",
+            file=sys.stderr,
+        )
+        return 1
+    print(str(result.checkpoints_path))
+    if result.empty:
+        print("no attempts to analyze; wrote empty checkpoints.")
+        return 0
+    failures = len(result.attempt_failures)
+    if failures:
+        print(
+            f"analyzed {len(result.phase_document)} attempt(s) with "
+            f"{failures} isolated phase failure(s): "
+            f"{result.checkpoints_path}",
+        )
+    else:
+        print(
+            f"analyzed {len(result.phase_document)} attempt(s): "
+            f"{result.checkpoints_path}",
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="serve-review",
@@ -518,6 +578,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="ffprobe executable (default: ffprobe)",
     )
     poses_parser.set_defaults(handler=extract_poses_cmd)
+
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="analyze accepted attempts into phase checkpoints",
+        description=(
+            "Load accepted serve attempts (an explicit --attempts file or "
+            "the prior cut output for the source), reuse the compatible "
+            "cached pose observations, demux raw-source audio once, run "
+            "phase features/evidence/solver per attempt, and atomically "
+            "write checkpoints.json. Never modifies attempts.json, clips, "
+            "or the compilation."
+        ),
+    )
+    analyze_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
+    analyze_parser.add_argument(
+        "--attempts",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "explicit attempts JSON file (default: "
+            "output/<source-stem>/attempts.json from a prior cut)"
+        ),
+    )
+    analyze_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("output"),
+        help="generated output directory (default: output)",
+    )
+    analyze_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace an existing checkpoints.json (default: fail on collision)",
+    )
+    analyze_parser.add_argument(
+        "--ffmpeg",
+        default="ffmpeg",
+        metavar="EXE",
+        help="ffmpeg executable (default: ffmpeg)",
+    )
+    analyze_parser.add_argument(
+        "--ffprobe",
+        default="ffprobe",
+        metavar="EXE",
+        help="ffprobe executable (default: ffprobe)",
+    )
+    analyze_parser.set_defaults(handler=analyze)
     return parser
 
 

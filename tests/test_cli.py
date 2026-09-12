@@ -1131,3 +1131,180 @@ def test_extract_poses_reports_overlay_cancellation(tmp_path: Path, capsys, monk
 
     assert extract_poses_cmd(args) == 1
     assert "cancelled" in capsys.readouterr().err
+
+
+# --- analyze command ------------------------------------------------------------
+
+
+def test_analyze_defaults() -> None:
+    args = build_parser().parse_args(["analyze", "session.mov"])
+
+    assert args.video == Path("session.mov")
+    assert args.attempts is None
+    assert args.output_dir == Path("output")
+    assert args.overwrite is False
+    assert args.ffmpeg == "ffmpeg"
+    assert args.ffprobe == "ffprobe"
+
+
+def test_analyze_help_documents_attempts_option(capsys) -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(["analyze", "--help"])
+    assert excinfo.value.code == 0
+    out = capsys.readouterr().out
+    assert "--attempts" in out
+    assert "checkpoints.json" in out
+
+
+def test_analyze_rejects_missing_input(tmp_path: Path, capsys) -> None:
+    from serve_review.cli import analyze
+
+    args = build_parser().parse_args(["analyze", str(tmp_path / "missing.mov")])
+
+    assert analyze(args) == 2
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_analyze_rejects_missing_attempts_file(tmp_path: Path, capsys) -> None:
+    from serve_review.cli import analyze
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+    args = build_parser().parse_args(
+        ["analyze", str(source), "--attempts", str(tmp_path / "nope.json")]
+    )
+
+    assert analyze(args) == 2
+    assert "attempts file does not exist" in capsys.readouterr().err
+
+
+def test_analyze_success_reports_checkpoints(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review import analysis_pipeline as analysis_module
+    from serve_review.cli import analyze
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+    (tmp_path / "attempts.json").write_text("{}", encoding="utf-8")
+    checkpoints = tmp_path / "output" / source.stem / "checkpoints.json"
+    result = SimpleNamespace(
+        checkpoints_path=checkpoints,
+        phase_document=["serve-001", "serve-002"],
+        attempt_failures=(),
+        empty=False,
+    )
+    seen: dict = {}
+
+    def _fake_run_analyze(video, **kwargs):
+        seen.update(kwargs)
+        seen["video"] = Path(video)
+        return result
+
+    monkeypatch.setattr(analysis_module, "run_analyze", _fake_run_analyze)
+    args = build_parser().parse_args(
+        [
+            "analyze",
+            str(source),
+            "--attempts",
+            str(tmp_path / "attempts.json"),
+            "--output-dir",
+            str(tmp_path / "output"),
+            "--overwrite",
+        ]
+    )
+    assert analyze(args) == 0
+    out = capsys.readouterr().out
+    assert str(checkpoints) in out
+    assert "2 attempt(s)" in out
+    assert seen["attempts_path"] == Path(tmp_path / "attempts.json")
+    assert seen["overwrite"] is True
+
+
+def test_analyze_empty_result_reports_empty_checkpoints(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    from serve_review import analysis_pipeline as analysis_module
+    from serve_review.cli import analyze
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+    checkpoints = tmp_path / "output" / source.stem / "checkpoints.json"
+    result = SimpleNamespace(
+        checkpoints_path=checkpoints,
+        phase_document=[],
+        attempt_failures=(),
+        empty=True,
+    )
+
+    def _fake_run_analyze(video, **kwargs):
+        return result
+
+    monkeypatch.setattr(analysis_module, "run_analyze", _fake_run_analyze)
+    args = build_parser().parse_args(["analyze", str(source)])
+
+    assert analyze(args) == 0
+    out = capsys.readouterr().out
+    assert str(checkpoints) in out
+    assert "empty checkpoints" in out
+
+
+def test_analyze_reports_isolated_failures(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review import analysis_pipeline as analysis_module
+    from serve_review.cli import analyze
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+    (tmp_path / "attempts.json").write_text("{}", encoding="utf-8")
+    checkpoints = tmp_path / "output" / source.stem / "checkpoints.json"
+    result = SimpleNamespace(
+        checkpoints_path=checkpoints,
+        phase_document=["serve-001", "serve-002"],
+        attempt_failures=(SimpleNamespace(attempt_id="serve-002"),),
+        empty=False,
+    )
+
+    def _fake_run_analyze(video, **kwargs):
+        return result
+
+    monkeypatch.setattr(analysis_module, "run_analyze", _fake_run_analyze)
+    args = build_parser().parse_args(["analyze", str(source)])
+
+    assert analyze(args) == 0
+    assert "1 isolated phase failure" in capsys.readouterr().out
+
+
+def test_analyze_stage_error_reports_stage(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review import analysis_pipeline as analysis_module
+    from serve_review.cli import analyze
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+
+    def _boom(video, **kwargs):
+        raise analysis_module.AnalyzeError("pose", "pose cache is stale: x.")
+
+    monkeypatch.setattr(analysis_module, "run_analyze", _boom)
+    args = build_parser().parse_args(["analyze", str(source)])
+
+    assert analyze(args) == 1
+    err = capsys.readouterr().err
+    assert "analyze failed at pose" in err
+    assert "stale" in err
+
+
+def test_analyze_cancellation_reports_stage(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review import analysis_pipeline as analysis_module
+    from serve_review.cli import analyze
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+
+    def _cancelled(video, **kwargs):
+        raise analysis_module.AnalyzeCancelled("audio", "cancelled at audio.")
+
+    monkeypatch.setattr(analysis_module, "run_analyze", _cancelled)
+    args = build_parser().parse_args(["analyze", str(source)])
+
+    assert analyze(args) == 1
+    err = capsys.readouterr().err
+    assert "cancelled at audio" in err
