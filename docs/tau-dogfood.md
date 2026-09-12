@@ -120,3 +120,14 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 - **Identity:** accepted repair `db6b077d-8d30-4541-a075-9ca1fdd3ebff`; candidate `915cc29342f6`; integrated `f025a824`; model `opencode/muse-spark-1.3-contributor-free`; 16 turns.
 - **Repair:** real manual labels exposed that the annotation codec incorrectly required a manual confidence field. The field now decodes as `null` when omitted, while supplied values retain strict validation; machine-confidence calibration semantics are unchanged. Tests cover absent/null equivalence and unchanged calibration.
 - **Development gate:** user labels were converted from 0-based source frames to an ignored exact-decoded-PTS manifest. Evaluation gave 0/5 selected keyframes accepted, three manually available stages unavailable, and only contact close (about 40 ms). Pre-contact errors are hundreds of milliseconds to >1.5 s, so this is a heuristic/chronology failure rather than evidence for M4.7 cadence work. No configuration changed.
+
+### 2026-09-12 — multi-source phase review renderer dispatch
+
+- **Identity:** interrupted run `a82fe44f-ec35-4f38-974d-a11bd38f7d34`; base `6c48242c`; model `opencode/muse-spark-1.3-contributor-free`; task `/tmp/tennis-coach-review-annotations-task.json`.
+- **Environment:** local macOS Pi/Tau harness; workspace adapter `jj`; measurements unavailable.
+- **Allocation/result:** 75 turns / 1200-second budget; 0 turns observed; paused after caller interruption.
+- **Evidence:** worker session stopped after initial file reads; no candidate, handoff, verification, or binding was stored; no app files changed by the worker.
+- **Review/lifecycle:** no review or acceptance; lifecycle paused, not integrated. Human acceptance and downstream survival unavailable.
+- **Cleanup:** workspace/state retained for diagnosis; no retry performed.
+- **Cost/attention:** measured totals unavailable; intervention was interrupting a stale run after confirming no worker/controller process remained.
+- **Finding:** Tau remained in `running` with a stale 0-turn snapshot and no handoff after the foreground controller timed out. Next action is a fresh bounded dispatch after diagnosing the stalled startup; do not infer completion from status.
