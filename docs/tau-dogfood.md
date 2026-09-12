@@ -93,3 +93,10 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 - **Contact semantics:** selected audio contact is retained through missing/occluded/incompatible body support. Existing-grid wrist elevation and camera-relative motion support can upgrade provenance to `body_pose_audio`; otherwise it remains `audio_transient` with lowered confidence and a stable advisory anomaly. This is not an M3 export filter.
 - **Lifecycle:** reviewed and accepted through Tau with focused acceptance verification; worker workspace released; default working copy rebased. Human acceptance unavailable.
 - **Finding:** DP solves the expected local-extrema problem: a lower unary candidate can win when it makes the entire phase path chronologically feasible, while unsupported stages remain unavailable rather than being invented.
+
+### 2026-09-11 — M4.5 analyze command and phase report
+
+- **Identity:** accepted run `45e93d07-87a1-4002-b305-59c64c022ef7`; base `21e56544`; candidate `de1dd754ce83`; integrated `304544f3cb0a`; model `opencode/muse-spark-1.3-contributor-free`; 33 turns.
+- **Evidence/review:** exactly four allowed files changed and candidate verification passed. `analyze` validates source-bound attempts, requires complete matching pose cache identity, demuxes raw audio once, max-pools to cached timestamps, reuses decoder relative transient policy, runs M4.2–M4.4 over unpadded ranges, isolates per-attempt failures, and atomically emits source-bound `checkpoints.json`. Tests cover explicit/discovered attempts, cache failures, audio policy, partial/empty outcomes, cancellation/collisions, determinism, and unchanged M3 artifacts.
+- **Lifecycle:** reviewed and accepted through Tau with focused acceptance verification; worker workspace released; default working copy rebased. Human acceptance unavailable.
+- **Finding:** phase analysis can be added without destabilizing serve cutting by treating the existing pose cache and attempts document as immutable inputs and phase output as a separate atomic artifact.
