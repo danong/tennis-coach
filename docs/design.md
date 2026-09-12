@@ -65,6 +65,10 @@ serve-review export VIDEO --ranges ranges.json --output {compilation,clips,both}
 serve-review cut VIDEO --padding SECONDS --output {compilation,clips,both}
 serve-review analyze VIDEO [--attempts attempts.json]
 serve-review review-phases VIDEO [--checkpoints checkpoints.json]
+
+# local manual-gate tools (through mise)
+phase_annotations.py VIDEO --attempts attempts.json --labels labels.json --output annotations.json
+evaluate_checkpoints.py --checkpoints checkpoints.json --annotations annotations.json --output report.json
 ```
 
 `probe` and `export` are explicit lower-level commands so media behavior can be validated before inference. `cut` composes probe, cached pose extraction, detection, and export.
@@ -76,6 +80,7 @@ output/<source-stem>/
   source.json
   attempts.json
   checkpoints.json             # only after checkpoint analysis
+  review-phases/               # labeled JPEGs, HTML index, review manifest
   serves.mov                   # compilation/both
   clips/serve-001.mov          # clips/both
   cache/pose-v1.jsonl          # local derived cache
@@ -135,7 +140,7 @@ Annotations use source-time ranges and are split by recording session. Report on
 
 Development begins with the local supplied sessions. Before calling automatic cutting reliable, reserve at least one entire session from threshold tuning and manually inspect every miss and false positive. Provisional personal-use targets are 95% recall and 90% precision; boundary padding must not hide poor localization.
 
-Checkpoint evaluation reports each checkpoint separately against manually reviewed uncertainty intervals. A useful-body-checkpoint gate may pass while racket/contact checkpoints remain unavailable.
+Checkpoint evaluation reports each checkpoint separately against manually reviewed uncertainty intervals. Manual labels are kept locally under ignored `refs/annotations/<split>/`: label zero-based decoded source frames, then convert them through `mise run phase-annotate`, which resolves actual FFprobe timestamps and validates source fingerprint/duration against `attempts.json`. Never make canonical times from `frame_index / nominal_fps`. `mise run phase-evaluate` writes the deterministic report without mutating checkpoints or annotations. A useful-body-checkpoint gate may pass while racket/contact checkpoints remain unavailable.
 
 ## 9. Testing and privacy
 
