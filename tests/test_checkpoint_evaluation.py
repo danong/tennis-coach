@@ -720,3 +720,108 @@ def test_fixture_manifests_valid_and_disjoint() -> None:
     assert report.separation is not None
     assert report.separation.serve.count == 1
     assert report.separation.aborted.count == 1
+
+
+# --- optional manual confidence ------------------------------------------------
+
+def test_absent_confidence_equivalent_to_explicit_null() -> None:
+    exact = row("sess-a", "sess-a/cap01.mov", "serve-001", 0.0, "start",
+                "available", 0.0, 1.0, 0.5, None, "serve")
+    assert exact.confidence is None
+    with_null = dict(exact.to_dict())
+    assert with_null["confidence"] is None
+    assert "confidence" in with_null
+    without_key = dict(with_null)
+    del without_key["confidence"]
+    assert "confidence" not in without_key
+    decoded_absent = PhaseAnnotation.from_dict(without_key)
+    decoded_null = PhaseAnnotation.from_dict(with_null)
+    assert decoded_absent == decoded_null
+    assert decoded_absent == exact
+    assert decoded_absent.confidence is None
+    # Canonical codec retains an explicit null on encode.
+    recoded = decoded_absent.to_dict()
+    assert "confidence" in recoded
+    assert recoded["confidence"] is None
+    assert recoded == with_null
+    assert PhaseAnnotation.from_dict(recoded) == decoded_absent
+    # Manifest level: absent keys decode identically and re-encode explicitly.
+    entries = full_rows("sess-a", "sess-a/cap01.mov", "serve-001", 0.0)
+    valued = manifest("dev", entries)
+    payload = valued.to_dict()
+    stripped = [
+        {k: v for k, v in entry.items() if k != "confidence"}
+        for entry in payload["annotations"]
+    ]
+    assert all("confidence" not in entry for entry in stripped)
+    decoded_manifest = PhaseAnnotationManifest.from_dict(
+        {**payload, "annotations": stripped})
+    nulled = [
+        {**entry, "confidence": None} for entry in stripped
+    ]
+    decoded_nulled = PhaseAnnotationManifest.from_dict(
+        {**payload, "annotations": nulled})
+    assert decoded_manifest == decoded_nulled
+    assert all(entry.confidence is None for entry in decoded_manifest.annotations)
+    for entry in decoded_manifest.to_dict()["annotations"]:
+        assert "confidence" in entry
+        assert entry["confidence"] is None
+    # JSON round trip re-materializes the explicit null deterministically.
+    as_json = json.dumps(
+        {**payload, "annotations": stripped}, sort_keys=True, indent=2) + "\n"
+    assert PhaseAnnotationManifest.from_json(as_json) == decoded_manifest
+    assert PhaseAnnotationManifest.from_json(as_json).to_json() == decoded_manifest.to_json()
+
+
+def test_supplied_confidence_type_and_range_still_rejected() -> None:
+    base = row("sess-a", "sess-a/cap01.mov", "serve-001", 0.0, "start",
+               "available", 0.0, 1.0, 0.5, None, "serve").to_dict()
+    assert "confidence" in base
+    for bad in ("high", True, False, float("nan"), float("inf"),
+                float("-inf"), -0.1, 1.1, 2.0, {}, []):
+        with pytest.raises(CheckpointEvaluationError):
+            PhaseAnnotation.from_dict({**base, "confidence": bad})
+    # Boundaries remain valid and strict unknown keys are still rejected.
+    assert PhaseAnnotation.from_dict({**base, "confidence": 0.0}).confidence == pytest.approx(0.0)
+    assert PhaseAnnotation.from_dict({**base, "confidence": 1.0}).confidence == pytest.approx(1.0)
+    assert PhaseAnnotation.from_dict({**base, "confidence": 0}).confidence == pytest.approx(0.0)
+    with pytest.raises(CheckpointEvaluationError):
+        PhaseAnnotation.from_dict({**base, "confidence": None, "extra": 1})
+    with pytest.raises(CheckpointEvaluationError):
+        PhaseAnnotation.from_dict(
+            {k: v for k, v in base.items() if k != "stage"})
+
+
+def test_report_calibration_unchanged_with_omitted_manual_confidence() -> None:
+    doc = make_doc(make_attempt("serve-001", 0.0, full_stages(0.0)))
+    valued = manifest("dev", full_rows("sess-a", "sess-a/cap01.mov", "serve-001", 0.0))
+    report_valued = evaluate_phase_document(doc, valued)
+    nulled_entries: list[PhaseAnnotation] = []
+    for entry in valued.annotations:
+        nulled_entries.append(row(
+            entry.session_id, entry.media, entry.attempt_id,
+            entry.attempt_start_seconds, entry.stage, entry.status,
+            entry.interval_start_seconds, entry.interval_end_seconds,
+            entry.manual_keyframe_seconds, None, entry.attempt_label))
+    nulled = manifest("dev", nulled_entries)
+    payload = nulled.to_dict()
+    stripped = [
+        {k: v for k, v in entry.items() if k != "confidence"}
+        for entry in payload["annotations"]
+    ]
+    omitted = PhaseAnnotationManifest.from_dict(
+        {**payload, "annotations": stripped})
+    assert omitted == nulled
+    report_nulled = evaluate_phase_document(doc, nulled)
+    report_omitted = evaluate_phase_document(doc, omitted)
+    assert report_omitted == report_nulled
+    assert report_omitted == report_valued
+    assert report_omitted.to_json() == report_nulled.to_json()
+    assert report_omitted.to_json() == report_valued.to_json()
+    # Machine-confidence Brier semantics are untouched: 8 accepted pairs
+    # with machine conf 0.8 -> (0.8 - 1)^2 = 0.04.
+    assert report_omitted.n_calibrated == 8
+    assert report_omitted.brier_score == pytest.approx(0.04)
+    assert report_nulled.brier_score == pytest.approx(0.04)
+    assert report_valued.brier_score == pytest.approx(0.04)
+    assert report_omitted.overall.accepted_keyframe_rate == pytest.approx(1.0)

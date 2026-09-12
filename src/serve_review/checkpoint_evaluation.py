@@ -559,7 +559,7 @@ class PhaseAnnotation:
             "stage",
             "status",
         }
-        missing = sorted(known - set(values))
+        missing = sorted((known - {"confidence"}) - set(values))
         if missing:
             raise CheckpointEvaluationError(
                 f"{name}: missing required keys {missing!r}."
@@ -576,7 +576,7 @@ class PhaseAnnotation:
             interval_start_seconds=values["interval_start_seconds"],
             interval_end_seconds=values["interval_end_seconds"],
             manual_keyframe_seconds=values["manual_keyframe_seconds"],
-            confidence=values["confidence"],
+            confidence=values.get("confidence"),
             attempt_label=values["attempt_label"],
         )
 
