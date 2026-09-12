@@ -21,5 +21,21 @@ description = "Run diagnostics and tests"
 depends = ["doctor", "test"]
 
 [tasks.cut]
-description = "Detect serves and export clips or a compilation (pipeline milestone)"
-run = "uv run --locked serve-review cut"
+description = "Detect serves and export clips or a compilation"
+run = "uv run --locked serve-review cut \"$@\""
+
+[tasks.analyze]
+description = "Analyze accepted attempts into phase checkpoints"
+run = "uv run --locked serve-review analyze \"$@\""
+
+[tasks.review-phases]
+description = "Render labeled phase keyframes for manual review"
+run = "uv run --locked serve-review review-phases \"$@\""
+
+[tasks.phase-annotate]
+description = "Convert zero-based frame labels into a private phase annotation manifest"
+run = "uv run --locked python tools/phase_annotations.py \"$@\""
+
+[tasks.phase-evaluate]
+description = "Evaluate checkpoints against a private annotation manifest"
+run = "uv run --locked python tools/evaluate_checkpoints.py \"$@\""
