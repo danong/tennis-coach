@@ -42,7 +42,7 @@ Default worker yield: summary, changed files, checks/results, deviations, and re
 | M4.3 | done | `00055168-4215-428d-878f-60b9918627ab` | `8d1b1be6f873` | scale-invariant contact repair included; reviewed and accepted |
 | M4.4 | done | `4c684400-913c-457a-9065-cd84a1096d7e` | `1d84e958b852` | DP skip states and advisory audio/body contact compatibility accepted |
 | M4.5 | done | `45e93d07-87a1-4002-b305-59c64c022ef7` | `304544f3cb0a` | atomic analyze/checkpoints report accepted |
-| M4.6 | not started | — | — | phase evaluation and manual gate |
+| M4.6 | done | `3ccf4265-c1ac-423a-90e2-6b20469b0148` | `f5d3d8e455ca` | session-disjoint phase evaluation support accepted; manual gate pending |
 | M4.7 | conditional | — | — | focused denser inference only if the M4 gate requires it |
 
 ## M1 — Trusted media path
