@@ -40,7 +40,7 @@ Default worker yield: summary, changed files, checks/results, deviations, and re
 | M4.1 | done | `73efa0fb-71b0-4f75-b953-db3b20a9e3da` | `e769cb6b98d6` | 720-test candidate verification; reviewed and accepted |
 | M4.2 | done | `2591024a-7455-4fd5-8b71-137b46e7bd6f`; repairs `ec74444b-3383-4ba5-8896-cbf67ba76258`, `cf4d4edb-e266-430c-b439-dc461c4510cb` | `a38e4ab88563`; repairs `436e6f48f5b1`, `673b7105c7c5` | real-anchor smoke accepted: 145/145 direct-supported, contact audio -14 ms |
 | M4.3 | done | `00055168-4215-428d-878f-60b9918627ab` | `8d1b1be6f873` | scale-invariant contact repair included; reviewed and accepted |
-| M4.4 | not started | — | — | constrained joint DP solver |
+| M4.4 | done | `4c684400-913c-457a-9065-cd84a1096d7e` | `1d84e958b852` | DP skip states and advisory audio/body contact compatibility accepted |
 | M4.5 | not started | — | — | analyze command and checkpoint report |
 | M4.6 | not started | — | — | phase evaluation and manual gate |
 | M4.7 | conditional | — | — | focused denser inference only if the M4 gate requires it |

@@ -85,3 +85,11 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 - **Intervention:** initial run `306c7a22-c58a-475f-a97c-136910fb41db` was rejected during exact review because `audio_energy / 2.0` plus the candidate floor discarded real-scale RMS peaks. Its repair preparation `d61e15b6-cbf9-463a-af72-46473707ef8d` failed before a candidate due to the immutable-workspace repair limitation. The parent was safely rejected and a corrected full leaf was dispatched from `main`.
 - **Lifecycle:** reviewed and accepted through Tau with focused acceptance verification; worker workspace released; default working copy rebased. Human acceptance unavailable.
 - **Finding:** an audio-candidate flag reflects an upstream transient decision; candidate-stage scoring must be amplitude-scale-invariant rather than reapplying an arbitrary raw RMS threshold.
+
+### 2026-09-11 — M4.4 constrained joint phase solver
+
+- **Identity:** accepted run `4c684400-913c-457a-9065-cd84a1096d7e`; base `c3c63e2b`; candidate `b32db753fd88`; integrated `1d84e958b852`; model `opencode/muse-spark-1.3-contributor-free`; 50 turns.
+- **Evidence/review:** exactly two allowed files changed and candidate verification passed. The solver performs deterministic candidate-or-skip DP over M4.3 unary evidence, with broad span-aware chronology bounds, explicit skip penalties, deterministic ties, source/range/method validation, and honest M4.1 unavailable outputs. Hand-calculated tests cover global-over-local selection, skips, bounds, ties, truncation, mismatch rejection, and no macro side effects.
+- **Contact semantics:** selected audio contact is retained through missing/occluded/incompatible body support. Existing-grid wrist elevation and camera-relative motion support can upgrade provenance to `body_pose_audio`; otherwise it remains `audio_transient` with lowered confidence and a stable advisory anomaly. This is not an M3 export filter.
+- **Lifecycle:** reviewed and accepted through Tau with focused acceptance verification; worker workspace released; default working copy rebased. Human acceptance unavailable.
+- **Finding:** DP solves the expected local-extrema problem: a lower unary candidate can win when it makes the entire phase path chronologically feasible, while unsupported stages remain unavailable rather than being invented.
