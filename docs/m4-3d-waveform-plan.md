@@ -29,7 +29,7 @@ Missing landmarks stay missing. No long gap is bridged. The old sparse 2D cache 
 
 Filter each 3D coordinate in each continuous visibility-qualified segment using a versioned low-pass Butterworth design. Filtering never crosses a missing span. It records edge/padding confidence separately from observed support.
 
-The filter operates on a canonical native-time grid built from exact PTS; short qualified resampling is explicit and cannot masquerade as direct observation. The implementation leaf must specify and version filter order, cutoff, zero-phase offline policy, minimum segment length, and boundary handling before any tuning.
+M4.8 is authorized to add SciPy and use a second-order-sections Butterworth implementation. The filter operates on a canonical native-time grid built from exact PTS; short qualified resampling is explicit and cannot masquerade as direct observation. The implementation leaf must specify and version filter order, cutoff, zero-phase offline policy, minimum segment length, and boundary handling before any tuning.
 
 ## 3. Kinematic waveform matrix
 

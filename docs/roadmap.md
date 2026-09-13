@@ -305,6 +305,7 @@ M4 is non-blocking with respect to M3: phase completeness and structural anomaly
 
 - **Objective:** Apply a versioned low-pass Butterworth filter to continuous qualified world-track segments on an exact-PTS native grid; never filter across gaps and retain boundary confidence.
 - **Dependency:** M4.7.
+- **Allowed dependency:** SciPy, specifically a versioned second-order-sections Butterworth implementation; update `pyproject.toml` and `uv.lock` in the implementation leaf.
 - **Exit:** synthetic waveforms verify cutoff/order behavior, phase policy, gap isolation, irregular PTS handling, and deterministic quality propagation.
 
 ### M4.9 — 3D kinematic waveform matrix
