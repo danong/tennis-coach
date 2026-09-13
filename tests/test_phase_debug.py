@@ -114,9 +114,23 @@ def _candidate(stage: str, keyframe: float, *, rank: int | None = 1) -> Candidat
     )
 
 
-def _stage_complete(stage: str, index: int) -> StageDebug:
+def _contact_selected_time() -> float:
+    return _selected_time(list(STAGE_ORDER).index("contact"))
+
+
+def _stage_complete(
+    stage: str, index: int, *, predecessor: str | None = "__auto__"
+) -> StageDebug:
     manual = _manual_time(index)
     selected = _selected_time(index)
+    if predecessor == "__auto__":
+        own_index = list(STAGE_ORDER).index(stage)
+        predecessor_value: str | None = (
+            None if own_index == 0 else list(STAGE_ORDER)[own_index - 1]
+        )
+    else:
+        predecessor_value = predecessor
+    contact_selected = _contact_selected_time()
     return StageDebug(
         stage=stage,
         manual_time_seconds=manual,
@@ -129,6 +143,13 @@ def _stage_complete(stage: str, index: int) -> StageDebug:
         objective_contribution=0.71,
         unavailable_reason=None,
         anomalies=(),
+        unary_contribution=None,
+        transition_contribution=None,
+        skip_contribution=None,
+        predecessor_stage=predecessor_value,
+        selection_explanation="selected_candidate_rank_1",
+        selected_contact_offset_seconds=selected - contact_selected,
+        manual_contact_offset_seconds=manual - contact_selected,
     )
 
 
@@ -181,9 +202,16 @@ def _complete_artifact() -> PhaseDebugArtifact:
 def _sparse_artifact() -> PhaseDebugArtifact:
     stages: dict[str, StageDebug] = {}
     traces: dict[str, StageTrace] = {}
+    contact_selected = _contact_selected_time()
     for i, stage in enumerate(STAGE_ORDER):
-        if stage in ("start", "contact"):
+        if stage == "start":
             stages[stage] = _stage_complete(stage, i)
+            traces[stage] = _trace(stage, i)
+            continue
+        if stage == "contact":
+            # Nearest preceding selected stage in this sparse layout is
+            # ``start`` (all intermediates skipped).
+            stages[stage] = _stage_complete(stage, i, predecessor="start")
             traces[stage] = _trace(stage, i)
             continue
         manual = _manual_time(i)
@@ -199,6 +227,13 @@ def _sparse_artifact() -> PhaseDebugArtifact:
             objective_contribution=None,
             unavailable_reason="no_candidate_available",
             anomalies=(f"no_candidate_{stage}",),
+            unary_contribution=None,
+            transition_contribution=None,
+            skip_contribution=None,
+            predecessor_stage=None,
+            selection_explanation="no_candidate_available",
+            selected_contact_offset_seconds=None,
+            manual_contact_offset_seconds=manual - contact_selected,
         )
         traces[stage] = StageTrace(
             stage=stage,

@@ -28,6 +28,11 @@ __all__ = [
     "PHASE_DEBUG_SCHEMA_VERSION",
     "PHASE_DEBUG_METHOD_VERSION",
     "PHASE_DEBUG_DEFAULT_CONFIG_ID",
+    "RECONCILIATION_METHOD_VERSION",
+    "RECONCILIATION_OBJECTIVE_TOLERANCE",
+    "TRACE_CHANNEL_ALLOWLIST_V1",
+    "PHASE_DEBUG_METHOD_VERSION",
+    "PHASE_DEBUG_DEFAULT_CONFIG_ID",
     "TRACE_CHANNEL_ALLOWLIST_V1",
     "SUPPORT_FEATURE_ALLOWLIST_V1",
     "TRACE_SAMPLING_METHOD_V1",
@@ -48,11 +53,34 @@ __all__ = [
 #: Version of every phase-debug schema in this module.
 #: v2 adds durable ``manual_score``/``manual_rank`` fields on every
 #: stage record (v1 payloads without them are rejected as incomplete).
-PHASE_DEBUG_SCHEMA_VERSION = 2
+#: v3 adds durable solver-reconciliation fields on every stage record
+#: (``unary_contribution``, ``transition_contribution``,
+#: ``skip_contribution``, ``predecessor_stage``,
+#: ``selection_explanation``, ``selected_contact_offset_seconds``,
+#: ``manual_contact_offset_seconds``) and artifact-level solver linkage
+#: (``solver_config_id``, ``solver_method_version``,
+#: ``reconciliation_method_version``). v2 payloads without the v3 keys
+#: are rejected as incomplete; unreconciled v3 records carry null
+#: contributions with an explicit explanation so Unit 1 manual
+#: support/traces/candidate semantics are preserved byte-for-byte.
+PHASE_DEBUG_SCHEMA_VERSION = 3
 #: Method identity recorded on every artifact/stage record.
 PHASE_DEBUG_METHOD_VERSION = "phase-debug-v1"
 #: Default configuration identity.
 PHASE_DEBUG_DEFAULT_CONFIG_ID = "phase-debug-default-v1"
+
+#: Method identity of the pure deterministic solver-reconciliation replay
+#: (Unit 2). Recorded on reconciled artifacts; unreconciled (Unit 1 only)
+#: artifacts carry null here. The replay never re-solves: it re-states the
+#: existing chosen DP path (exact-match unary, skip cost, feasible
+#: predecessor transition bonus) and rejects mismatches.
+RECONCILIATION_METHOD_VERSION = "phase-debug-reconciliation-v1"
+#: Documented absolute floating tolerance for reconciling the summed
+#: per-stage ``objective_contribution`` values (and each stage-level sum)
+#: against ``PhaseSolverResult.total_score``. Exact decimal equality is
+#: not required because JSON/dp summation order may differ in the last
+#: ulp; differences at or below this tolerance reconcile exactly.
+RECONCILIATION_OBJECTIVE_TOLERANCE = 1e-9
 
 #: Single fixed v1 diagnostic channel allowlist. Planned channels so a later
 #: builder never needs a schema change. Exactly these names are allowed;
@@ -1126,9 +1154,48 @@ class StageDebug:
     manual time yields that candidate's unary score/rank, otherwise
     null/null -- never interpolated); ``selected_score``/``selected_rank``
     are the corresponding selected fields;
-    ``objective_contribution`` is the reserved objective field (null when
-    absent); ``unavailable_reason`` is explicit when nothing was selected;
-    ``anomalies`` carries stable anomaly identifiers.
+    ``objective_contribution`` is the reconciled per-stage DP objective
+    share (null when unreconciled); ``unavailable_reason`` is explicit
+    when nothing was selected; ``anomalies`` carries stable anomaly
+    identifiers.
+
+    Unit 2 reconciliation fields (all durable in v3 JSON):
+
+    - ``unary_contribution`` is the selected candidate's exact-match raw
+      unary score in [0, 1] when this stage is selected, else null when
+      skipped (never zero-filled: null means "no unary applies").
+    - ``transition_contribution`` is the solver ``transition_bonus``
+      (>= 0) when this selected stage has a feasible selected
+      predecessor, ``0.0`` when this is the first selected stage (no
+      predecessor bonus applies), else null when skipped (never
+      zero-filled for skips).
+    - ``skip_contribution`` is the negative skip cost (``-skip_penalty``,
+      ``-contact_skip_penalty`` for contact, hence <= 0) when this stage
+      is skipped, else null when selected (null means "no skip applies").
+    - ``objective_contribution`` (when any contribution is present) must
+      equal ``(unary or 0) + (transition or 0) + (skip or 0)`` within
+      ``RECONCILIATION_OBJECTIVE_TOLERANCE``; when all three are null the
+      record is unreconciled (Unit 1) and ``objective_contribution`` is
+      null (legacy finite values without contributions are still accepted
+      by the codec for forward reading but never emitted by the builder).
+    - ``predecessor_stage`` is the nearest preceding *selected* canonical
+      stage key, or null for the first selected stage and for every
+      skipped stage (skips have no predecessor share).
+    - ``selection_explanation`` is a deterministic human/machine-readable
+      token: ``selected_candidate_rank_<N>`` when selected with an exact
+      candidate match, ``selected_without_exact_candidate_match`` when a
+      selected time has no exact candidate (unreconciled only; the
+      reconciler rejects this), ``skipped_for_global_consistency`` when
+      skipped despite candidates, ``no_candidate_available`` when skipped
+      with no candidates, or ``unreconciled`` for hand-built records that
+      predate explanation (never emitted by the builder).
+    - ``selected_contact_offset_seconds`` is
+      ``selected_time - contact_selected_time`` (negative before contact,
+      positive after, zero at contact), null when this stage or contact
+      has no selected time.
+    - ``manual_contact_offset_seconds`` is
+      ``manual_time - contact_selected_time``, null when this stage has
+      no manual time or contact has no selected time.
     """
 
     stage: str = "start"
@@ -1144,6 +1211,13 @@ class StageDebug:
     objective_contribution: float | None = None
     unavailable_reason: str | None = None
     anomalies: tuple[str, ...] = ()
+    unary_contribution: float | None = None
+    transition_contribution: float | None = None
+    skip_contribution: float | None = None
+    predecessor_stage: str | None = None
+    selection_explanation: str = "unreconciled"
+    selected_contact_offset_seconds: float | None = None
+    manual_contact_offset_seconds: float | None = None
     schema_version: int = PHASE_DEBUG_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -1308,11 +1382,139 @@ class StageDebug:
         object.__setattr__(
             self, "anomalies", _check_tokens(name, "'anomalies'", self.anomalies)
         )
+        # --- Unit 2 reconciliation semantics (v3) ---
+        object.__setattr__(
+            self, "unary_contribution",
+            _check_optional_unit(
+                name, "'unary_contribution'", self.unary_contribution
+            ),
+        )
+        object.__setattr__(
+            self, "transition_contribution",
+            _check_optional_nonnegative(
+                name,
+                "'transition_contribution'",
+                self.transition_contribution,
+            ),
+        )
+        skip_value = self.skip_contribution
+        if skip_value is None:
+            object.__setattr__(self, "skip_contribution", None)
+        else:
+            if (
+                isinstance(skip_value, bool)
+                or not isinstance(skip_value, (int, float))
+                or not math.isfinite(float(skip_value))
+                or float(skip_value) > 0.0
+            ):
+                raise PhaseDebugError(
+                    f"{name}: 'skip_contribution' must be a finite number "
+                    f"<= 0 or null, got {skip_value!r}."
+                )
+            object.__setattr__(self, "skip_contribution", float(skip_value))
+        predecessor = self.predecessor_stage
+        if predecessor is not None:
+            if predecessor not in _CANONICAL_STAGES:
+                raise PhaseDebugError(
+                    f"{name}: 'predecessor_stage' must be one of "
+                    f"{list(_CANONICAL_STAGES)} or null, got {predecessor!r}."
+                )
+            if _CANONICAL_STAGES.index(predecessor) >= _CANONICAL_STAGES.index(
+                self.stage
+            ):
+                raise PhaseDebugError(
+                    f"{name}: 'predecessor_stage' ({predecessor!r}) must "
+                    f"precede stage {self.stage!r} in canonical order."
+                )
+        explanation = self.selection_explanation
+        if not isinstance(explanation, str) or not explanation.strip():
+            raise PhaseDebugError(
+                f"{name}: 'selection_explanation' must be a non-blank "
+                f"string, got {explanation!r}."
+            )
+        object.__setattr__(
+            self, "selected_contact_offset_seconds",
+            _check_optional_offset(
+                name,
+                "'selected_contact_offset_seconds'",
+                self.selected_contact_offset_seconds,
+            ),
+        )
+        object.__setattr__(
+            self, "manual_contact_offset_seconds",
+            _check_optional_offset(
+                name,
+                "'manual_contact_offset_seconds'",
+                self.manual_contact_offset_seconds,
+            ),
+        )
+        unary_value = self.unary_contribution
+        transition_value = self.transition_contribution
+        # Honest mutual exclusivity: a stage either contributes a unary
+        # (+ optional transition) when selected, or a skip cost when
+        # skipped -- never both, never zero-filled across the boundary.
+        if skip_value is not None:
+            if unary_value is not None or transition_value is not None:
+                raise PhaseDebugError(
+                    f"{name}: 'skip_contribution' must be null when "
+                    f"unary/transition contributions are present."
+                )
+            if selected_time is not None:
+                raise PhaseDebugError(
+                    f"{name}: 'skip_contribution' requires no selected "
+                    f"time (skipped stage)."
+                )
+            if predecessor is not None:
+                raise PhaseDebugError(
+                    f"{name}: skipped stages must carry a null "
+                    f"'predecessor_stage'."
+                )
+        if transition_value is not None and unary_value is None:
+            raise PhaseDebugError(
+                f"{name}: 'transition_contribution' requires a present "
+                f"'unary_contribution' (selected stage)."
+            )
+        if unary_value is not None and selected_time is None:
+            raise PhaseDebugError(
+                f"{name}: 'unary_contribution' requires a present "
+                f"'selected_time_seconds' (selected stage)."
+            )
+        if transition_value is not None and selected_time is None:
+            raise PhaseDebugError(
+                f"{name}: 'transition_contribution' requires a present "
+                f"'selected_time_seconds' (selected stage)."
+            )
+        if (
+            unary_value is not None
+            or transition_value is not None
+            or skip_value is not None
+        ):
+            expected_sum = (
+                float(unary_value or 0.0)
+                + float(transition_value or 0.0)
+                + float(skip_value or 0.0)
+            )
+            observed_sum = self.objective_contribution
+            if observed_sum is None:
+                raise PhaseDebugError(
+                    f"{name}: 'objective_contribution' is required when any "
+                    f"reconciliation contribution is present."
+                )
+            if (
+                abs(float(observed_sum) - expected_sum)
+                > RECONCILIATION_OBJECTIVE_TOLERANCE
+            ):
+                raise PhaseDebugError(
+                    f"{name}: 'objective_contribution' ({observed_sum!r}) "
+                    f"must equal unary+transition+skip ({expected_sum!r}) "
+                    f"within {RECONCILIATION_OBJECTIVE_TOLERANCE}."
+                )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "anomalies": list(self.anomalies),
             "candidates": [entry.to_dict() for entry in self.candidates],
+            "manual_contact_offset_seconds": self.manual_contact_offset_seconds,
             "manual_score": self.manual_score,
             "manual_rank": self.manual_rank,
             "manual_support": None
@@ -1320,14 +1522,20 @@ class StageDebug:
             else self.manual_support.to_dict(),
             "manual_time_seconds": self.manual_time_seconds,
             "objective_contribution": self.objective_contribution,
+            "predecessor_stage": self.predecessor_stage,
             "schema_version": self.schema_version,
+            "selected_contact_offset_seconds": self.selected_contact_offset_seconds,
             "selected_rank": self.selected_rank,
             "selected_score": self.selected_score,
             "selected_support": None
             if self.selected_support is None
             else self.selected_support.to_dict(),
             "selected_time_seconds": self.selected_time_seconds,
+            "selection_explanation": self.selection_explanation,
+            "skip_contribution": self.skip_contribution,
             "stage": self.stage,
+            "transition_contribution": self.transition_contribution,
+            "unary_contribution": self.unary_contribution,
             "unavailable_reason": self.unavailable_reason,
         }
 
@@ -1341,17 +1549,24 @@ class StageDebug:
         known = {
             "anomalies",
             "candidates",
+            "manual_contact_offset_seconds",
             "manual_rank",
             "manual_score",
             "manual_support",
             "manual_time_seconds",
             "objective_contribution",
+            "predecessor_stage",
             "schema_version",
+            "selected_contact_offset_seconds",
             "selected_rank",
             "selected_score",
             "selected_support",
             "selected_time_seconds",
+            "selection_explanation",
+            "skip_contribution",
             "stage",
+            "transition_contribution",
+            "unary_contribution",
             "unavailable_reason",
         }
         _require_keys(name, values, known)
@@ -1420,6 +1635,17 @@ class StageDebug:
             objective_contribution=values["objective_contribution"],
             unavailable_reason=values["unavailable_reason"],
             anomalies=tuple(values["anomalies"]),
+            unary_contribution=values["unary_contribution"],
+            transition_contribution=values["transition_contribution"],
+            skip_contribution=values["skip_contribution"],
+            predecessor_stage=values["predecessor_stage"],
+            selection_explanation=values["selection_explanation"],
+            selected_contact_offset_seconds=values[
+                "selected_contact_offset_seconds"
+            ],
+            manual_contact_offset_seconds=values[
+                "manual_contact_offset_seconds"
+            ],
             schema_version=values["schema_version"],
         )
 
@@ -1445,7 +1671,27 @@ class PhaseDebugArtifact:
     ``stages`` and ``traces`` each contain exactly the eight canonical
     stage keys; ``stages`` values are :class:`StageDebug` records and
     ``traces`` values are :class:`StageTrace` records. ``total_objective``
-    is the reserved artifact-level objective field (null when absent).
+    is the reconciled artifact-level DP objective (null when
+    unreconciled/Unit 1 only); reconciled artifacts (Unit 2) carry the
+    summed per-stage shares durably and must match
+    ``PhaseSolverResult.total_score`` within
+    ``RECONCILIATION_OBJECTIVE_TOLERANCE`` (checked by the reconciler,
+    not by this schema alone so hand-built legacy payloads with a bare
+    total remain readable).
+
+    ``solver_config_id``/``solver_method_version`` durably record the
+    solver run being explained; ``reconciliation_method_version`` records
+    the replay method (``RECONCILIATION_METHOD_VERSION``). All three are
+    null together for unreconciled Unit 1 artifacts and present together
+    for reconciled Unit 2 artifacts (when any one is present, all three
+    plus ``total_objective`` are required).
+
+    Contact-offset honesty is enforced here: when contact has no selected
+    time every contact offset across stages must be null; otherwise each
+    present selected/manual time must carry the exact difference to the
+    contact selected time within ``RECONCILIATION_OBJECTIVE_TOLERANCE``
+    seconds (offsets are signed canonical-source differences, never
+    invented when contact is skipped).
     """
 
     attempt_id: str = "serve-001"
@@ -1460,6 +1706,9 @@ class PhaseDebugArtifact:
     )
     anomalies: tuple[str, ...] = ()
     total_objective: float | None = None
+    solver_config_id: str | None = None
+    solver_method_version: str | None = None
+    reconciliation_method_version: str | None = None
     schema_version: int = PHASE_DEBUG_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -1553,6 +1802,46 @@ class PhaseDebugArtifact:
             self, "total_objective",
             _check_optional_finite(name, "'total_objective'", self.total_objective),
         )
+        for key, label in (
+            ("solver_config_id", "'solver_config_id'"),
+            ("solver_method_version", "'solver_method_version'"),
+            (
+                "reconciliation_method_version",
+                "'reconciliation_method_version'",
+            ),
+        ):
+            value = getattr(self, key)
+            if value is None:
+                continue
+            if not isinstance(value, str) or not value.strip():
+                raise PhaseDebugError(
+                    f"{name}: {label} must be a non-blank string or null, "
+                    f"got {value!r}."
+                )
+        solver_keys = (
+            self.solver_config_id,
+            self.solver_method_version,
+            self.reconciliation_method_version,
+        )
+        present_solver = [value for value in solver_keys if value is not None]
+        if present_solver:
+            if len(present_solver) != 3:
+                raise PhaseDebugError(
+                    f"{name}: 'solver_config_id', 'solver_method_version', "
+                    f"and 'reconciliation_method_version' must be present "
+                    f"together or null together."
+                )
+            if self.total_objective is None:
+                raise PhaseDebugError(
+                    f"{name}: 'total_objective' is required when solver "
+                    f"linkage is present (reconciled artifact)."
+                )
+            if self.reconciliation_method_version != RECONCILIATION_METHOD_VERSION:
+                raise PhaseDebugError(
+                    f"{name}: 'reconciliation_method_version' must be "
+                    f"{RECONCILIATION_METHOD_VERSION!r}, got "
+                    f"{self.reconciliation_method_version!r}."
+                )
         stages = self.stages
         assert isinstance(stages, Mapping)
         attempt_range = self.attempt_range
@@ -1606,6 +1895,43 @@ class PhaseDebugArtifact:
                         f"in canonical stage order."
                     )
                 previous = float(moment)
+        # Contact-relative offset honesty: offsets are exact signed
+        # differences to the contact selected time, null exactly when the
+        # corresponding time or the contact anchor is absent.
+        contact_selected = stages["contact"].selected_time_seconds
+        for key in _CANONICAL_STAGES:
+            record = stages[key]
+            assert isinstance(record, StageDebug)
+            for moment_label, offset_label in (
+                ("selected_time_seconds", "selected_contact_offset_seconds"),
+                ("manual_time_seconds", "manual_contact_offset_seconds"),
+            ):
+                moment = getattr(record, moment_label)
+                offset = getattr(record, offset_label)
+                if moment is None or contact_selected is None:
+                    if offset is not None:
+                        raise PhaseDebugError(
+                            f"{name}: stage {key!r} {offset_label} must be "
+                            f"null when {moment_label} or contact selection "
+                            f"is absent."
+                        )
+                else:
+                    if offset is None:
+                        raise PhaseDebugError(
+                            f"{name}: stage {key!r} {offset_label} is "
+                            f"required when {moment_label} and contact "
+                            f"selection are present."
+                        )
+                    expected_offset = float(moment) - float(contact_selected)
+                    if (
+                        abs(float(offset) - expected_offset)
+                        > RECONCILIATION_OBJECTIVE_TOLERANCE
+                    ):
+                        raise PhaseDebugError(
+                            f"{name}: stage {key!r} {offset_label} "
+                            f"({offset!r}) must equal {moment_label} minus "
+                            f"contact selection ({expected_offset!r})."
+                        )
 
     def to_dict(self) -> dict[str, Any]:
         stages = self.stages
@@ -1620,7 +1946,10 @@ class PhaseDebugArtifact:
             "attempt_range": attempt_range.to_dict(),
             "config_id": self.config_id,
             "method_version": self.method_version,
+            "reconciliation_method_version": self.reconciliation_method_version,
             "schema_version": self.schema_version,
+            "solver_config_id": self.solver_config_id,
+            "solver_method_version": self.solver_method_version,
             "stages": {
                 key: stages[key].to_dict() for key in _CANONICAL_STAGES
             },
@@ -1641,7 +1970,10 @@ class PhaseDebugArtifact:
             "attempt_range",
             "config_id",
             "method_version",
+            "reconciliation_method_version",
             "schema_version",
+            "solver_config_id",
+            "solver_method_version",
             "stages",
             "total_objective",
             "traces",
@@ -1702,6 +2034,11 @@ class PhaseDebugArtifact:
             traces=traces,  # type: ignore[arg-type]
             anomalies=tuple(values["anomalies"]),
             total_objective=values["total_objective"],
+            solver_config_id=values["solver_config_id"],
+            solver_method_version=values["solver_method_version"],
+            reconciliation_method_version=values[
+                "reconciliation_method_version"
+            ],
             schema_version=values["schema_version"],
         )
 

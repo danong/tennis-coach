@@ -1,4 +1,4 @@
-"""Deterministic phase-debug extraction (M4 Unit 1, representation only).
+"""Deterministic phase-debug extraction (M4 Units 1+2, representation only).
 
 Pure, deterministic, in-memory construction of one
 :class:`~serve_review.checkpoints.phase_debug.PhaseDebugArtifact` from one
@@ -7,7 +7,7 @@ selected M4.1 :class:`AttemptPhase` (or the existing M4.4
 :class:`PhaseSolverResult` wrapper), and optional frozen manual stage
 query times.
 
-Contract (Unit 1 only):
+Contract (Unit 1 preserved):
 
 - All eight canonical Kovacs stages are populated; no stage is invented
   or dropped. Candidate summaries keep stored evidence order with
@@ -31,12 +31,44 @@ Contract (Unit 1 only):
 - Range/method linkage is strict: grid, evidence, and selected attempt
   ranges must coincide exactly and grid/evidence method identities must
   match their modules; mismatches raise :class:`PhaseDebugError`.
-- Objective/transition/skip reconciliation is deferred: every
-  ``objective_contribution`` and ``total_objective`` is null.
+
+Contract (Unit 2 reconciliation, opt-in only):
+
+- Every stage record additionally exposes the deterministic
+  ``selection_explanation``, ``predecessor_stage`` (nearest preceding
+  selected stage, null for first selected and all skips), and
+  contact-relative ``selected_contact_offset_seconds`` /
+  ``manual_contact_offset_seconds`` (signed ``time - contact`` offsets,
+  null exactly when the corresponding time or the contact anchor is
+  absent). These are derived from the already-selected/manual times
+  without touching solver selection.
+- When ``solver_result`` and ``solver_config`` are both supplied, each
+  record additionally carries the replayed ``unary_contribution`` /
+  ``transition_contribution`` / ``skip_contribution`` /
+  ``objective_contribution`` shares and the artifact carries
+  ``total_objective`` plus durable ``solver_config_id`` /
+  ``solver_method_version`` / ``reconciliation_method_version``. The
+  summed shares reconcile to ``PhaseSolverResult.total_score`` within
+  ``RECONCILIATION_OBJECTIVE_TOLERANCE``; any config/result/range/
+  selected-keyframe mismatch (including a selected time without an
+  exact candidate match or an infeasible chosen transition) raises
+  :class:`PhaseDebugError` instead of inventing reconciliation.
+- When both solver inputs are absent the artifact stays unreconciled
+  (Unit 1): contributions are null, ``total_objective`` and solver
+  linkage are null, while explanation/predecessor/offsets remain
+  populated from the selected/manual times. Supplying exactly one of
+  the two solver inputs raises.
+- Contact uses the raw candidate unary score like every other stage;
+  the advisory body-compatibility confidence adjustment never enters
+  the objective. Skipped contact contributes ``-contact_skip_penalty``
+  (other skips ``-skip_penalty``); the first selected stage contributes
+  transition ``0.0`` and each later selected stage ``transition_bonus``
+  over its (possibly non-adjacent) feasible predecessor span.
 
 This module performs no inference, no file I/O, no CLI/pipeline/
 rendering, no dense extraction, and no solver/evidence heuristic,
-configuration, or production behavior changes.
+configuration, or production behavior changes. Solver selection is never
+re-run or altered here.
 """
 
 from __future__ import annotations
@@ -53,6 +85,7 @@ from serve_review.checkpoints.phase_debug import (
     MAX_TRACE_SAMPLES,
     PHASE_DEBUG_DEFAULT_CONFIG_ID,
     PHASE_DEBUG_METHOD_VERSION,
+    RECONCILIATION_METHOD_VERSION,
     TRACE_SAMPLING_METHOD_V1,
     CandidateSummary,
     PhaseDebugArtifact,
@@ -68,7 +101,10 @@ from serve_review.checkpoints.phase_features import (
     PhaseFeatureGrid,
     PhaseFeatureSample,
 )
-from serve_review.checkpoints.phase_solver import PhaseSolverResult
+from serve_review.checkpoints.phase_solver import (
+    PhaseSolverConfig,
+    PhaseSolverResult,
+)
 from serve_review.domain import (
     STAGE_ORDER,
     AttemptPhase,
@@ -529,6 +565,27 @@ def _stage_trace(
     )
 
 
+def _selection_explanation_unreconciled(
+    selected_time: float | None,
+    selected_rank: int | None,
+    has_candidates: bool,
+) -> str:
+    """Deterministic selected/skipped explanation without solver config.
+
+    Selected times with an exact candidate match name their rank;
+    selected times without a match stay honest about the miss (the
+    Unit 2 reconciler rejects this state); skips reuse the solver
+    limitation vocabulary. Never invented beyond these inputs.
+    """
+    if selected_time is not None:
+        if selected_rank is not None:
+            return f"selected_candidate_rank_{int(selected_rank)}"
+        return "selected_without_exact_candidate_match"
+    if has_candidates:
+        return "skipped_for_global_consistency"
+    return "no_candidate_available"
+
+
 def build_phase_debug_artifact(
     grid: PhaseFeatureGrid,
     evidence: PhaseEvidence,
@@ -536,6 +593,8 @@ def build_phase_debug_artifact(
     manual_times: Mapping[str, float | None] | None = None,
     *,
     config_id: str = PHASE_DEBUG_DEFAULT_CONFIG_ID,
+    solver_result: PhaseSolverResult | None = None,
+    solver_config: PhaseSolverConfig | None = None,
 ) -> PhaseDebugArtifact:
     """Build the deterministic phase-debug artifact for one attempt.
 
@@ -544,7 +603,17 @@ def build_phase_debug_artifact(
     solver result wrapping it), and ``manual_times`` the optional frozen
     manual stage query times (missing keys read as null). Pure and
     deterministic: equal inputs yield equal artifacts; no I/O, no
-    inference, no heuristic changes.
+    inference, no heuristic changes. Solver selection is never re-run.
+
+    When ``solver_result`` and ``solver_config`` are both supplied the
+    artifact is reconciled (Unit 2): per-stage unary/transition/skip
+    shares plus ``total_objective`` and solver linkage are populated and
+    must match ``solver_result.total_score`` within the documented
+    tolerance. ``selected`` must then equal
+    ``solver_result.attempt_phase`` exactly. Supplying exactly one of
+    the two solver inputs raises. When both are absent the artifact is
+    unreconciled (Unit 1) with null shares/totals but fully populated
+    explanation/predecessor/contact-offset fields.
     """
     selected_phase = _resolve_selected(selected)
     attempt = _check_linkage(grid, evidence, selected_phase)
@@ -554,15 +623,72 @@ def build_phase_debug_artifact(
             "phase_debug_builder: 'config_id' must be a non-blank string, "
             f"got {config_id!r}."
         )
+    if (solver_result is None) != (solver_config is None):
+        raise PhaseDebugError(
+            "phase_debug_builder: 'solver_result' and 'solver_config' "
+            "must be supplied together or not at all."
+        )
+    reconciled: dict[str, Any] | None = None
+    reconciled_total: float | None = None
+    if solver_result is not None and solver_config is not None:
+        if not isinstance(solver_result, PhaseSolverResult):
+            raise PhaseDebugError(
+                "phase_debug_builder: 'solver_result' must be a "
+                f"PhaseSolverResult, got {type(solver_result).__name__}."
+            )
+        if not isinstance(solver_config, PhaseSolverConfig):
+            raise PhaseDebugError(
+                "phase_debug_builder: 'solver_config' must be a "
+                f"PhaseSolverConfig, got {type(solver_config).__name__}."
+            )
+        if selected_phase != solver_result.attempt_phase:
+            raise PhaseDebugError(
+                "phase_debug_builder: 'selected' must equal "
+                "solver_result.attempt_phase exactly; reconciliation "
+                "never mixes runs."
+            )
+        # Local import keeps module import order stable and avoids a
+        # solver-behavior duplicate: all DP semantics live in the
+        # reconciliation replay, not here.
+        from serve_review.checkpoints.phase_debug_reconciliation import (
+            explain_solver_path,
+        )
+
+        replay, replay_total = explain_solver_path(
+            evidence, solver_result, solver_config
+        )
+        reconciled = {key: replay[key] for key in _CANONICAL_STAGES}
+        reconciled_total = float(replay_total)
+
+    # First pass: Unit 1 values (support/traces/candidates/scores) plus
+    # the selected/manual time maps needed for predecessor/offsets.
+    selected_times: dict[str, float | None] = {}
+    selected_scores: dict[str, float | None] = {}
+    selected_ranks: dict[str, int | None] = {}
+    candidate_lists: dict[str, tuple[CandidateSummary, ...]] = {}
+    for stage in _CANONICAL_STAGES:
+        selected_stage = selected_phase.stages[stage]
+        moment = selected_stage.keyframe_seconds
+        selected_times[stage] = None if moment is None else float(moment)
+    contact_selected = selected_times["contact"]
+    # Predecessor chain over the existing selection (nearest preceding
+    # selected stage; null for first selected and all skips).
+    predecessor_of: dict[str, str | None] = {}
+    last_selected: str | None = None
+    for stage in _CANONICAL_STAGES:
+        if selected_times[stage] is not None:
+            predecessor_of[stage] = last_selected
+            last_selected = stage
+        else:
+            predecessor_of[stage] = None
 
     stages: dict[str, StageDebug] = {}
     traces: dict[str, StageTrace] = {}
     for stage in _CANONICAL_STAGES:
         manual_time = manual[stage]
         selected_stage = selected_phase.stages[stage]
-        selected_time = selected_stage.keyframe_seconds
+        selected_time = selected_times[stage]
         if selected_time is not None:
-            selected_time = float(selected_time)
             _check_time_in_attempt(
                 "selected time", stage, selected_time, attempt
             )
@@ -570,8 +696,11 @@ def build_phase_debug_artifact(
             _check_time_in_attempt("manual time", stage, manual_time, attempt)
         ranked = _ranked_candidates(evidence, stage)
         candidates = _candidate_summaries(stage, ranked)
+        candidate_lists[stage] = candidates
         manual_score, manual_rank = _score_rank_at(ranked, manual_time)
         selected_score, selected_rank = _score_rank_at(ranked, selected_time)
+        selected_scores[stage] = selected_score
+        selected_ranks[stage] = selected_rank
         has_selected = (
             selected_time is not None
             or any(entry.interval is not None for entry in candidates)
@@ -584,6 +713,37 @@ def build_phase_debug_artifact(
             unavailable_reason = _unavailable_reason(
                 selected_stage, bool(ranked)
             )
+        if contact_selected is None:
+            selected_offset: float | None = None
+            manual_offset: float | None = None
+        else:
+            selected_offset = (
+                None
+                if selected_time is None
+                else float(selected_time) - float(contact_selected)
+            )
+            manual_offset = (
+                None
+                if manual_time is None
+                else float(manual_time) - float(contact_selected)
+            )
+        if reconciled is None:
+            unary_value: float | None = None
+            transition_value: float | None = None
+            skip_value: float | None = None
+            objective_value: float | None = None
+            explanation = _selection_explanation_unreconciled(
+                selected_time, selected_rank, bool(ranked)
+            )
+            predecessor: str | None = predecessor_of[stage]
+        else:
+            entry = reconciled[stage]
+            unary_value = entry.unary_contribution
+            transition_value = entry.transition_contribution
+            skip_value = entry.skip_contribution
+            objective_value = entry.objective_contribution
+            explanation = entry.selection_explanation
+            predecessor = entry.predecessor_stage
         stages[stage] = StageDebug(
             stage=stage,
             manual_time_seconds=manual_time,
@@ -595,14 +755,40 @@ def build_phase_debug_artifact(
             manual_rank=manual_rank,
             selected_score=selected_score,
             selected_rank=selected_rank,
-            objective_contribution=None,
+            objective_contribution=objective_value,
             unavailable_reason=unavailable_reason,
             anomalies=_stage_anomalies(
                 selected_stage, bool(ranked), stage
             ),
+            unary_contribution=unary_value,
+            transition_contribution=transition_value,
+            skip_contribution=skip_value,
+            predecessor_stage=predecessor,
+            selection_explanation=explanation,
+            selected_contact_offset_seconds=selected_offset,
+            manual_contact_offset_seconds=manual_offset,
         )
         traces[stage] = _stage_trace(grid, attempt, stage, manual_time, selected_time)
 
+    if reconciled is None:
+        return PhaseDebugArtifact(
+            attempt_id=selected_phase.attempt_id,
+            attempt_range=MediaRange(
+                start_seconds=attempt.start_seconds,
+                end_seconds=attempt.end_seconds,
+            ),
+            method_version=PHASE_DEBUG_METHOD_VERSION,
+            config_id=config_id,
+            stages=stages,  # type: ignore[arg-type]
+            traces=traces,  # type: ignore[arg-type]
+            anomalies=tuple(selected_phase.anomalies),
+            total_objective=None,
+            solver_config_id=None,
+            solver_method_version=None,
+            reconciliation_method_version=None,
+        )
+    assert solver_result is not None and solver_config is not None
+    assert reconciled_total is not None
     return PhaseDebugArtifact(
         attempt_id=selected_phase.attempt_id,
         attempt_range=MediaRange(
@@ -614,5 +800,8 @@ def build_phase_debug_artifact(
         stages=stages,  # type: ignore[arg-type]
         traces=traces,  # type: ignore[arg-type]
         anomalies=tuple(selected_phase.anomalies),
-        total_objective=None,
+        total_objective=float(reconciled_total),
+        solver_config_id=solver_config.config_id,
+        solver_method_version=solver_result.method_version,
+        reconciliation_method_version=RECONCILIATION_METHOD_VERSION,
     )
