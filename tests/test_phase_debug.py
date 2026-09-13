@@ -871,3 +871,100 @@ def test_schema_version_rejected() -> None:
     payload["schema_version"] = 999
     with pytest.raises(PhaseDebugError):
         PhaseDebugArtifact.from_dict(payload)
+
+
+# --- Manual score/rank durable fields ---
+
+
+def test_manual_score_rank_roundtrip() -> None:
+    stage = _stage_complete("cocking", 3)
+    assert stage.manual_score is None
+    assert stage.manual_rank is None
+    scored = StageDebug(
+        stage="cocking",
+        manual_time_seconds=stage.manual_time_seconds,
+        selected_time_seconds=stage.selected_time_seconds,
+        manual_support=stage.manual_support,
+        selected_support=stage.selected_support,
+        candidates=stage.candidates,
+        manual_score=0.62,
+        manual_rank=2,
+        selected_score=stage.selected_score,
+        selected_rank=stage.selected_rank,
+        objective_contribution=stage.objective_contribution,
+        unavailable_reason=None,
+        anomalies=(),
+    )
+    assert scored.manual_score == pytest.approx(0.62)
+    assert scored.manual_rank == 2
+    clone = StageDebug.from_json(scored.to_json())
+    assert clone == scored
+    assert clone.manual_score == pytest.approx(0.62)
+    assert clone.manual_rank == 2
+
+
+def test_manual_score_rank_validation() -> None:
+    base = _stage_complete("start", 0)
+    with pytest.raises(PhaseDebugError):
+        StageDebug(
+            stage="start",
+            manual_time_seconds=base.manual_time_seconds,
+            selected_time_seconds=base.selected_time_seconds,
+            manual_support=base.manual_support,
+            selected_support=base.selected_support,
+            candidates=base.candidates,
+            manual_score=2.0,  # out of [0, 1]
+            manual_rank=None,
+            selected_score=None,
+            selected_rank=None,
+            objective_contribution=None,
+            unavailable_reason=None,
+            anomalies=(),
+        )
+    with pytest.raises(PhaseDebugError):
+        StageDebug(
+            stage="start",
+            manual_time_seconds=base.manual_time_seconds,
+            selected_time_seconds=base.selected_time_seconds,
+            manual_support=base.manual_support,
+            selected_support=base.selected_support,
+            candidates=base.candidates,
+            manual_score=0.5,
+            manual_rank=0,  # must be >= 1
+            selected_score=None,
+            selected_rank=None,
+            objective_contribution=None,
+            unavailable_reason=None,
+            anomalies=(),
+        )
+    with pytest.raises(PhaseDebugError):
+        StageDebug(
+            stage="start",
+            manual_time_seconds=base.manual_time_seconds,
+            selected_time_seconds=base.selected_time_seconds,
+            manual_support=base.manual_support,
+            selected_support=base.selected_support,
+            candidates=base.candidates,
+            manual_score=0.5,
+            manual_rank=True,  # bools are not valid ranks
+            selected_score=None,
+            selected_rank=None,
+            objective_contribution=None,
+            unavailable_reason=None,
+            anomalies=(),
+        )
+
+
+def test_manual_fields_required_in_codec() -> None:
+    payload = _stage_complete("start", 0).to_dict()
+    assert "manual_score" in payload
+    assert "manual_rank" in payload
+    for key in ("manual_score", "manual_rank"):
+        bad = dict(payload)
+        del bad[key]
+        with pytest.raises(PhaseDebugError):
+            StageDebug.from_dict(bad)
+    bad = dict(payload)
+    bad["manual_extra"] = 1
+    with pytest.raises(PhaseDebugError):
+        StageDebug.from_dict(bad)

@@ -46,7 +46,9 @@ __all__ = [
 ]
 
 #: Version of every phase-debug schema in this module.
-PHASE_DEBUG_SCHEMA_VERSION = 1
+#: v2 adds durable ``manual_score``/``manual_rank`` fields on every
+#: stage record (v1 payloads without them are rejected as incomplete).
+PHASE_DEBUG_SCHEMA_VERSION = 2
 #: Method identity recorded on every artifact/stage record.
 PHASE_DEBUG_METHOD_VERSION = "phase-debug-v1"
 #: Default configuration identity.
@@ -1119,9 +1121,13 @@ class StageDebug:
     selected canonical values (null when absent); ``manual_support``/
     ``selected_support`` are the corresponding support snapshots;
     ``candidates`` holds candidate summaries for this stage;
-    ``selected_score``/``selected_rank``/``objective_contribution`` are the
-    reserved score/rank/objective fields (null when absent);
-    ``unavailable_reason`` is explicit when nothing was selected;
+    ``manual_score``/``manual_rank`` are the durable manual score/rank
+    fields (null when absent; an exact candidate-keyframe match at the
+    manual time yields that candidate's unary score/rank, otherwise
+    null/null -- never interpolated); ``selected_score``/``selected_rank``
+    are the corresponding selected fields;
+    ``objective_contribution`` is the reserved objective field (null when
+    absent); ``unavailable_reason`` is explicit when nothing was selected;
     ``anomalies`` carries stable anomaly identifiers.
     """
 
@@ -1131,6 +1137,8 @@ class StageDebug:
     manual_support: SupportSnapshot | None = None
     selected_support: SupportSnapshot | None = None
     candidates: tuple[CandidateSummary, ...] = ()
+    manual_score: float | None = None
+    manual_rank: int | None = None
     selected_score: float | None = None
     selected_rank: int | None = None
     objective_contribution: float | None = None
@@ -1242,6 +1250,18 @@ class StageDebug:
             _ = stored
         object.__setattr__(self, "candidates", candidates)
         object.__setattr__(
+            self, "manual_score",
+            _check_optional_unit(name, "'manual_score'", self.manual_score),
+        )
+        manual_rank = self.manual_rank
+        if manual_rank is not None:
+            if not _is_int(manual_rank) or manual_rank < 1:
+                raise PhaseDebugError(
+                    f"{name}: 'manual_rank' must be an integer >= 1 or "
+                    f"null, got {manual_rank!r}."
+                )
+            object.__setattr__(self, "manual_rank", int(manual_rank))
+        object.__setattr__(
             self, "selected_score",
             _check_optional_unit(name, "'selected_score'", self.selected_score),
         )
@@ -1293,6 +1313,8 @@ class StageDebug:
         return {
             "anomalies": list(self.anomalies),
             "candidates": [entry.to_dict() for entry in self.candidates],
+            "manual_score": self.manual_score,
+            "manual_rank": self.manual_rank,
             "manual_support": None
             if self.manual_support is None
             else self.manual_support.to_dict(),
@@ -1319,6 +1341,8 @@ class StageDebug:
         known = {
             "anomalies",
             "candidates",
+            "manual_rank",
+            "manual_score",
             "manual_support",
             "manual_time_seconds",
             "objective_contribution",
@@ -1389,6 +1413,8 @@ class StageDebug:
             manual_support=manual_support,
             selected_support=selected_support,
             candidates=candidates,
+            manual_score=values["manual_score"],
+            manual_rank=values["manual_rank"],
             selected_score=values["selected_score"],
             selected_rank=values["selected_rank"],
             objective_contribution=values["objective_contribution"],
