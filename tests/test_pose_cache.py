@@ -588,3 +588,355 @@ def test_orientation_header_validation_errors(tmp_path: Path) -> None:
     header = header_to_dict(make_identity())
     with pytest.raises(CacheCorruptError):
         header_from_dict({**header, "unexpected": 1})
+
+
+# --- Dense-world cache (M4.7 leaf 1) -------------------------------------------
+# The frozen 2D cache tests above are untouched; everything below exercises
+# the new dense-world JSONL representation only.
+
+from serve_review.pose.schema import FrameObservation as _Frame2D  # noqa: E402
+from serve_review.pose.world import (  # noqa: E402
+    NUM_WORLD_LANDMARKS,
+    WORLD_CACHE_SCHEMA_VERSION,
+    WORLD_REPRESENTATION,
+    WORLD_SCHEMA_VERSION,
+    WorldCacheIdentity,
+    WorldFrameObservation,
+    WorldLandmark,
+    append_world_frames,
+    finalize_world_cache,
+    load_world_cache,
+    quarantine_world_cache,
+    require_matching_world_identity,
+    world_header_from_dict,
+    world_header_to_dict,
+    write_complete_world_cache,
+    write_partial_world_cache,
+)
+
+
+def _make_world_identity(**overrides) -> WorldCacheIdentity:
+    fields = {
+        "source_fingerprint": "sha256:worldabc",
+        "model_name": "mediapipe-pose-landmarker-heavy",
+        "model_version": "heavy-test",
+    }
+    fields.update(overrides)
+    return WorldCacheIdentity(**fields)
+
+
+def _make_world_frame(time_seconds: float) -> WorldFrameObservation:
+    joints = tuple(
+        None
+        if index % 5 == 0 and index not in (1, 2)
+        else WorldLandmark(
+            x=0.01 * index - 0.1, y=1.0 + 0.004 * index, z=-0.15 + 0.003 * index
+        )
+        for index in range(NUM_WORLD_LANDMARKS)
+    )
+    assert any(joint is not None for joint in joints)
+    companion = _Frame2D(
+        time_seconds=time_seconds,
+        timestamp_ms=int(round(time_seconds * 1000)),
+        persons=(),
+    )
+    return WorldFrameObservation(
+        time_seconds=time_seconds,
+        timestamp_ms=int(round(time_seconds * 1000)),
+        world_landmarks=joints,
+        frame_2d=companion,
+    )
+
+
+def _make_world_frames(count: int, *, start: float = 0.0) -> list:
+    step = 1 / 30.0
+    return [_make_world_frame(start + index * step) for index in range(count)]
+
+
+def _world_frame_line(frame: WorldFrameObservation) -> str:
+    return (
+        json.dumps(
+            {"observation": frame.to_dict(), "type": "dense-world-frame"},
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
+def test_world_cache_versions_are_pinned() -> None:
+    assert WORLD_CACHE_SCHEMA_VERSION == 1
+    assert WORLD_SCHEMA_VERSION == 1
+    assert WORLD_REPRESENTATION == "dense-world-v1"
+
+
+def test_world_complete_round_trip_preserves_identity_and_times(tmp_path: Path) -> None:
+    identity = _make_world_identity()
+    frames = _make_world_frames(4)
+    path = tmp_path / "world-v1.jsonl"
+    write_complete_world_cache(path, identity, frames)
+    snapshot = load_world_cache(path)
+    assert snapshot.complete is True
+    assert snapshot.identity == identity
+    assert list(snapshot.frames) == frames
+    for stored, expected in zip(snapshot.frames, frames):
+        assert stored.time_seconds == expected.time_seconds
+        assert stored.timestamp_ms == expected.timestamp_ms
+        assert stored.frame_2d.time_seconds == stored.time_seconds
+        assert stored.frame_2d.timestamp_ms == stored.timestamp_ms
+    times = [frame.time_seconds for frame in snapshot.frames]
+    assert all(later > earlier for earlier, later in zip(times, times[1:]))
+
+
+def test_world_cache_file_is_deterministic_jsonl(tmp_path: Path) -> None:
+    identity = _make_world_identity()
+    frames = _make_world_frames(2)
+    path = tmp_path / "world-v1.jsonl"
+    write_complete_world_cache(path, identity, frames)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 4  # header + 2 frames + footer
+    for line in lines:
+        assert json.loads(line)
+    assert json.loads(lines[0])["type"] == "dense-world-header"
+    assert json.loads(lines[0])["representation"] == WORLD_REPRESENTATION
+    assert json.loads(lines[-1])["type"] == "dense-world-footer"
+    assert json.loads(lines[-1]) == {
+        "complete": True,
+        "frame_count": 2,
+        "schema_version": 1,
+        "type": "dense-world-footer",
+    }
+    again = tmp_path / "again.jsonl"
+    write_complete_world_cache(again, identity, frames)
+    assert again.read_text(encoding="utf-8") == path.read_text(encoding="utf-8")
+
+
+def test_world_empty_frames_round_trip_is_complete(tmp_path: Path) -> None:
+    path = tmp_path / "world-v1.jsonl"
+    write_complete_world_cache(path, _make_world_identity(), [])
+    snapshot = load_world_cache(path)
+    assert snapshot.complete is True
+    assert snapshot.frames == ()
+
+
+def test_world_header_codec_round_trips_and_validates(tmp_path: Path) -> None:
+    identity = _make_world_identity()
+    header = world_header_to_dict(identity)
+    assert header["type"] == "dense-world-header"
+    assert header["representation"] == WORLD_REPRESENTATION
+    assert header["world_schema_version"] == WORLD_SCHEMA_VERSION
+    assert world_header_from_dict(header) == identity
+    with pytest.raises(CacheCorruptError):
+        world_header_from_dict({**header, "type": "header"})
+    with pytest.raises(CacheCorruptError):
+        world_header_from_dict({**header, "schema_version": 999})
+    with pytest.raises(CacheCorruptError):
+        world_header_from_dict({**header, "world_schema_version": 999})
+    with pytest.raises(CacheCorruptError):
+        world_header_from_dict({**header, "representation": "pose-v1"})
+    with pytest.raises(CacheCorruptError):
+        world_header_from_dict({**header, "extra": 1})
+
+
+def test_world_stale_identity_is_rejected_and_leaves_file_untouched(
+    tmp_path: Path,
+) -> None:
+    stored = _make_world_identity()
+    requested = _make_world_identity(source_fingerprint="sha256:other")
+    with pytest.raises(CacheStaleError, match="source_fingerprint"):
+        require_matching_world_identity(stored, requested)
+    with pytest.raises(CacheStaleError, match="model_name"):
+        require_matching_world_identity(
+            stored, _make_world_identity(model_name="other-model")
+        )
+    path = tmp_path / "world-v1.jsonl"
+    write_complete_world_cache(path, stored, _make_world_frames(2))
+    with pytest.raises(CacheStaleError):
+        append_world_frames(path, requested, _make_world_frames(1, start=5.0))
+    with pytest.raises(CacheStaleError):
+        finalize_world_cache(path, requested)
+    assert load_world_cache(path).complete is True
+
+
+def test_world_partial_cache_is_resumable_then_finalized(tmp_path: Path) -> None:
+    identity = _make_world_identity()
+    path = tmp_path / "world-v1.jsonl"
+    first = _make_world_frames(3)
+    write_partial_world_cache(path, identity, first)
+    assert load_world_cache(path).complete is False
+    rest = _make_world_frames(2, start=first[-1].time_seconds + 1 / 30.0)
+    append_world_frames(path, identity, rest)
+    resumed = load_world_cache(path)
+    assert resumed.complete is False
+    assert list(resumed.frames) == first + rest
+    finalize_world_cache(path, identity)
+    finished = load_world_cache(path)
+    assert finished.complete is True
+    assert list(finished.frames) == first + rest
+    # Finalize is idempotent.
+    before = path.read_text(encoding="utf-8")
+    assert finalize_world_cache(path, identity) == path
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_world_append_to_complete_is_refused_and_order_enforced(
+    tmp_path: Path,
+) -> None:
+    identity = _make_world_identity()
+    path = tmp_path / "world-v1.jsonl"
+    write_complete_world_cache(path, identity, _make_world_frames(2))
+    with pytest.raises(CacheError, match="already complete"):
+        append_world_frames(path, identity, _make_world_frames(1, start=5.0))
+    assert load_world_cache(path).complete is True
+    partial = tmp_path / "partial.jsonl"
+    write_partial_world_cache(partial, identity, _make_world_frames(3))
+    with pytest.raises(CacheCorruptError):
+        append_world_frames(partial, identity, [_make_world_frame(0.01)])
+    assert load_world_cache(partial).complete is False
+
+
+def test_world_sparse_2d_caches_never_validate_as_dense(tmp_path: Path) -> None:
+    # A sparse 2D pose-v1 file must fail as a dense-world cache.
+    sparse_identity = make_identity()
+    sparse_path = tmp_path / "pose-v1.jsonl"
+    write_complete_cache(sparse_path, sparse_identity, make_frames(2))
+    with pytest.raises(CacheCorruptError):
+        load_world_cache(sparse_path)
+    # And a dense-world file must fail as a sparse 2D cache.
+    world_path = tmp_path / "world-v1.jsonl"
+    write_complete_world_cache(
+        world_path, _make_world_identity(), _make_world_frames(2)
+    )
+    with pytest.raises((CacheCorruptError, CacheError)):
+        load_cache(world_path)
+
+
+def test_world_corrupt_caches_raise_and_never_present_as_complete(
+    tmp_path: Path,
+) -> None:
+    identity = _make_world_identity()
+    good_frames = _make_world_frames(2)
+    header = json.dumps(world_header_to_dict(identity), sort_keys=True) + "\n"
+    frame_lines = [_world_frame_line(frame) for frame in good_frames]
+    footer = (
+        json.dumps(
+            {
+                "complete": True,
+                "frame_count": 2,
+                "schema_version": 1,
+                "type": "dense-world-footer",
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    cases = {
+        "empty file": [],
+        "missing header": frame_lines + [footer],
+        "sparse 2D header": [
+            json.dumps(header_to_dict(make_identity()), sort_keys=True) + "\n",
+            *frame_lines,
+        ],
+        "truncated json": [header, frame_lines[0][:20]],
+        "blank middle line": [header, "\n", frame_lines[0]],
+        "unknown record type": [header, json.dumps({"type": "pose"}) + "\n"],
+        "frame after footer": [header, *frame_lines, footer, frame_lines[0]],
+        "double footer": [header, *frame_lines, footer, footer],
+        "count mismatch": [
+            header,
+            *frame_lines,
+            json.dumps(
+                {
+                    "complete": True,
+                    "frame_count": 99,
+                    "schema_version": 1,
+                    "type": "dense-world-footer",
+                },
+                sort_keys=True,
+            )
+            + "\n",
+        ],
+        "non-boolean complete": [
+            header,
+            *frame_lines,
+            json.dumps(
+                {
+                    "complete": "yes",
+                    "frame_count": 2,
+                    "schema_version": 1,
+                    "type": "dense-world-footer",
+                },
+                sort_keys=True,
+            )
+            + "\n",
+        ],
+        "out-of-order times": [header, frame_lines[1], frame_lines[0], footer],
+        "duplicate times": [header, frame_lines[0], frame_lines[0]],
+        "bad observation": [
+            header,
+            json.dumps({"observation": {"nope": 1}, "type": "dense-world-frame"})
+            + "\n",
+        ],
+        "non-finite world coordinate": [
+            header,
+            json.dumps(
+                {
+                    "observation": {
+                        **good_frames[0].to_dict(),
+                        "world_landmarks": [
+                            {"x": float("inf"), "y": 0.0, "z": 0.0}
+                        ]
+                        + [None] * (NUM_WORLD_LANDMARKS - 1),
+                    },
+                    "type": "dense-world-frame",
+                },
+                sort_keys=True,
+                allow_nan=True,
+            )
+            + "\n",
+        ],
+        "world/2D timestamp divergence": [
+            header,
+            json.dumps(
+                {
+                    "observation": {
+                        **good_frames[0].to_dict(),
+                        "time_seconds": good_frames[0].time_seconds + 1.0,
+                    },
+                    "type": "dense-world-frame",
+                },
+                sort_keys=True,
+            )
+            + "\n",
+        ],
+        "stale cache schema": [
+            json.dumps({**json.loads(header), "schema_version": 999}) + "\n",
+            *frame_lines,
+        ],
+        "stale world schema": [
+            json.dumps({**json.loads(header), "world_schema_version": 999}) + "\n",
+            *frame_lines,
+        ],
+    }
+    for label, lines in cases.items():
+        path = tmp_path / "world-v1.jsonl"
+        path.write_text("".join(lines), encoding="utf-8")
+        try:
+            load_world_cache(path)
+        except (CacheCorruptError, CacheError):
+            continue
+        raise AssertionError(f"corrupt world case did not raise: {label}")
+
+
+def test_world_quarantine_moves_corrupt_file_aside(tmp_path: Path) -> None:
+    path = tmp_path / "world-v1.jsonl"
+    path.write_text("this is { not json\n", encoding="utf-8")
+    with pytest.raises(CacheCorruptError):
+        load_world_cache(path)
+    quarantined = quarantine_world_cache(path)
+    assert quarantined == tmp_path / "world-v1.jsonl.corrupt"
+    assert quarantined.is_file()
+    assert not path.exists()
+    with pytest.raises(CacheError, match="does not exist"):
+        quarantine_world_cache(path)
+    with pytest.raises(CacheError, match="does not exist"):
+        load_world_cache(path)

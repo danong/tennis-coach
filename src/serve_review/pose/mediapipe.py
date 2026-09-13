@@ -55,6 +55,12 @@ from serve_review.pose.schema import (
     PersonBox,
     PersonObservation,
 )
+from serve_review.pose.world import (
+    NUM_WORLD_LANDMARKS,
+    WorldCacheIdentity,
+    WorldFrameObservation,
+    WorldLandmark,
+)
 
 __all__ = [
     "MODEL_NAME",
@@ -63,14 +69,18 @@ __all__ = [
     "EXPECTED_MODEL_SHA256",
     "DEFAULT_MODEL_PATH",
     "NUM_EXPECTED_LANDMARKS",
+    "NUM_EXPECTED_WORLD_LANDMARKS",
     "BOX_PAD",
     "MediaPipePoseBackend",
     "build_cache_identity",
+    "build_world_cache_identity",
     "landmark_to_keypoint",
     "landmarks_to_person",
     "open_mediapipe_backend",
     "result_to_frame_observation",
+    "result_to_world_frame_observation",
     "visibility_of",
+    "world_landmark_to_point",
 ]
 
 #: Cache/model identity matching ``models/manifest.json``.
@@ -89,6 +99,8 @@ MODEL_VERSION = f"heavy-{EXPECTED_MODEL_SHA256[:16]}"
 DEFAULT_MODEL_PATH = Path("models/pose_landmarker_heavy.task")
 #: Landmarks required per pose (MediaPipe Pose order, 0..32).
 NUM_EXPECTED_LANDMARKS = NUM_KEYPOINTS
+#: World landmarks required per pose (MediaPipe pose_world_landmarks order).
+NUM_EXPECTED_WORLD_LANDMARKS = NUM_WORLD_LANDMARKS
 #: Half-size padding applied only to degenerate box axes (single joint
 #: or perfectly collinear joints) so the box stays valid.
 BOX_PAD = 0.01
@@ -254,6 +266,179 @@ def build_cache_identity(
         model_version=MODEL_VERSION,
         sampling_rate_hz=sampling_rate_hz,
         sampling_start_seconds=sampling_start_seconds,
+    )
+
+
+def build_world_cache_identity(source_fingerprint: str) -> WorldCacheIdentity:
+    """Build the M4.7 dense-world cache identity pinned to this adapter."""
+    return WorldCacheIdentity(
+        source_fingerprint=source_fingerprint,
+        model_name=MODEL_NAME,
+        model_version=MODEL_VERSION,
+    )
+
+
+def _world_coordinates_of(landmark: Any) -> tuple[Any, Any, Any]:
+    if isinstance(landmark, dict):
+        return landmark.get("x"), landmark.get("y"), landmark.get("z")
+    return (
+        getattr(landmark, "x", None),
+        getattr(landmark, "y", None),
+        getattr(landmark, "z", None),
+    )
+
+
+def world_landmark_to_point(landmark: Any) -> WorldLandmark | None:
+    """Map one ``pose_world_landmarks`` entry to a :class:`WorldLandmark`.
+
+    Returns ``None`` (explicitly missing) when any of ``x``/``y``/``z``
+    is absent, boolean, non-numeric, or non-finite. World coordinates
+    are hip-centered meters with no ``[0, 1]`` range contract, so no
+    clamping is applied. This function reads only the world landmark's
+    own ``x``/``y``/``z`` and never substitutes a 2D normalized ``z``
+    (MediaPipe normalized landmarks carry no depth in meters).
+    """
+    raw_x, raw_y, raw_z = _world_coordinates_of(landmark)
+    for raw in (raw_x, raw_y, raw_z):
+        if raw is None or isinstance(raw, bool):
+            return None
+        if not isinstance(raw, (int, float)):
+            return None
+        if not math.isfinite(float(raw)):
+            return None
+    return WorldLandmark(x=float(raw_x), y=float(raw_y), z=float(raw_z))
+
+
+def _pose_streams_of(result: Any) -> tuple[Any, Any]:
+    if isinstance(result, dict):
+        return result.get("pose_landmarks"), result.get(
+            "pose_world_landmarks"
+        )
+    return getattr(result, "pose_landmarks", None), getattr(
+        result, "pose_world_landmarks", None
+    )
+
+
+def result_to_world_frame_observation(
+    result: Any, *, time_seconds: float
+) -> WorldFrameObservation:
+    """Map one landmarker result to a :class:`WorldFrameObservation`.
+
+    Reads the synchronized ``pose_landmarks`` (normalized 2D companion
+    with visibility) plus ``pose_world_landmarks`` (primary meters)
+    streams from one result. The dense-world observation is
+    single-person: exactly zero or one pose per stream is accepted.
+    More than one pose raises :class:`MappingError` rather than
+    silently selecting a person. A pose-count mismatch between the two
+    streams raises instead of pairing across streams, and any pose
+    whose landmark count differs from 33 raises instead of truncating
+    or padding. Per-joint missingness stays per-joint (``None``); a
+    world stream with zero usable joints alongside usable 2D joints
+    (or vice versa) raises as a stream mismatch instead of emitting a
+    fabricated half observation. World coordinates are taken only from
+    the world stream -- a 2D ``z`` is never substituted.
+    """
+    if (
+        isinstance(time_seconds, bool)
+        or not isinstance(time_seconds, (int, float))
+        or not math.isfinite(float(time_seconds))
+        or float(time_seconds) < 0
+    ):
+        raise MappingError(
+            f"invalid canonical time_seconds {time_seconds!r}: expected a "
+            "finite number of seconds >= 0."
+        )
+    moment = float(time_seconds)
+    raw_2d, raw_world = _pose_streams_of(result)
+    if raw_2d is None:
+        raw_2d = []
+    if raw_world is None:
+        raw_world = []
+    if not isinstance(raw_2d, (list, tuple)):
+        raise MappingError(
+            "landmarker result 'pose_landmarks' must be a list of poses, "
+            f"got {type(raw_2d).__name__}."
+        )
+    if not isinstance(raw_world, (list, tuple)):
+        raise MappingError(
+            "landmarker result 'pose_world_landmarks' must be a list of "
+            f"poses, got {type(raw_world).__name__}."
+        )
+    poses_2d = list(raw_2d)
+    poses_world = list(raw_world)
+    if len(poses_2d) != len(poses_world):
+        raise MappingError(
+            "pose/world stream count mismatch: "
+            f"pose_landmarks holds {len(poses_2d)} pose(s) but "
+            f"pose_world_landmarks holds {len(poses_world)}; refusing to "
+            "pair across streams or substitute 2D depth."
+        )
+    if len(poses_2d) > 1:
+        raise MappingError(
+            "dense-world observation is single-person: got "
+            f"{len(poses_2d)} poses; refusing to silently select one."
+        )
+    companion = result_to_frame_observation(result, time_seconds=moment)
+    if not poses_2d:
+        empty_world = tuple([None] * NUM_EXPECTED_WORLD_LANDMARKS)
+        return WorldFrameObservation(
+            time_seconds=moment,
+            timestamp_ms=int(round(moment * 1000)),
+            world_landmarks=empty_world,
+            frame_2d=companion,
+        )
+    pose_2d = poses_2d[0]
+    pose_world = poses_world[0]
+    if not isinstance(pose_2d, (list, tuple)):
+        raise MappingError(
+            "pose landmarks must be a list or tuple of "
+            f"{NUM_EXPECTED_LANDMARKS} entries, got "
+            f"{type(pose_2d).__name__}."
+        )
+    if not isinstance(pose_world, (list, tuple)):
+        raise MappingError(
+            "pose world landmarks must be a list or tuple of "
+            f"{NUM_EXPECTED_WORLD_LANDMARKS} entries, got "
+            f"{type(pose_world).__name__}."
+        )
+    if len(list(pose_2d)) != NUM_EXPECTED_LANDMARKS:
+        raise MappingError(
+            "pose landmarker contract violation: expected "
+            f"{NUM_EXPECTED_LANDMARKS} landmarks per 2D pose, got "
+            f"{len(list(pose_2d))}; refusing to truncate or pad."
+        )
+    if len(list(pose_world)) != NUM_EXPECTED_WORLD_LANDMARKS:
+        raise MappingError(
+            "pose landmarker contract violation: expected "
+            f"{NUM_EXPECTED_WORLD_LANDMARKS} landmarks per world pose, got "
+            f"{len(list(pose_world))}; refusing to truncate or pad."
+        )
+    world_joints = tuple(
+        world_landmark_to_point(entry) for entry in list(pose_world)
+    )
+    person_2d = landmarks_to_person(pose_2d)
+    world_usable = sum(1 for joint in world_joints if joint is not None)
+    if (person_2d is None) != (world_usable == 0):
+        raise MappingError(
+            "pose/world stream mismatch: 2D usable="
+            f"{person_2d is not None}, world usable joints={world_usable}; "
+            "refusing to emit a half-fabricated observation."
+        )
+    if person_2d is None:
+        # Both streams empty of usable joints: honest no-person frame.
+        # Re-derive the companion from the same 2D pose so visibility
+        # handling stays identical to the 2D path.
+        return WorldFrameObservation(
+            time_seconds=moment,
+            timestamp_ms=int(round(moment * 1000)),
+            world_landmarks=world_joints,
+            frame_2d=companion,
+        )
+    return WorldFrameObservation(
+        time_seconds=moment,
+        timestamp_ms=int(round(moment * 1000)),
+        world_landmarks=world_joints,
+        frame_2d=companion,
     )
 
 

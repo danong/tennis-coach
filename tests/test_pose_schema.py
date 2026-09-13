@@ -403,3 +403,233 @@ def test_cache_identity_rejects_missing_unknown_and_newer_keys() -> None:
         CacheIdentity.from_dict(
             {**make_identity().to_dict(), "schema_version": 999}
         )
+
+
+# --- Dense-world (M4.7 leaf 1) -------------------------------------------------
+# Portable versioned world-pose observation. The frozen 2D tests above are
+# untouched; everything below exercises the new world representation only.
+
+from serve_review.pose.world import (  # noqa: E402
+    NUM_WORLD_LANDMARKS,
+    WORLD_REPRESENTATION,
+    WORLD_SCHEMA_VERSION,
+    WorldCacheIdentity,
+    WorldFrameObservation,
+    WorldLandmark,
+)
+
+
+def _make_world_landmark(**overrides) -> WorldLandmark:
+    fields: dict = {"x": 0.12, "y": -0.34, "z": 0.56}
+    fields.update(overrides)
+    return WorldLandmark(**fields)
+
+
+def _make_world_joints(*, missing: set[int] | None = None) -> tuple:
+    absent = missing or set()
+    joints: list = []
+    for index in range(NUM_WORLD_LANDMARKS):
+        if index in absent:
+            joints.append(None)
+        else:
+            joints.append(
+                WorldLandmark(
+                    x=0.01 * index - 0.16,
+                    y=1.0 + 0.005 * index,
+                    z=-0.2 + 0.002 * index,
+                )
+            )
+    return tuple(joints)
+
+
+def _make_world_frame(**overrides) -> WorldFrameObservation:
+    time_seconds = float(overrides.pop("time_seconds", 2.5))
+    companion = overrides.pop(
+        "frame_2d",
+        FrameObservation(
+            time_seconds=time_seconds,
+            timestamp_ms=int(round(time_seconds * 1000)),
+            persons=(),
+        ),
+    )
+    fields: dict = {
+        "time_seconds": time_seconds,
+        "timestamp_ms": int(round(time_seconds * 1000)),
+        "world_landmarks": _make_world_joints(missing={0, 7}),
+        "frame_2d": companion,
+    }
+    fields.update(overrides)
+    return WorldFrameObservation(**fields)
+
+
+def _make_world_identity(**overrides) -> WorldCacheIdentity:
+    fields = {
+        "source_fingerprint": "sha256:worldabc",
+        "model_name": "mediapipe-pose-landmarker-heavy",
+        "model_version": "heavy-test",
+    }
+    fields.update(overrides)
+    return WorldCacheIdentity(**fields)
+
+
+def test_world_constants_distinguish_dense_representation() -> None:
+    assert WORLD_SCHEMA_VERSION == 1
+    assert NUM_WORLD_LANDMARKS == 33 == NUM_KEYPOINTS
+    assert WORLD_REPRESENTATION == "dense-world-v1"
+    assert WORLD_REPRESENTATION != "header"
+
+
+def test_world_landmark_accepts_meters_including_negatives() -> None:
+    joint = WorldLandmark(x=-0.5, y=1.234, z=-0.01)
+    assert (joint.x, joint.y, joint.z) == pytest.approx((-0.5, 1.234, -0.01))
+    # No zero fabrication: explicit construction round-trips exactly.
+    assert WorldLandmark.from_dict(joint.to_dict()) == joint
+    assert WorldLandmark.from_json(joint.to_json()) == joint
+    # Large-magnitude finite meters are valid world coordinates.
+    far = WorldLandmark(x=5.0, y=-3.0, z=2.5)
+    assert WorldLandmark.from_dict(far.to_dict()) == far
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"x": float("nan"), "y": 0.0, "z": 0.0},
+        {"x": 0.0, "y": float("inf"), "z": 0.0},
+        {"x": 0.0, "y": 0.0, "z": float("-inf")},
+        {"x": True, "y": 0.0, "z": 0.0},
+        {"x": "0.1", "y": 0.0, "z": 0.0},
+        {"x": None, "y": 0.0, "z": 0.0},
+        {"x": 0.0, "y": None, "z": 0.0},
+    ],
+)
+def test_world_landmark_rejects_non_finite_or_missing(kwargs) -> None:
+    with pytest.raises((PoseError, TypeError)):
+        _make_world_landmark(**kwargs)  # type: ignore[arg-type]
+
+
+def test_world_landmark_from_dict_requires_z() -> None:
+    with pytest.raises(PoseError):
+        WorldLandmark.from_dict({"x": 0.0, "y": 0.0})
+
+
+def test_world_landmark_rejects_missing_and_unknown_keys() -> None:
+    payload = _make_world_landmark().to_dict()
+    del payload["z"]
+    with pytest.raises(PoseError):
+        WorldLandmark.from_dict(payload)
+    with pytest.raises(PoseError):
+        WorldLandmark.from_dict({**_make_world_landmark().to_dict(), "w": 1.0})
+    assert list(json.loads(_make_world_landmark().to_json())) == ["x", "y", "z"]
+
+
+def test_world_frame_requires_exactly_33_and_companion_alignment() -> None:
+    frame = _make_world_frame()
+    assert frame.world_present_count == NUM_WORLD_LANDMARKS - 2
+    assert frame.world_missing_count == 2
+    assert frame.has_world is True
+    assert frame.has_person is False
+    assert frame.frame_2d is not None
+    assert frame.time_seconds == frame.frame_2d.time_seconds
+    assert frame.timestamp_ms == frame.frame_2d.timestamp_ms
+    # Timestamp divergence between world and 2D companion is rejected.
+    good_companion = FrameObservation(
+        time_seconds=2.5, timestamp_ms=2500, persons=()
+    )
+    bad_companion = FrameObservation(
+        time_seconds=2.6, timestamp_ms=2600, persons=()
+    )
+    with pytest.raises(PoseError, match="timestamp"):
+        _make_world_frame(time_seconds=2.5, frame_2d=bad_companion)
+    assert _make_world_frame(time_seconds=2.5, frame_2d=good_companion).has_world
+
+
+def test_world_frame_all_missing_world_is_explicit_no_world() -> None:
+    companion = FrameObservation(time_seconds=1.0, timestamp_ms=1000, persons=())
+    empty = WorldFrameObservation(
+        time_seconds=1.0,
+        timestamp_ms=1000,
+        world_landmarks=tuple([None] * NUM_WORLD_LANDMARKS),
+        frame_2d=companion,
+    )
+    assert empty.has_world is False
+    assert empty.world_present_count == 0
+    assert empty.world_missing_count == NUM_WORLD_LANDMARKS
+    payload = empty.to_dict()
+    assert payload["world_landmarks"] == [None] * NUM_WORLD_LANDMARKS
+    assert WorldFrameObservation.from_dict(payload) == empty
+
+
+@pytest.mark.parametrize("count", [0, 1, 32, 34])
+def test_world_frame_rejects_wrong_joint_count(count: int) -> None:
+    joints = tuple([_make_world_landmark()] * count)
+    with pytest.raises(PoseError):
+        _make_world_frame(world_landmarks=joints)
+
+
+def test_world_frame_rejects_bad_joint_types_and_times() -> None:
+    joints = list(_make_world_joints())
+    joints[4] = {"x": 0.1, "y": 0.2, "z": 0.3}  # type: ignore[list-item]
+    with pytest.raises(PoseError):
+        _make_world_frame(world_landmarks=tuple(joints))
+    with pytest.raises(PoseError):
+        _make_world_frame(time_seconds=-0.5)
+    with pytest.raises(PoseError):
+        _make_world_frame(time_seconds=1.0, timestamp_ms=1001)
+    with pytest.raises(PoseError):
+        _make_world_frame(frame_2d="not-a-frame")  # type: ignore[arg-type]
+
+
+def test_world_frame_json_round_trip_is_deterministic() -> None:
+    frame = _make_world_frame()
+    first = frame.to_json()
+    assert frame.to_json() == first
+    assert list(json.loads(first)) == sorted(json.loads(first))
+    assert WorldFrameObservation.from_json(first) == frame
+    assert WorldFrameObservation.from_json(first.encode("utf-8")) == frame
+    assert WorldFrameObservation.from_dict(frame.to_dict()) == frame
+
+
+def test_world_frame_rejects_missing_unknown_and_newer_keys() -> None:
+    payload = _make_world_frame().to_dict()
+    del payload["world_landmarks"]
+    with pytest.raises(PoseError):
+        WorldFrameObservation.from_dict(payload)
+    with pytest.raises(PoseError):
+        WorldFrameObservation.from_dict({**_make_world_frame().to_dict(), "extra": 1})
+    with pytest.raises(SchemaVersionError):
+        WorldFrameObservation.from_dict(
+            {**_make_world_frame().to_dict(), "schema_version": 999}
+        )
+    with pytest.raises(SchemaVersionError):
+        WorldFrameObservation.from_dict(
+            {**_make_world_frame().to_dict(), "schema_version": 0}
+        )
+    nested = _make_world_frame().to_dict()
+    nested["world_landmarks"][1] = {"x": float("nan"), "y": 0.0, "z": 0.0}
+    with pytest.raises(PoseError):
+        WorldFrameObservation.from_dict(nested)
+
+
+def test_world_identity_round_trips_and_rejects_bad_values() -> None:
+    identity = _make_world_identity()
+    assert identity.representation == WORLD_REPRESENTATION
+    first = identity.to_json()
+    assert identity.to_json() == first
+    assert WorldCacheIdentity.from_json(first) == identity
+    assert WorldCacheIdentity.from_dict(identity.to_dict()) == identity
+    with pytest.raises(PoseError):
+        _make_world_identity(source_fingerprint="   ")
+    with pytest.raises(PoseError):
+        _make_world_identity(representation="pose-v1")
+    with pytest.raises(PoseError):
+        _make_world_identity(representation="")
+    payload = identity.to_dict()
+    del payload["model_name"]
+    with pytest.raises(PoseError):
+        WorldCacheIdentity.from_dict(payload)
+    with pytest.raises(PoseError):
+        WorldCacheIdentity.from_dict({**identity.to_dict(), "extra": 1})
+    with pytest.raises(SchemaVersionError):
+        WorldCacheIdentity.from_dict(
+            {**identity.to_dict(), "schema_version": 999}
+        )

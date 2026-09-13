@@ -520,3 +520,218 @@ def test_build_cache_identity_pins_adapter_model() -> None:
     assert identity.model_name == MODEL_NAME
     assert identity.model_version == MODEL_VERSION
     assert identity.sampling_rate_hz == pytest.approx(30.0)
+
+
+# --- Dense-world mapping (M4.7 leaf 1) ------------------------------------------
+# The frozen 2D adapter tests above are untouched; everything below exercises
+# the pure pose_world_landmarks mapping only (no model execution).
+
+from serve_review.pose.mediapipe import (  # noqa: E402
+    NUM_EXPECTED_WORLD_LANDMARKS,
+    build_world_cache_identity,
+    result_to_world_frame_observation,
+    world_landmark_to_point,
+)
+from serve_review.pose.world import (  # noqa: E402
+    WORLD_REPRESENTATION,
+    WORLD_SCHEMA_VERSION,
+    WorldLandmark,
+)
+
+
+def _make_world_entry(x: float = 0.1, y: float = 1.0, z: float = -0.2, style: str = "namespace"):
+    if style == "dict":
+        return {"x": x, "y": y, "z": z}
+    return SimpleNamespace(x=x, y=y, z=z)
+
+
+def _make_world_pose(*, count: int = NUM_EXPECTED_WORLD_LANDMARKS, style: str = "namespace"):
+    return [
+        _make_world_entry(
+            0.01 * index - 0.16, 1.0 + 0.004 * index, -0.2 + 0.003 * index, style
+        )
+        for index in range(count)
+    ]
+
+
+def _make_world_result(poses_2d, poses_world):
+    return SimpleNamespace(pose_landmarks=poses_2d, pose_world_landmarks=poses_world)
+
+
+def test_world_constants_match_schema() -> None:
+    assert NUM_EXPECTED_WORLD_LANDMARKS == 33 == NUM_KEYPOINTS
+    assert WORLD_SCHEMA_VERSION == 1
+    assert WORLD_REPRESENTATION == "dense-world-v1"
+
+
+def test_world_landmark_mapping_preserves_meters() -> None:
+    point = world_landmark_to_point(_make_world_entry(0.12, -0.34, 0.56))
+    assert isinstance(point, WorldLandmark)
+    assert (point.x, point.y, point.z) == pytest.approx((0.12, -0.34, 0.56))
+    dict_point = world_landmark_to_point(
+        _make_world_entry(0.1, 0.2, 0.3, style="dict")
+    )
+    assert dict_point is not None
+    assert (dict_point.x, dict_point.y, dict_point.z) == pytest.approx((0.1, 0.2, 0.3))
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        SimpleNamespace(x=None, y=0.0, z=0.0),
+        SimpleNamespace(x=0.0, y=None, z=0.0),
+        SimpleNamespace(x=0.0, y=0.0, z=None),
+        SimpleNamespace(x=float("nan"), y=0.0, z=0.0),
+        SimpleNamespace(x=0.0, y=float("inf"), z=0.0),
+        SimpleNamespace(x=0.0, y=0.0, z=float("-inf")),
+        SimpleNamespace(x=True, y=0.0, z=0.0),
+        SimpleNamespace(x="0.1", y=0.0, z=0.0),
+        {"x": 0.1, "y": 0.2},  # missing z is missing, never defaulted
+        {"x": 0.1, "y": 0.2, "z": None},
+        {"x": 0.1, "y": 0.2, "z": float("nan")},
+    ],
+)
+def test_world_landmark_mapping_marks_bad_coordinates_missing(entry) -> None:
+    assert world_landmark_to_point(entry) is None
+
+
+def test_world_mapping_never_substitutes_2d_z_for_world() -> None:
+    # 2D landmarks carry an extra ``z`` decoy; world entries lack ``z``.
+    # The world mapping must report missing, never borrow the 2D value.
+    pose_2d = make_pose()
+    for landmark in pose_2d:
+        landmark.z = 0.999  # type: ignore[attr-defined]
+    world_pose = [{"x": 0.1, "y": 0.2} for _ in range(NUM_KEYPOINTS)]
+    with pytest.raises(MappingError, match="half-fabricated|usable"):
+        result_to_world_frame_observation(
+            _make_world_result([pose_2d], [world_pose]), time_seconds=0.5
+        )
+    # And valid world meters are taken from the world stream, not from 2D x/y.
+    world_pose_ok = _make_world_pose()
+    observation = result_to_world_frame_observation(
+        _make_world_result([make_pose()], [world_pose_ok]), time_seconds=0.5
+    )
+    first = observation.world_landmarks[0]
+    assert first is not None
+    assert first.x == pytest.approx(-0.16)
+    assert first.z == pytest.approx(-0.2)
+
+
+def test_world_result_empty_means_no_world_no_person() -> None:
+    for poses in ([], None):
+        result = SimpleNamespace(pose_landmarks=poses, pose_world_landmarks=poses)
+        observation = result_to_world_frame_observation(result, time_seconds=0.5)
+        assert observation.world_present_count == 0
+        assert observation.has_world is False
+        assert observation.has_person is False
+        assert observation.time_seconds == pytest.approx(0.5)
+        assert observation.timestamp_ms == 500
+        assert observation.frame_2d.time_seconds == observation.time_seconds
+    dict_empty = {"pose_landmarks": [], "pose_world_landmarks": []}
+    observation = result_to_world_frame_observation(dict_empty, time_seconds=0.0)
+    assert observation.has_world is False
+
+
+def test_world_result_single_pose_maps_both_streams_aligned() -> None:
+    pose_2d = make_pose()
+    pose_world = _make_world_pose()
+    moment = 0.123456
+    observation = result_to_world_frame_observation(
+        _make_world_result([pose_2d], [pose_world]), time_seconds=moment
+    )
+    assert observation.time_seconds == moment
+    assert observation.timestamp_ms == int(round(moment * 1000))
+    assert observation.frame_2d.time_seconds == moment
+    assert observation.frame_2d.timestamp_ms == observation.timestamp_ms
+    assert observation.world_present_count == NUM_KEYPOINTS
+    assert observation.has_person is True
+    assert len(observation.frame_2d.persons) == 1
+    # 2D visibility companion is preserved alongside world meters.
+    assert observation.frame_2d.persons[0].score == pytest.approx(0.9)
+
+
+def test_world_result_marks_per_joint_missing_without_fabrication() -> None:
+    pose_2d = make_pose()
+    pose_world = _make_world_pose()
+    pose_world[3] = SimpleNamespace(x=None, y=None, z=None)
+    pose_world[9] = SimpleNamespace(x=float("nan"), y=0.0, z=0.0)
+    observation = result_to_world_frame_observation(
+        _make_world_result([pose_2d], [pose_world]), time_seconds=0.25
+    )
+    assert observation.world_landmarks[3] is None
+    assert observation.world_landmarks[9] is None
+    assert observation.world_present_count == NUM_KEYPOINTS - 2
+    assert observation.has_world is True
+
+
+def test_world_result_rejects_count_and_shape_mismatches() -> None:
+    good_2d = make_pose()
+    good_world = _make_world_pose()
+    # Stream count mismatch: never pair across streams.
+    with pytest.raises(MappingError, match="count mismatch"):
+        result_to_world_frame_observation(
+            _make_world_result([good_2d], []), time_seconds=0.5
+        )
+    with pytest.raises(MappingError, match="count mismatch"):
+        result_to_world_frame_observation(
+            _make_world_result([], [good_world]), time_seconds=0.5
+        )
+    # Multi-pose: refusing to silently select one.
+    with pytest.raises(MappingError, match="single-person"):
+        result_to_world_frame_observation(
+            _make_world_result([good_2d, good_2d], [good_world, good_world]),
+            time_seconds=0.5,
+        )
+    # Landmark count mismatch in either stream.
+    with pytest.raises(MappingError, match="33"):
+        result_to_world_frame_observation(
+            _make_world_result([make_pose(count=32)], [_make_world_pose()]),
+            time_seconds=0.5,
+        )
+    with pytest.raises(MappingError, match="33"):
+        result_to_world_frame_observation(
+            _make_world_result([make_pose()], [_make_world_pose(count=34)]),
+            time_seconds=0.5,
+        )
+    # Half-usable streams: 2D usable but world fully missing (and reverse).
+    dead_world = [SimpleNamespace(x=None, y=None, z=None) for _ in range(33)]
+    with pytest.raises(MappingError, match="mismatch"):
+        result_to_world_frame_observation(
+            _make_world_result([good_2d], [dead_world]), time_seconds=0.5
+        )
+    dead_2d = [make_landmark(None, None, None) for _ in range(33)]
+    with pytest.raises(MappingError, match="mismatch"):
+        result_to_world_frame_observation(
+            _make_world_result([dead_2d], [good_world]), time_seconds=0.5
+        )
+    # Bad shapes and times fail loudly.
+    with pytest.raises(MappingError):
+        result_to_world_frame_observation(
+            SimpleNamespace(
+                pose_landmarks={"a": 1}, pose_world_landmarks=[]
+            ),
+            time_seconds=0.5,
+        )
+    with pytest.raises(MappingError):
+        result_to_world_frame_observation(
+            _make_world_result([good_2d], [good_world]), time_seconds=-0.5
+        )
+
+
+def test_world_result_mapping_is_deterministic() -> None:
+    left = result_to_world_frame_observation(
+        _make_world_result([make_pose()], [_make_world_pose()]), time_seconds=0.25
+    )
+    right = result_to_world_frame_observation(
+        _make_world_result([make_pose()], [_make_world_pose()]), time_seconds=0.25
+    )
+    assert left == right
+    assert left.to_json() == right.to_json()
+
+
+def test_build_world_cache_identity_pins_adapter_model() -> None:
+    identity = build_world_cache_identity("sha256:abc123")
+    assert identity.model_name == MODEL_NAME
+    assert identity.model_version == MODEL_VERSION
+    assert identity.source_fingerprint == "sha256:abc123"
+    assert identity.representation == WORLD_REPRESENTATION
