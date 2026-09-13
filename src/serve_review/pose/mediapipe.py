@@ -602,6 +602,63 @@ class MediaPipePoseBackend:
             self._last_ms = stamp_ms
             return observation
 
+    def infer_world(
+        self, image: np.ndarray, time_seconds: float
+    ) -> WorldFrameObservation:
+        """Run one ordered VIDEO inference returning a world observation.
+
+        Shares the serialized estimator, image wrapper, and strictly
+        increasing ``timestamp_ms`` contract with :meth:`infer` (one
+        ``_last_ms`` across both entry points so interleaved 2D/world
+        calls still order loudly). The result is mapped with
+        :func:`result_to_world_frame_observation`, preserving the
+        canonical float and pairing synchronized ``pose_landmarks``
+        (2D companion) with ``pose_world_landmarks`` (primary meters).
+        Missing/no-person rows stay honest (empty 2D companion plus
+        all-missing world joints); world coordinates come only from the
+        world stream, never from a 2D ``z``. Raises
+        :class:`BackendClosedError` after :meth:`close`.
+        """
+        frame = _check_rgb_image(image)
+        stamp_ms = timestamp_ms_for(time_seconds)
+        moment = float(time_seconds)
+        with self._lock:
+            if self._closed:
+                raise BackendClosedError(
+                    "pose backend is closed; create a new backend instead "
+                    "of reusing a released landmarker."
+                )
+            check_timestamp_order(self._last_ms, stamp_ms)
+            try:
+                wrapped = self._image_wrapper(frame)
+            except PoseBackendError:
+                raise
+            except Exception as exc:
+                raise InferenceError(
+                    f"could not wrap frame at t={moment}s for MediaPipe: "
+                    f"{exc}."
+                ) from exc
+            try:
+                result = self._landmarker.detect_for_video(wrapped, stamp_ms)
+            except Exception as exc:
+                raise InferenceError(
+                    f"Pose Landmarker VIDEO inference failed at "
+                    f"t={moment}s ({stamp_ms} ms): {exc}."
+                ) from exc
+            try:
+                observation = result_to_world_frame_observation(
+                    result, time_seconds=moment
+                )
+            except PoseBackendError:
+                raise
+            except Exception as exc:
+                raise InferenceError(
+                    f"could not map Pose Landmarker output at t={moment}s: "
+                    f"{exc}."
+                ) from exc
+            self._last_ms = stamp_ms
+            return observation
+
     def close(self) -> None:
         """Release the landmarker (idempotent; never raises on repeat)."""
         with self._lock:

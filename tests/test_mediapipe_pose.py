@@ -735,3 +735,114 @@ def test_build_world_cache_identity_pins_adapter_model() -> None:
     assert identity.model_version == MODEL_VERSION
     assert identity.source_fingerprint == "sha256:abc123"
     assert identity.representation == WORLD_REPRESENTATION
+
+
+# --- Dense-world inference entry point (M4.7) ---------------------------------
+# MediaPipePoseBackend.infer_world shares the serialized VIDEO estimator and
+# strictly increasing timestamp contract with infer, mapping through the
+# real result_to_world_frame_observation (world meters + 2D companion).
+
+
+def _world_pose_2d(seed_offset: float = 0.0):
+    return make_pose(seed_offset=seed_offset)
+
+
+def _world_pose_meters(seed: float = 0.0):
+    return [
+        SimpleNamespace(
+            x=0.01 * index - 0.16 + seed,
+            y=1.0 + 0.004 * index,
+            z=-0.2 + 0.003 * index,
+        )
+        for index in range(NUM_EXPECTED_WORLD_LANDMARKS)
+    ]
+
+
+def _world_result(pose_2d=None, pose_world=None, empty: bool = False):
+    if empty:
+        return SimpleNamespace(pose_landmarks=[], pose_world_landmarks=[])
+    return SimpleNamespace(
+        pose_landmarks=[pose_2d if pose_2d is not None else _world_pose_2d()],
+        pose_world_landmarks=[pose_world if pose_world is not None else _world_pose_meters()],
+    )
+
+
+def _world_backend(results: list, **kwargs):
+    fake = FakeLandmarker(results)
+    backend = MediaPipePoseBackend(fake, image_wrapper=lambda frame: frame, **kwargs)
+    return backend, fake
+
+
+def test_infer_world_maps_paired_streams_and_preserves_canonical_float() -> None:
+    from serve_review.pose.world import WorldFrameObservation
+
+    backend, fake = _world_backend([_world_result()])
+    moment = 0.123456
+    observation = backend.infer_world(rgb_frame(), moment)
+    assert isinstance(observation, WorldFrameObservation)
+    assert observation.time_seconds == moment
+    assert observation.timestamp_ms == int(round(moment * 1000))
+    assert observation.world_present_count == NUM_KEYPOINTS
+    assert observation.has_person is True
+    assert observation.frame_2d.time_seconds == moment
+    assert observation.frame_2d.persons[0].score == pytest.approx(0.9)
+    first = observation.world_landmarks[0]
+    assert first is not None
+    assert (first.x, first.y, first.z) == pytest.approx((-0.16, 1.0, -0.2))
+    assert [stamp for _, stamp in fake.calls] == [123]
+    backend.close()
+
+
+def test_infer_world_empty_means_honest_no_person_no_world() -> None:
+    backend, _ = _world_backend([_world_result(empty=True)])
+    observation = backend.infer_world(rgb_frame(), 0.5)
+    assert observation.has_person is False
+    assert observation.has_world is False
+    assert observation.world_present_count == 0
+    backend.close()
+
+
+def test_infer_world_shares_strictly_increasing_ms_with_infer() -> None:
+    backend, _ = _world_backend(
+        [_world_result(), make_result([make_pose()]), _world_result()]
+    )
+    backend.infer_world(rgb_frame(), 0.033)
+    backend.infer(rgb_frame(), 0.066)
+    with pytest.raises(TimestampOrderError, match="strictly increasing"):
+        backend.infer_world(rgb_frame(), 0.066)  # repeat across entry points
+    observation = backend.infer_world(rgb_frame(), 0.100)
+    assert observation.timestamp_ms == 100
+    assert backend.last_timestamp_ms == 100
+    backend.close()
+
+
+def test_infer_world_validates_image_and_wraps_failures() -> None:
+    backend, fake = _world_backend([_world_result()])
+    with pytest.raises(InferenceError, match="uint8"):
+        backend.infer_world(np.zeros((4, 4, 3), dtype=np.float32), 0.05)
+    assert fake.calls == []
+    backend.close()
+    failing, _ = _world_backend([RuntimeError("boom")])
+    with pytest.raises(InferenceError, match="VIDEO inference failed"):
+        failing.infer_world(rgb_frame(), 0.05)
+    failing.close()
+
+
+def test_infer_world_mapping_errors_propagate_not_fabricated() -> None:
+    from serve_review.pose.backend import MappingError as _MappingError
+
+    pose_2d = _world_pose_2d()
+    dead_world = [SimpleNamespace(x=None, y=None, z=None) for _ in range(33)]
+    backend, _ = _world_backend([_world_result(pose_2d, dead_world)])
+    with pytest.raises(_MappingError, match="mismatch"):
+        backend.infer_world(rgb_frame(), 0.05)
+    backend.close()
+
+
+def test_infer_world_close_blocks_and_is_idempotent() -> None:
+    backend, fake = _world_backend([_world_result()])
+    backend.close()
+    backend.close()
+    assert fake.closed is True
+    with pytest.raises(BackendClosedError, match="closed"):
+        backend.infer_world(rgb_frame(), 0.05)

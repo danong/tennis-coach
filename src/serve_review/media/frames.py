@@ -78,7 +78,9 @@ __all__ = [
     "build_rawvideo_decode_args",
     "build_uniform_schedule",
     "iter_frames_at_rate",
+    "iter_native_frames",
     "iter_sampled_frames",
+    "native_frame_times",
     "rotate_rgb_frame",
     "validate_schedule",
 ]
@@ -920,4 +922,175 @@ def iter_frames_at_rate(
         ffmpeg=ffmpeg_exe,
         ffprobe=ffprobe_exe,
         is_cancelled=is_cancelled,
+    )
+
+
+def _check_native_range(
+    start_seconds: object, end_seconds: object, duration: float
+) -> tuple[float, float]:
+    """Validate a half-open native range ``[start, end)`` on the timeline."""
+    for label, value in (("start_seconds", start_seconds), ("end_seconds", end_seconds)):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            raise FrameError(
+                f"invalid {label}: {value!r}; expected a finite number of seconds."
+            )
+    start = float(start_seconds)  # type: ignore[arg-type]
+    end = float(end_seconds)  # type: ignore[arg-type]
+    if start < 0 or end < 0:
+        raise FrameError(
+            f"invalid native range [{start!r}, {end!r}): bounds must be >= 0."
+        )
+    if not end > start:
+        raise FrameError(
+            f"invalid native range [{start!r}, {end!r}): "
+            "expected start < end."
+        )
+    if start >= duration:
+        raise FrameError(
+            f"native range start {start!r} lies outside the source timeline "
+            f"[0, {duration}); expected 0 <= start < duration."
+        )
+    if end > duration + FRAME_MATCH_TOLERANCE_SECONDS:
+        raise FrameError(
+            f"native range end {end!r} lies beyond the source duration "
+            f"({duration!r}); expected end <= duration."
+        )
+    return start, min(end, duration)
+
+
+def _native_indices_in_range(
+    frame_times: list[float], start: float, end: float
+) -> list[int]:
+    """Return indices of decoded frames with canonical time in ``[start, end)``.
+
+    The lower bound carries the 1 ms ffprobe match tolerance (a frame
+    whose true PTS equals ``start`` but probes up to 1 ms low still
+    belongs to the range); the upper bound is exact (half-open) so no
+    frame at or after ``end`` is ever included. Every index in range is
+    returned -- no rate-based downsampling, no deduplication beyond the
+    one-index-per-frame identity.
+    """
+    return [
+        index
+        for index, moment in enumerate(frame_times)
+        if moment >= start - FRAME_MATCH_TOLERANCE_SECONDS and moment < end
+    ]
+
+
+def native_frame_times(
+    video: Path | str,
+    start_seconds: float,
+    end_seconds: float,
+    *,
+    source: Any = None,
+    ffprobe: str = "ffprobe",
+) -> tuple[float, ...]:
+    """List exact ffprobe PTS values of decoded frames in ``[start, end)``.
+
+    Pure timestamp listing (no pixel decoding): probes the source (or
+    validates the supplied ``SourceMetadata`` fingerprint), lists
+    per-frame canonical times with ffprobe, and returns every time in
+    the half-open range. Raises :class:`FrameError` when the range is
+    invalid or holds no decoded frame. The returned times are the exact
+    canonical grid consumed by :func:`iter_native_frames`; no uniform
+    assumed-FPS schedule is involved.
+    """
+    video_path = Path(video).expanduser()
+    if not video_path.is_file():
+        raise FrameError(f"input video does not exist: {video_path}.")
+    ffprobe_exe = _check_executable("ffprobe", ffprobe)
+    metadata = _resolve_metadata(video_path, source, ffprobe_exe)
+    try:
+        duration = float(metadata.duration_seconds)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise FrameError(f"invalid source metadata for {video_path}: {exc}.") from exc
+    start, end = _check_native_range(start_seconds, end_seconds, duration)
+    frame_times = _decode_frame_times(video_path, ffprobe_exe)
+    selected = _native_indices_in_range(frame_times, start, end)
+    if not selected:
+        raise FrameError(
+            f"native range [{start!r}, {end!r}) holds no decodable source "
+            f"frame in {video_path}; refusing to emit an empty native stream."
+        )
+    return tuple(frame_times[index] for index in selected)
+
+
+def iter_native_frames(
+    video: Path | str,
+    start_seconds: float,
+    end_seconds: float,
+    *,
+    source: Any = None,
+    rotation_degrees: int | None = None,
+    ffmpeg: str = "ffmpeg",
+    ffprobe: str = "ffprobe",
+    is_cancelled: Callable[[], bool] | None = None,
+) -> Iterator[SampledFrame]:
+    """Yield every decoded source frame in ``[start_seconds, end_seconds)``.
+
+    Native decoding: each yielded :class:`SampledFrame` carries its exact
+    ffprobe canonical time (never a uniform assumed-FPS grid point), and
+    every decoded frame whose canonical time lies in the half-open range
+    is yielded exactly once -- including variable-frame-rate sources
+    where spacing is irregular. No ``fps`` filter stage is ever used, so
+    no rate-based downsampling can drop or invent frames.
+
+    Args:
+        video: Source video path; read only, never modified.
+        start_seconds/end_seconds: Half-open ``[start, end)`` source-time
+            range with ``0 <= start < end <= duration``. Typically an
+            accepted attempt's unpadded ``detected_range``.
+        source: Optional already-probed ``SourceMetadata``; fingerprint
+            must match the file when supplied.
+        rotation_degrees: Optional display-rotation override.
+        ffmpeg/ffprobe: Tool executables (argument arrays only).
+        is_cancelled: Optional hook polled before each decoded frame.
+
+    Returns:
+        A lazy iterator of :class:`SampledFrame` in strictly increasing
+        canonical-time order; decoding starts on iteration and holds at
+        most one frame at a time.
+    """
+    video_path = Path(video).expanduser()
+    if not video_path.is_file():
+        raise FrameError(f"input video does not exist: {video_path}.")
+    ffmpeg_exe = _check_executable("ffmpeg", ffmpeg)
+    ffprobe_exe = _check_executable("ffprobe", ffprobe)
+    if is_cancelled is not None and not callable(is_cancelled):
+        raise FrameError(
+            f"invalid is_cancelled: {is_cancelled!r}; expected a callable or None."
+        )
+    metadata = _resolve_metadata(video_path, source, ffprobe_exe)
+    try:
+        duration = float(metadata.duration_seconds)
+        stored_width = int(metadata.width)
+        stored_height = int(metadata.height)
+        probed_rotation = int(metadata.rotation_degrees)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise FrameError(f"invalid source metadata for {video_path}: {exc}.") from exc
+    rotation = probed_rotation if rotation_degrees is None else _check_rotation(
+        rotation_degrees
+    )
+    start, end = _check_native_range(start_seconds, end_seconds, duration)
+    frame_times = _decode_frame_times(video_path, ffprobe_exe)
+    selected = _native_indices_in_range(frame_times, start, end)
+    if not selected:
+        raise FrameError(
+            f"native range [{start!r}, {end!r}) holds no decodable source "
+            f"frame in {video_path}; refusing to emit an empty native stream."
+        )
+    return _run_selected(
+        video_path,
+        stored_width,
+        stored_height,
+        rotation,
+        frame_times,
+        selected,
+        ffmpeg_exe,
+        is_cancelled,
+        None,
     )

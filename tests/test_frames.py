@@ -967,3 +967,208 @@ def test_upsampling_still_does_not_invent_frames(tmp_path: Path) -> None:
     at_30 = list(iter_frames_at_rate(video, 30.0))
     assert len(at_60) == len(at_30) == 30
     assert _times(at_60) == pytest.approx(_times(at_30), abs=1e-9)
+
+
+# --- Native-frame dense iteration (M4.7) -------------------------------------
+# Every decoded source frame in [start, end) with exact ffprobe PTS; no
+# uniform assumed-FPS schedule and no rate-based downsampling. The frozen
+# sparse sampler tests above are untouched.
+
+
+def test_native_exports_are_public() -> None:
+    assert "iter_native_frames" in frames_module.__all__
+    assert "native_frame_times" in frames_module.__all__
+
+
+def _patch_native_listing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    frame_times: list[float],
+    *,
+    width: int = 8,
+    height: int = 8,
+    duration: float = 1.0,
+):
+    from types import SimpleNamespace
+
+    video = tmp_path / "clip.mov"
+    video.write_bytes(b"fake-video-bytes")
+    metadata = SimpleNamespace(
+        duration_seconds=duration,
+        width=width,
+        height=height,
+        rotation_degrees=0,
+        fingerprint="sha256:fake",
+    )
+    monkeypatch.setattr(
+        frames_module, "_resolve_metadata", lambda *a, **k: metadata
+    )
+    monkeypatch.setattr(
+        frames_module, "_decode_frame_times", lambda *a, **k: list(frame_times)
+    )
+    monkeypatch.setattr(frames_module, "_ensure_tool", lambda *a, **k: None)
+    return video
+
+
+def test_native_frame_times_selects_exact_range_with_fakes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Irregular VFR-style grid: native selection keeps every frame in range.
+    grid = [0.0, 0.033, 0.041, 0.09, 0.2, 0.25, 0.7, 0.95]
+    _patch_native_listing(monkeypatch, tmp_path, grid)
+    from serve_review.media.frames import native_frame_times
+
+    video = tmp_path / "clip.mov"
+    assert native_frame_times(video, 0.0, 1.0) == tuple(grid)
+    assert native_frame_times(video, 0.2, 0.7) == (0.2, 0.25)
+    assert native_frame_times(video, 0.041, 0.09) == (0.041,)
+    # Half-open end: a frame exactly at end is excluded.
+    assert native_frame_times(video, 0.0, 0.09) == (0.0, 0.033, 0.041)
+    with pytest.raises(FrameError, match="no decodable"):
+        native_frame_times(video, 0.5, 0.6)
+    with pytest.raises(FrameError, match="start < end"):
+        native_frame_times(video, 0.5, 0.5)
+    with pytest.raises(FrameError, match="start < end"):
+        native_frame_times(video, 0.7, 0.2)
+    with pytest.raises(FrameError, match=">= 0"):
+        native_frame_times(video, -0.1, 0.5)
+    with pytest.raises(FrameError, match="beyond the source duration"):
+        native_frame_times(video, 0.0, 2.0)
+    with pytest.raises(FrameError, match="does not exist"):
+        native_frame_times(tmp_path / "missing.mov", 0.0, 0.5)
+
+
+def test_native_iteration_yields_every_irregular_frame_with_exact_pts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import subprocess as subprocess_module
+
+    stored_width, stored_height = 8, 8
+    grid = [0.0, 0.033, 0.041, 0.09, 0.2, 0.25, 0.7, 0.95]
+    video = _patch_native_listing(monkeypatch, tmp_path, grid)
+
+    def _stored_frame(index: int) -> np.ndarray:
+        base = np.empty((stored_height, stored_width, 3), dtype=np.uint8)
+        for y in range(stored_height):
+            for x in range(stored_width):
+                for c in range(3):
+                    base[y, x, c] = (x * 13 + y * 29 + c * 37 + index * 11) % 256
+        return base
+
+    stored_frames = [_stored_frame(i) for i in range(len(grid))]
+    payload = b"".join(frame.tobytes(order="C") for frame in stored_frames)
+    captured: list[list[str]] = []
+
+    class _FakeStdout(io.BytesIO):
+        def close(self) -> None:
+            pass
+
+    class _FakeStderr:
+        def read(self, *args: object, **kwargs: object) -> bytes:
+            return b""
+
+        def close(self) -> None:
+            pass
+
+    class _FakeProc:
+        def __init__(self, args: list[str]) -> None:
+            captured.append(list(args))
+            self.stdout: object = _FakeStdout(payload)
+            self.stderr: object = _FakeStderr()
+
+        def poll(self) -> int | None:
+            return None
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    monkeypatch.setattr(
+        subprocess_module, "Popen", lambda args, **k: _FakeProc(list(args))
+    )
+    from serve_review.media.frames import iter_native_frames
+
+    frames = list(iter_native_frames(video, 0.0, 0.3))
+    assert [frame.time_seconds for frame in frames] == [0.0, 0.033, 0.041, 0.09, 0.2, 0.25]
+    for frame, moment in zip(frames, [0.0, 0.033, 0.041, 0.09, 0.2, 0.25]):
+        assert frame.time_seconds == moment  # exact PTS, not a uniform grid point
+        assert frame.timestamp_ms == int(round(moment * 1000))
+    # Pixels track decode order exactly.
+    for frame, index in zip(frames, [0, 1, 2, 3, 4, 5]):
+        assert np.array_equal(frame.image, stored_frames[index])
+    # No rate-based downsampling: no fps filter stage was used.
+    assert captured and "-vf" not in captured[0]
+    assert captured[0][captured[0].index("-fps_mode") + 1] == "passthrough"
+    # Bounded streaming: one frame at a time.
+    stream = iter_native_frames(video, 0.0, 0.3)
+    first = next(stream)
+    assert first.time_seconds == 0.0
+    rest = list(stream)
+    assert len(rest) == 5
+
+
+def test_native_iteration_empty_range_and_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grid = [0.0, 0.5, 0.9]
+    _patch_native_listing(monkeypatch, tmp_path, grid)
+    import subprocess as subprocess_module
+
+    from serve_review.media.frames import iter_native_frames
+
+    video = tmp_path / "clip.mov"
+    with pytest.raises(FrameError, match="no decodable"):
+        iter_native_frames(video, 0.6, 0.7)
+    with pytest.raises(FrameError, match="is_cancelled"):
+        iter_native_frames(video, 0.0, 1.0, is_cancelled=42)  # type: ignore[arg-type]
+    with pytest.raises(FrameCancelled):
+        list(iter_native_frames(video, 0.0, 1.0, is_cancelled=lambda: True))
+    real_popen = subprocess_module.Popen
+    monkeypatch.setattr(subprocess_module, "Popen", real_popen)
+
+
+@NEEDS_TOOLS
+def test_native_iteration_covers_every_source_frame_in_attempt_range(
+    tmp_path: Path,
+) -> None:
+    """30 fps source, attempt-style range [0.2, 0.7): all 15 frames, exact PTS."""
+    from serve_review.media.frames import iter_native_frames, native_frame_times
+
+    video = _make_fixture(tmp_path, orientation="landscape")
+    times = native_frame_times(video, 0.2, 0.7)
+    assert len(times) == 15
+    assert times[0] == pytest.approx(0.2, abs=FRAME_EPS)
+    assert times[-1] == pytest.approx(20 / 30.0, abs=FRAME_EPS)
+    frames = list(iter_native_frames(video, 0.2, 0.7))
+    assert len(frames) == 15  # a 10 Hz uniform schedule would keep only 5
+    assert [frame.time_seconds for frame in frames] == list(times)  # exact
+    got = _times(frames)
+    assert all(later > earlier for earlier, later in zip(got, got[1:]))
+    assert all(0.2 - 0.002 <= moment < 0.7 for moment in got)
+    for frame in frames:
+        assert frame.timestamp_ms == int(round(frame.time_seconds * 1000))
+        assert frame.image.shape == (240, 320, 3)
+
+
+@NEEDS_TOOLS
+def test_native_iteration_full_timeline_matches_decoded_count(
+    tmp_path: Path,
+) -> None:
+    """Full-timeline native iteration yields every decoded frame (30/30)."""
+    from serve_review.media.frames import iter_native_frames
+
+    video = _make_fixture(tmp_path, orientation="landscape")
+    metadata = probe_source(video)
+    frames = list(iter_native_frames(video, 0.0, metadata.duration_seconds))
+    assert len(frames) == 30
+    assert frames[0].time_seconds == pytest.approx(0.0, abs=FRAME_EPS)
+    assert all(
+        later > earlier
+        for earlier, later in zip(_times(frames), _times(frames)[1:])
+    )

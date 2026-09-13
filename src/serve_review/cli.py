@@ -571,6 +571,62 @@ def phase_debug_dev_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def extract_world_cmd(args: argparse.Namespace) -> int:
+    from serve_review.pose import world_extract as world_extract_module
+
+    source = args.video.expanduser()
+    if not source.is_file():
+        print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
+        return 2
+    attempts = args.attempts.expanduser()
+    if not attempts.is_file():
+        print(f"ERROR: attempts file does not exist: {attempts}", file=sys.stderr)
+        return 2
+    cache_path = args.cache.expanduser()
+    model_path = args.model.expanduser()
+
+    def _progress(done: int, total: int, observation: object) -> None:
+        print(f"extract-world: {done}/{total} frames", file=sys.stderr)
+
+    try:
+        result = world_extract_module.extract_attempt_world(
+            source,
+            attempts_path=attempts,
+            attempt_id=args.attempt_id,
+            cache_path=cache_path,
+            model_path=model_path,
+            ffmpeg=args.ffmpeg,
+            ffprobe=args.ffprobe,
+            overwrite=args.overwrite,
+            no_resume=args.no_resume,
+            progress_callback=_progress,
+        )
+    except world_extract_module.WorldExtractionCancelled as exc:
+        print(f"ERROR: dense-world extraction was cancelled: {exc}.", file=sys.stderr)
+        return 1
+    except world_extract_module.WorldExtractionInputError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    except world_extract_module.WorldExtractionCollisionError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    except world_extract_module.WorldExtractionError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    if result.cache_hit:
+        print(f"cache hit: {result.cache_path} ({result.frame_count} frames)")
+    else:
+        print(
+            f"extracted {result.frame_count} frames "
+            f"({result.inferred_frames} inferred, {result.cached_frames} cached) "
+            f"for {result.attempt_id} "
+            f"[{result.attempt_start_seconds}, {result.attempt_end_seconds}) "
+            f"to {result.cache_path}"
+        )
+    print(str(result.cache_path))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="serve-review",
@@ -1052,6 +1108,74 @@ def build_parser() -> argparse.ArgumentParser:
         help="ffprobe executable (default: ffprobe)",
     )
     dev_parser.set_defaults(handler=phase_debug_dev_cmd)
+
+    world_parser = subparsers.add_parser(
+        "extract-world",
+        help="extract dense native-frame world poses for one attempt",
+        description=(
+            "Private single-attempt diagnostic: decode every native source "
+            "frame inside one accepted unpadded attempt range "
+            "(detected_range, never padded effective_range), run the "
+            "approved Heavy Pose Landmarker in serialized VIDEO mode, and "
+            "write a resumable versioned dense-world-v1 cache with exact "
+            "ffprobe PTS. Complete caches with matching identity and exact "
+            "native times are reused without inference; interrupted caches "
+            "resume. Never modifies the source video or the attempts file."
+        ),
+    )
+    world_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
+    world_parser.add_argument(
+        "--attempts",
+        type=Path,
+        required=True,
+        metavar="ATTEMPTS_JSON",
+        help="explicit attempts JSON file",
+    )
+    world_parser.add_argument(
+        "--attempt-id",
+        type=str,
+        required=True,
+        metavar="ATTEMPT_ID",
+        dest="attempt_id",
+        help="attempt id to extract (for example serve-001)",
+    )
+    world_parser.add_argument(
+        "--model",
+        type=Path,
+        default=Path("models/pose_landmarker_heavy.task"),
+        metavar="PATH",
+        help="approved Pose Landmarker .task artifact (default: models/pose_landmarker_heavy.task)",
+    )
+    world_parser.add_argument(
+        "--cache",
+        type=Path,
+        required=True,
+        metavar="PATH",
+        help="destination dense-world cache file (dense-world-v1 JSONL)",
+    )
+    world_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace any existing cache instead of hitting/resuming it",
+    )
+    world_parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="fail on an existing incomplete cache instead of resuming it",
+    )
+    world_parser.add_argument(
+        "--ffmpeg",
+        default="ffmpeg",
+        metavar="EXE",
+        help="ffmpeg executable (default: ffmpeg)",
+    )
+    world_parser.add_argument(
+        "--ffprobe",
+        default="ffprobe",
+        metavar="EXE",
+        help="ffprobe executable (default: ffprobe)",
+    )
+    world_parser.set_defaults(handler=extract_world_cmd)
     return parser
 
 

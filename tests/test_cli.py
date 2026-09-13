@@ -1467,3 +1467,311 @@ def test_review_phases_cancellation_reports_stage(tmp_path: Path, capsys, monkey
 
     assert review_phases(args) == 1
     assert "cancelled during rendering" in capsys.readouterr().err
+
+
+# --- extract-world private command (M4.7) ------------------------------------
+
+
+def _write_world_attempt_inputs(tmp_path: Path):
+    from serve_review.domain import Attempt, AttemptDocument, MediaRange, SourceMetadata
+
+    metadata = SourceMetadata(
+        fingerprint="sha256:cli-test",
+        duration_seconds=10.0,
+        width=320,
+        height=240,
+        frame_rate_num=30,
+        frame_rate_den=1,
+        video_codec="h264",
+        rotation_degrees=0,
+    )
+    attempt = Attempt(
+        attempt_id="serve-001",
+        detected_range=MediaRange(2.0, 3.0),
+        effective_range=MediaRange(2.0, 3.0),
+    )
+    document = AttemptDocument(
+        source_fingerprint=metadata.fingerprint,
+        source_duration_seconds=metadata.duration_seconds,
+        padding_seconds=0.0,
+        attempts=(attempt,),
+        export_ranges=(MediaRange(2.0, 3.0),),
+    )
+    video = tmp_path / "source.mov"
+    video.write_bytes(b"fake-video")
+    attempts_path = tmp_path / "attempts.json"
+    attempts_path.write_text(document.to_json(), encoding="utf-8")
+    return video, attempts_path
+
+
+def test_extract_world_defaults() -> None:
+    args = build_parser().parse_args(
+        [
+            "extract-world",
+            "session.mov",
+            "--attempts",
+            "attempts.json",
+            "--attempt-id",
+            "serve-001",
+            "--cache",
+            "world.jsonl",
+        ]
+    )
+
+    assert args.video == Path("session.mov")
+    assert args.attempts == Path("attempts.json")
+    assert args.attempt_id == "serve-001"
+    assert args.cache == Path("world.jsonl")
+    assert args.model == Path("models/pose_landmarker_heavy.task")
+    assert args.overwrite is False
+    assert args.no_resume is False
+    assert args.ffmpeg == "ffmpeg"
+    assert args.ffprobe == "ffprobe"
+
+
+def test_extract_world_help_documents_attempt_options(capsys) -> None:
+    top_help = build_parser().format_help()
+    assert "extract-world" in top_help
+
+    parser = build_parser()
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(["extract-world", "--help"])
+    assert excinfo.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--attempts" in help_text
+    assert "--attempt-id" in help_text
+    assert "--cache" in help_text
+    assert "--model" in help_text
+    assert "--overwrite" in help_text
+    assert "--no-resume" in help_text
+
+
+def test_extract_world_requires_attempt_options() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["extract-world", "session.mov"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["extract-world", "session.mov", "--attempts", "a.json",
+             "--cache", "w.jsonl"]
+        )
+
+
+def test_extract_world_rejects_missing_video(tmp_path: Path, capsys) -> None:
+    from serve_review.cli import extract_world_cmd
+
+    _, attempts_path = _write_world_attempt_inputs(tmp_path)
+    args = build_parser().parse_args(
+        [
+            "extract-world",
+            str(tmp_path / "missing.mov"),
+            "--attempts",
+            str(attempts_path),
+            "--attempt-id",
+            "serve-001",
+            "--cache",
+            str(tmp_path / "world.jsonl"),
+        ]
+    )
+
+    assert extract_world_cmd(args) == 2
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_extract_world_rejects_missing_attempts_file(tmp_path: Path, capsys) -> None:
+    from serve_review.cli import extract_world_cmd
+
+    video, _ = _write_world_attempt_inputs(tmp_path)
+    args = build_parser().parse_args(
+        [
+            "extract-world",
+            str(video),
+            "--attempts",
+            str(tmp_path / "nope.json"),
+            "--attempt-id",
+            "serve-001",
+            "--cache",
+            str(tmp_path / "world.jsonl"),
+        ]
+    )
+
+    assert extract_world_cmd(args) == 2
+    assert "attempts file does not exist" in capsys.readouterr().err
+
+
+def test_extract_world_success_reports_cache_path(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.cli import extract_world_cmd
+    from serve_review.pose import world_extract as world_extract_module
+
+    video, attempts_path = _write_world_attempt_inputs(tmp_path)
+    cache = tmp_path / "world.jsonl"
+    result = world_extract_module.WorldExtractionResult(
+        video=video,
+        cache_path=cache,
+        attempt_id="serve-001",
+        attempt_start_seconds=2.0,
+        attempt_end_seconds=3.0,
+        source_fingerprint="sha256:cli-test",
+        model_name="m",
+        model_version="v",
+        frame_count=9,
+        cached_frames=0,
+        inferred_frames=9,
+        cache_hit=False,
+        complete=True,
+    )
+    seen: dict = {}
+
+    def _fake_extract(video_p, **kwargs):
+        seen.update(kwargs)
+        seen["video"] = Path(video_p)
+        return result
+
+    monkeypatch.setattr(world_extract_module, "extract_attempt_world", _fake_extract)
+    args = build_parser().parse_args(
+        [
+            "extract-world",
+            str(video),
+            "--attempts",
+            str(attempts_path),
+            "--attempt-id",
+            "serve-001",
+            "--cache",
+            str(cache),
+        ]
+    )
+
+    assert extract_world_cmd(args) == 0
+    out = capsys.readouterr().out
+    assert str(cache) in out
+    assert "9 frames" in out
+    assert "serve-001" in out
+    assert seen["attempt_id"] == "serve-001"
+    assert seen["attempts_path"] == attempts_path
+    assert seen["cache_path"] == cache
+    assert seen["overwrite"] is False
+    assert seen["no_resume"] is False
+
+
+def test_extract_world_reports_cache_hit(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.cli import extract_world_cmd
+    from serve_review.pose import world_extract as world_extract_module
+
+    video, attempts_path = _write_world_attempt_inputs(tmp_path)
+    cache = tmp_path / "world.jsonl"
+    result = world_extract_module.WorldExtractionResult(
+        video=video,
+        cache_path=cache,
+        attempt_id="serve-001",
+        attempt_start_seconds=2.0,
+        attempt_end_seconds=3.0,
+        source_fingerprint="sha256:cli-test",
+        model_name="m",
+        model_version="v",
+        frame_count=9,
+        cached_frames=9,
+        inferred_frames=0,
+        cache_hit=True,
+        complete=True,
+    )
+    monkeypatch.setattr(
+        world_extract_module, "extract_attempt_world", lambda *a, **k: result
+    )
+    args = build_parser().parse_args(
+        [
+            "extract-world",
+            str(video),
+            "--attempts",
+            str(attempts_path),
+            "--attempt-id",
+            "serve-001",
+            "--cache",
+            str(cache),
+        ]
+    )
+
+    assert extract_world_cmd(args) == 0
+    assert "cache hit" in capsys.readouterr().out
+
+
+def test_extract_world_forwards_overwrite_and_tools(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.cli import extract_world_cmd
+    from serve_review.pose import world_extract as world_extract_module
+
+    video, attempts_path = _write_world_attempt_inputs(tmp_path)
+    seen: dict = {}
+
+    def _fake(video_p, **kwargs):
+        seen.update(kwargs)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(world_extract_module, "extract_attempt_world", _fake)
+    args = build_parser().parse_args(
+        [
+            "extract-world",
+            str(video),
+            "--attempts",
+            str(attempts_path),
+            "--attempt-id",
+            "serve-001",
+            "--cache",
+            str(tmp_path / "w.jsonl"),
+            "--model",
+            str(tmp_path / "model.task"),
+            "--overwrite",
+            "--ffmpeg",
+            "/bin/ffmpeg",
+            "--ffprobe",
+            "/bin/ffprobe",
+        ]
+    )
+    with pytest.raises(SystemExit):
+        extract_world_cmd(args)
+    assert seen["overwrite"] is True
+    assert seen["ffmpeg"] == "/bin/ffmpeg"
+    assert seen["ffprobe"] == "/bin/ffprobe"
+
+
+def test_extract_world_maps_input_collision_and_cancel_errors(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    from serve_review.cli import extract_world_cmd
+    from serve_review.pose import world_extract as world_extract_module
+
+    video, attempts_path = _write_world_attempt_inputs(tmp_path)
+    cache = tmp_path / "world.jsonl"
+
+    def _args():
+        return build_parser().parse_args(
+            [
+                "extract-world",
+                str(video),
+                "--attempts",
+                str(attempts_path),
+                "--attempt-id",
+                "serve-001",
+                "--cache",
+                str(cache),
+            ]
+        )
+
+    def _boom_input(video_p, **kwargs):
+        raise world_extract_module.WorldExtractionInputError("unknown attempt_id 'serve-009'.")
+
+    monkeypatch.setattr(world_extract_module, "extract_attempt_world", _boom_input)
+    assert extract_world_cmd(_args()) == 2
+    assert "ERROR" in capsys.readouterr().err
+
+    def _boom_collision(video_p, **kwargs):
+        raise world_extract_module.WorldExtractionCollisionError("output collision: exists.")
+
+    monkeypatch.setattr(world_extract_module, "extract_attempt_world", _boom_collision)
+    assert extract_world_cmd(_args()) == 1
+    assert "collision" in capsys.readouterr().err
+
+    def _boom_cancelled(video_p, **kwargs):
+        raise world_extract_module.WorldExtractionCancelled("cancelled.")
+
+    monkeypatch.setattr(world_extract_module, "extract_attempt_world", _boom_cancelled)
+    assert extract_world_cmd(_args()) == 1
+    assert "cancelled" in capsys.readouterr().err
