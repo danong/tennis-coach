@@ -221,7 +221,7 @@ Goal: estimate the eight stages of the Kovacs & Ellenbecker serve model inside a
 
 Each stage is an estimated biomechanical phase, not necessarily one exact visual event. Output therefore includes a half-open source-time interval, an optional representative keyframe, confidence, availability, provenance, and limitations. Public JSON uses concise stage names; method limitations belong in provenance/metadata and documentation. Body pose must not claim direct observation of the ball, racket head, racket orientation, shoulder internal/external rotation, or visually observed contact.
 
-M4 is non-blocking with respect to M3: phase completeness and structural anomaly flags never suppress, shorten, relabel, or otherwise change macro attempts or exports. Contact is anchored by raw-source audio with explicit uncertainty and may be supported by body pose, but it is not described as an exact visually observed frame.
+M3 improvement is out of scope for this M4 remediation. This remediation neither changes macro attempts/exports nor defines a permanent constraint against future phase-informed false-positive reduction. Contact may use raw-source audio with explicit uncertainty and may be supported by body pose, but it is not described as an exact visually observed frame.
 
 ### M4.1 — Eight-stage domain schema and rubric
 
@@ -295,15 +295,15 @@ M4 is non-blocking with respect to M3: phase completeness and structural anomaly
 - Sparse-development phase-debug showed that manual times generally had usable sparse pose support while several early candidates were seconds early. The approved response is therefore a representation reset, not further 2D weight tuning.
 - **Next leaf:** follow [the 3D kinematic-waveform remediation plan](m4-3d-waveform-plan.md). The frozen labels, M3 artifacts, exact PTS contract, private diagnostic artifacts, and no-held-out-tuning rule remain unchanged.
 
-### M4.7 — Dense native MediaPipe world-landmark cache
+### M4.7 — Native 3D kinematic track
 
-- **Objective:** Run the approved Heavy model on every native frame inside accepted attempts and persist `pose_world_landmarks` as the primary, source-bound 3D cache with synchronized normalized 2D companion landmarks, quality, missingness, and exact PTS.
+- **Objective:** For one explicit serve video/range, run the approved Heavy model once on every native frame and persist a reusable source-bound 3D kinematic track: `pose_world_landmarks`, quality, missingness, and exact presentation timestamps (PTS). Normalized 2D landmarks are optional review-overlay payload only, never phase evidence.
 - **Dependency:** approved 3D waveform plan.
-- **Exit:** synthetic/cache tests prove identity, native support, world/2D alignment, missingness, cancellation, and no M3 mutation.
+- **Exit:** synthetic/cache tests prove identity, native support, missingness, cancellation, exact PTS, and optional 2D overlay alignment.
 
 ### M4.8 — Segment-safe Butterworth filtering
 
-- **Objective:** Apply a versioned low-pass Butterworth filter to continuous qualified world-track segments on an exact-PTS native grid; never filter across gaps and retain boundary confidence.
+- **Objective:** Apply a versioned low-pass Butterworth filter to continuous qualified 3D kinematic-track segments on an exact-PTS native grid; never filter across gaps and retain boundary confidence.
 - **Dependency:** M4.7.
 - **Allowed dependency:** SciPy, specifically a versioned second-order-sections Butterworth implementation; update `pyproject.toml` and `uv.lock` in the implementation leaf.
 - **Exit:** synthetic waveforms verify cutoff/order behavior, phase policy, gap isolation, irregular PTS handling, and deterministic quality propagation.

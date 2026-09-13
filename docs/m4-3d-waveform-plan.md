@@ -1,29 +1,31 @@
 # M4 3D Kinematic Waveform Remediation
 
-> **Status:** approved replacement remediation design. This supersedes the 2D sparse-feature repair sequence in `m4-remediation-plan.md`. M3 attempts, clips, and exports remain immutable; the frozen development annotations remain the only tuning evidence; held-out footage remains unread until configuration is frozen.
+> **Status:** approved replacement remediation design. This supersedes the 2D sparse-feature repair sequence in `m4-remediation-plan.md`. M3 improvement, including use of phase coherence to reduce false positives, is explicitly out of scope here; the frozen development annotations remain the only tuning evidence; held-out footage remains unread until configuration is frozen.
 
 ## Goal
 
-The failed sparse 2D checkpoint implementation is replaced with a dense native-frame MediaPipe Heavy kinematic representation. The primary pose source is MediaPipe `pose_world_landmarks`; synchronized normalized `pose_landmarks` remain companion data for visibility, image-relative review, and diagnostics. Raw-source audio remains an optional contact cue. There are no new learned models, ball/racket trackers, multi-view inputs, or training.
+The failed sparse 2D checkpoint implementation is replaced with one native-frame MediaPipe Heavy **3D kinematic phase path**. Its input is a per-frame kinematic track: exact presentation timestamps (PTS, the source video time at which each frame is displayed), `pose_world_landmarks`, and observation quality/missingness. Raw-source audio remains an optional contact cue. There are no new learned models, ball/racket trackers, multi-view inputs, or training.
+
+Normalized `pose_landmarks` may be retained from the same MediaPipe inference solely for an optional pixel-aligned review overlay. They are never phase features, candidate evidence, or solver input. Dropping `z` from hip-centered world landmarks is not a valid projection onto the source video; a correct 3D projection would require unavailable camera calibration.
 
 The checkpoint pipeline is:
 
 ```text
-native PTS frames → MediaPipe world tracks → segment-safe Butterworth filter
-→ 3D kinematic waveforms → six composite anchor candidate sets
-→ existing DP chronology search → two derived midpoint stages
+one explicit serve video/range → native-PTS 3D kinematic track
+→ segment-safe Butterworth filter → 3D feature matrix
+→ six composite anchor candidate sets → existing DP chronology search
+→ two derived midpoint stages → source-frame review
 ```
 
-## 1. Dense world-track cache
+## 1. Native 3D kinematic track
 
-For each accepted unpadded attempt, decode every native source frame, preserve exact presentation timestamp, and run the approved Heavy model. Store a new, source-bound cache with:
+For one explicit serve video/range, decode every native source frame, preserve its exact PTS, and run the approved Heavy model once per frame. A source-bound kinematic-track cache exists only to avoid repeated inference; it is not a parallel analytical pipeline. It stores:
 
-- `pose_world_landmarks` as primary 3D coordinates;
-- synchronized normalized 2D landmarks and visibility/quality;
-- direct-observation mask, source support time, interpolation span, and temporal uncertainty;
-- model/cache/configuration identity.
+- `pose_world_landmarks` as the sole phase-analysis coordinates;
+- direct-observation mask, source support time, interpolation span, temporal uncertainty, and model/configuration identity;
+- optionally, synchronized normalized 2D landmarks for review-overlay rendering only.
 
-Missing landmarks stay missing. No long gap is bridged. The old sparse 2D cache is a frozen baseline, not an input to the new representation.
+Missing landmarks stay missing. No long gap is bridged. The legacy sparse 2D checkpoint cache is not an input to this path.
 
 ## 2. Filtering
 
@@ -80,4 +82,4 @@ A derived stage is unavailable when either bounding anchor is unavailable. Its c
 6. Freeze configuration and run frozen development exemplar 2 once; inspect phase-debug and unchanged evaluation outputs.
 7. Only if that confirmation is acceptable, run once on session-disjoint held-out footage. Do not tune afterward.
 
-Every development run retains exact PTS, diagnostic artifacts, candidate support, DP reconciliation, and manual-versus-selected review evidence.
+Filtering, waveform construction, and candidate scoring may be in-memory analysis stages. Persist the reusable kinematic track, final checkpoints, and compact debug/review evidence rather than treating every intermediate representation as a separate user-facing pipeline artifact. Every development run retains exact PTS, candidate support, DP reconciliation, and manual-versus-selected review evidence.
