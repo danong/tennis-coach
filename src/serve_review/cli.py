@@ -443,6 +443,68 @@ def review_phases(args: argparse.Namespace) -> int:
     return 0
 
 
+def phase_debug_cmd(args: argparse.Namespace) -> int:
+    from serve_review.phase_debug_report import (
+        PhaseDebugReportCollisionError,
+        PhaseDebugReportError,
+        PhaseDebugReportInputError,
+        run_phase_debug_report,
+    )
+
+    grid = args.grid.expanduser()
+    if not grid.is_file():
+        print(f"ERROR: grid file does not exist: {grid}", file=sys.stderr)
+        return 2
+    evidence = args.evidence.expanduser()
+    if not evidence.is_file():
+        print(f"ERROR: evidence file does not exist: {evidence}", file=sys.stderr)
+        return 2
+    solver_result = args.solver_result.expanduser()
+    if not solver_result.is_file():
+        print(
+            f"ERROR: solver-result file does not exist: {solver_result}",
+            file=sys.stderr,
+        )
+        return 2
+    solver_config = args.solver_config.expanduser()
+    if not solver_config.is_file():
+        print(
+            f"ERROR: solver-config file does not exist: {solver_config}",
+            file=sys.stderr,
+        )
+        return 2
+    manual = args.manual.expanduser() if args.manual is not None else None
+    if manual is not None and not manual.is_file():
+        print(f"ERROR: manual file does not exist: {manual}", file=sys.stderr)
+        return 2
+    output = args.output.expanduser()
+    html = args.html.expanduser() if args.html is not None else None
+    try:
+        result = run_phase_debug_report(
+            grid,
+            evidence,
+            solver_result,
+            solver_config,
+            output,
+            html,
+            manual_path=manual,
+            overwrite=args.overwrite,
+        )
+    except PhaseDebugReportInputError as exc:
+        print(f"ERROR: phase-debug failed at {exc.stage}: {exc.message}.", file=sys.stderr)
+        return 2
+    except PhaseDebugReportCollisionError as exc:
+        print(f"ERROR: {exc.message}", file=sys.stderr)
+        return 1
+    except PhaseDebugReportError as exc:
+        print(f"ERROR: phase-debug failed at {exc.stage}: {exc.message}.", file=sys.stderr)
+        return 1
+    print(str(result.output_json))
+    print(str(result.output_html))
+    print(f"phase-debug {result.attempt_id}: wrote inspection report.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="serve-review",
@@ -757,6 +819,83 @@ def build_parser() -> argparse.ArgumentParser:
         help="ffprobe executable (default: ffprobe)",
     )
     review_parser.set_defaults(handler=review_phases)
+
+    debug_parser = subparsers.add_parser(
+        "phase-debug",
+        help="render a private deterministic phase-debug inspection report",
+        description=(
+            "Read one PhaseFeatureGrid, PhaseEvidence, PhaseSolverResult, "
+            "and PhaseSolverConfig JSON plus an optional manual stage-time "
+            "mapping, invoke the accepted phase-debug builder/reconciliation, "
+            "and atomically write deterministic phase-debug JSON plus a "
+            "self-contained deterministic HTML inspection page. Private "
+            "diagnostic presentation only: no media decoding, pose "
+            "inference, frame rendering, or checkpoints mutation."
+        ),
+    )
+    debug_parser.add_argument(
+        "--grid",
+        type=Path,
+        required=True,
+        metavar="GRID_JSON",
+        help="PhaseFeatureGrid JSON file",
+    )
+    debug_parser.add_argument(
+        "--evidence",
+        type=Path,
+        required=True,
+        metavar="EVIDENCE_JSON",
+        help="PhaseEvidence JSON file",
+    )
+    debug_parser.add_argument(
+        "--solver-result",
+        type=Path,
+        required=True,
+        metavar="RESULT_JSON",
+        dest="solver_result",
+        help="PhaseSolverResult JSON file",
+    )
+    debug_parser.add_argument(
+        "--solver-config",
+        type=Path,
+        required=True,
+        metavar="CONFIG_JSON",
+        dest="solver_config",
+        help="PhaseSolverConfig JSON file",
+    )
+    debug_parser.add_argument(
+        "--manual",
+        type=Path,
+        default=None,
+        metavar="MANUAL_JSON",
+        help=(
+            "optional manual stage-time mapping JSON (object of stage to "
+            "seconds or null; missing keys read as null)"
+        ),
+    )
+    debug_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        metavar="PATH",
+        help="destination phase-debug JSON file",
+    )
+    debug_parser.add_argument(
+        "--html",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "destination inspection HTML file (default: sibling of --output "
+            "with .html extension)"
+        ),
+    )
+    debug_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace existing outputs (default: fail on collision)",
+    )
+    debug_parser.set_defaults(handler=phase_debug_cmd)
     return parser
 
 
