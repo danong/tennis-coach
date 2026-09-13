@@ -505,6 +505,72 @@ def phase_debug_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def phase_debug_dev_cmd(args: argparse.Namespace) -> int:
+    from serve_review.phase_debug_dev import (
+        PhaseDebugDevCollisionError,
+        PhaseDebugDevError,
+        PhaseDebugDevInputError,
+        run_phase_debug_dev,
+    )
+
+    source = args.video.expanduser()
+    if not source.is_file():
+        print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
+        return 2
+    attempts = args.attempts.expanduser()
+    if not attempts.is_file():
+        print(f"ERROR: attempts file does not exist: {attempts}", file=sys.stderr)
+        return 2
+    cache = args.cache.expanduser()
+    if not cache.is_file():
+        print(f"ERROR: cache file does not exist: {cache}", file=sys.stderr)
+        return 2
+    annotations = args.annotations.expanduser()
+    if not annotations.is_file():
+        print(
+            f"ERROR: annotations file does not exist: {annotations}",
+            file=sys.stderr,
+        )
+        return 2
+    output_dir = args.output_dir.expanduser()
+
+    def _progress(message: str) -> None:
+        print(message, file=sys.stderr)
+
+    try:
+        result = run_phase_debug_dev(
+            source,
+            attempts_path=attempts,
+            cache_path=cache,
+            annotations_path=annotations,
+            attempt_id=args.attempt_id,
+            output_dir=output_dir,
+            overwrite=args.overwrite,
+            ffmpeg=args.ffmpeg,
+            ffprobe=args.ffprobe,
+            progress_callback=_progress,
+        )
+    except PhaseDebugDevInputError as exc:
+        print(
+            f"ERROR: phase-debug-dev failed at {exc.stage}: {exc.message}.",
+            file=sys.stderr,
+        )
+        return 2
+    except PhaseDebugDevCollisionError as exc:
+        print(f"ERROR: {exc.message}", file=sys.stderr)
+        return 1
+    except PhaseDebugDevError as exc:
+        print(
+            f"ERROR: phase-debug-dev failed at {exc.stage}: {exc.message}.",
+            file=sys.stderr,
+        )
+        return 1
+    print(str(result.output_json))
+    print(str(result.output_html))
+    print(f"phase-debug-dev {result.attempt_id}: wrote inspection report.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="serve-review",
@@ -896,6 +962,96 @@ def build_parser() -> argparse.ArgumentParser:
         help="replace existing outputs (default: fail on collision)",
     )
     debug_parser.set_defaults(handler=phase_debug_cmd)
+
+    dev_parser = subparsers.add_parser(
+        "phase-debug-dev",
+        help="render a private dev-only phase-debug report for one frozen attempt",
+        description=(
+            "Dev-only bridge for frozen private development attempts: "
+            "validate explicit source video, attempts JSON, complete "
+            "compatible pose cache, and dev phase-annotation manifest for "
+            "one attempt id; run the exact current sparse M4 path "
+            "(raw-source audio demux/alignment, build_phase_feature_grid, "
+            "build_phase_evidence, solve_with_diagnostics) with default "
+            "configs; serialize grid/evidence/solver-result/solver-config "
+            "as provenance inputs; invoke the accepted phase-debug "
+            "reporting to write deterministic phase-debug JSON plus a "
+            "self-contained HTML page into a new explicit private output "
+            "directory. Never modifies attempts.json, checkpoints.json, "
+            "cache, clips, source, annotations, or model artifacts. No "
+            "dense re-inference, solver/evidence/config tuning, held-out "
+            "support, or media/frame rendering. Rejects non-dev manifests, "
+            "attempt ambiguity, and unavailable/incompatible cache/input "
+            "identities rather than guessing."
+        ),
+    )
+    dev_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
+    dev_parser.add_argument(
+        "--attempts",
+        "--attempts-path",
+        type=Path,
+        required=True,
+        metavar="ATTEMPTS_JSON",
+        dest="attempts",
+        help="explicit attempts JSON file",
+    )
+    dev_parser.add_argument(
+        "--cache",
+        "--cache-path",
+        type=Path,
+        required=True,
+        metavar="CACHE_JSONL",
+        dest="cache",
+        help="explicit complete compatible pose cache file",
+    )
+    dev_parser.add_argument(
+        "--annotations",
+        "--manifest",
+        "--annotations-path",
+        "--manifest-path",
+        type=Path,
+        required=True,
+        metavar="ANNOTATIONS_JSON",
+        dest="annotations",
+        help="explicit dev phase-annotation manifest JSON",
+    )
+    dev_parser.add_argument(
+        "--attempt-id",
+        "--attempt_id",
+        type=str,
+        required=True,
+        metavar="ATTEMPT_ID",
+        dest="attempt_id",
+        help="attempt id to debug (for example serve-001)",
+    )
+    dev_parser.add_argument(
+        "--output-dir",
+        "--output_dir",
+        "--output",
+        type=Path,
+        required=True,
+        metavar="OUTPUT_DIR",
+        dest="output_dir",
+        help="new explicit private output directory for this attempt",
+    )
+    dev_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace existing outputs (default: fail on collision)",
+    )
+    dev_parser.add_argument(
+        "--ffmpeg",
+        default="ffmpeg",
+        metavar="EXE",
+        help="ffmpeg executable (default: ffmpeg)",
+    )
+    dev_parser.add_argument(
+        "--ffprobe",
+        default="ffprobe",
+        metavar="EXE",
+        help="ffprobe executable (default: ffprobe)",
+    )
+    dev_parser.set_defaults(handler=phase_debug_dev_cmd)
     return parser
 
 
