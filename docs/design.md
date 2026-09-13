@@ -1,6 +1,6 @@
 # Serve Review offline pipeline design
 
-Status: implementation specification. M1–M4 code exists locally; the M4 development gate is currently failed and requires a narrow heuristic/chronology repair before held-out phase evaluation.
+Status: implementation specification. M1–M4 code exists locally; the M4 development gate is currently failed and is being replaced by the approved dense MediaPipe 3D kinematic-waveform remediation in [`m4-3d-waveform-plan.md`](m4-3d-waveform-plan.md) before held-out phase evaluation.
 
 ## 1. Product contract
 
@@ -35,7 +35,7 @@ The first useful release must:
 
 ### Checkpoints
 
-Checkpoint analysis runs only inside accepted serve ranges. Initial checkpoint candidates are loading/trophy, upward-swing initiation, estimated contact window, follow-through, and landing/recovery. Toss release, racket drop, racket orientation, and visually observed contact require racket/ball evidence and are not claimed from body pose alone.
+Checkpoint analysis runs only inside accepted serve ranges. The active M4 remediation uses dense native-frame MediaPipe world-landmark tracks, segment-safe low-pass filtering, and timestamped 3D kinematic waveforms. It detects composite anatomical candidates for `start`, `release`, `loading`, `cocking`, `contact`, and `finish` with dynamic-programming chronology selection; `acceleration` and `deceleration` are then emitted as temporal midpoints between their selected bounding anchors. Raw audio is an additional contact cue, not the only one. The detailed contract is [`m4-3d-waveform-plan.md`](m4-3d-waveform-plan.md).
 
 Every emitted checkpoint has a timestamp or uncertainty interval, confidence, provenance (`body-kinematic`, `racket-visual`, `ball-racket-visual`, or `manual`), and availability. Missing output is valid.
 
@@ -104,7 +104,7 @@ Keep modules narrow and inference backends replaceable:
 | `pose.cache` | Fingerprinted, versioned observations and resumable writes | Treat stale results as valid |
 | `detection.features` | Pose sequence to normalized temporal features | Media/export operations |
 | `detection.ranges` | Deterministic state machine producing candidates | Hidden threshold changes |
-| `checkpoints` | Analyze accepted ranges for optional phase anchors | Biomechanical diagnosis |
+| `checkpoints` | Analyze accepted ranges using cached 3D kinematic waveforms and DP-selected phase anchors | Biomechanical diagnosis |
 | `evaluation` | Session-disjoint labels, matching, and reports | Tune against held-out labels |
 
 All external process calls use argument arrays, not shell interpolation. JSON schemas include `schema_version`, source fingerprint, method/model version, and configuration ID.

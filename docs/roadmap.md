@@ -1,6 +1,6 @@
 # Serve Review offline roadmap
 
-Status: active plan, 2026-09-12. M1–M3 implementation is complete; M4 implementation is complete but its development gate is currently failed. This replaces the archived iOS-first roadmap in `old-docs/`.
+Status: active plan, 2026-09-13. M1–M3 implementation is complete; the original M4 implementation failed its development gate and is being replaced by the approved 3D kinematic-waveform remediation in `m4-3d-waveform-plan.md`. This replaces the archived iOS-first roadmap in `old-docs/`.
 
 ## Current state
 
@@ -41,7 +41,11 @@ Give Tau a concise task specification outside the repository that names the outc
 | M4.4 | done | `4c684400-913c-457a-9065-cd84a1096d7e` | history rewritten; see run ID | DP skip states and advisory audio/body compatibility accepted |
 | M4.5 | done | `45e93d07-87a1-4002-b305-59c64c022ef7` | history rewritten; see run ID | atomic analyze/checkpoint report accepted |
 | M4.6 | code done; gate failed | `3ccf4265-c1ac-423a-90e2-6b20469b0148` plus renderer/annotation repair runs | history rewritten; see run IDs | evaluation/review tooling accepted; development gate requires heuristic repair |
-| M4.7 | conditional | — | — | focused denser inference only if the M4 gate requires it |
+| M4.7 | planned | — | — | dense native MediaPipe world-landmark cache |
+| M4.8 | planned | — | — | segment-safe Butterworth world-track filtering |
+| M4.9 | planned | — | — | 3D kinematic waveform feature matrix |
+| M4.10 | planned | — | — | six composite anchor candidates and existing DP integration |
+| M4.11 | planned | — | — | frozen-exemplar calibration/confirmation and held-out gate |
 
 ## M1 — Trusted media path
 
@@ -288,18 +292,38 @@ M4 is non-blocking with respect to M3: phase completeness and structural anomaly
 - Private manual labels and their exact-decoded-PTS manifest live only under ignored `refs/annotations/dev/`; do not commit, print, or tune against held-out labels.
 - Reproduce the local baseline with `mise run cut`, `mise run analyze`, `mise run review-phases`, `mise run phase-annotate`, and `mise run phase-evaluate`. The review renderer is the human-facing artifact; its report is the deterministic record.
 - The reviewed development exemplar has three manually available stages emitted as unavailable. The remaining pre-contact body stages are systematically early; contact is near the manual frame but outside its one-frame accepted interval; finish is late. The exact report records the individual errors.
-- This is a feature-evidence/chronology failure, **not** evidence that 30 Hz observed pose cadence is the limiting factor. M4.7 remains deferred.
-- **Next leaf:** follow [the M4 remediation plan](m4-remediation-plan.md): first write a bounded diagnosis from the cached grid/candidates at frozen manual keyframes, then add dense native 120 fps attempt observations before repairing only implicated body-proxy evidence and/or transition/skip scoring. Freeze the label manifest and compare the same report before considering any held-out run. M3 attempts, clips, and exports remain untouchable. The learned multi-view proposal is deferred to [M5](m5-tcn-phase-detection.md).
+- Sparse-development phase-debug showed that manual times generally had usable sparse pose support while several early candidates were seconds early. The approved response is therefore a representation reset, not further 2D weight tuning.
+- **Next leaf:** follow [the 3D kinematic-waveform remediation plan](m4-3d-waveform-plan.md). The frozen labels, M3 artifacts, exact PTS contract, private diagnostic artifacts, and no-held-out-tuning rule remain unchanged.
 
-### M4.7 — Conditional focused denser pose extraction
+### M4.7 — Dense native MediaPipe world-landmark cache
 
-- **Objective:** Re-run pose inference at a higher observed cadence only inside accepted attempt windows if the M4 gate shows that existing observations are temporally inadequate.
-- **Dependency:** M4 gate evidence demonstrating a concrete cadence-related failure; otherwise this leaf remains deferred.
-- **Allowed:** `src/serve_review/pose/extract.py`, `src/serve_review/pose/cache.py`, `src/serve_review/analysis_pipeline.py`, `tests/test_dense_pose.py`, `tests/test_analysis_pipeline.py`.
-- **Forbidden:** whole-session dense passes, model changes, solver threshold changes, dependencies, private media.
-- **Behavior:** Separate attempt-window cache identity, bounded source-frame scheduling, actual inference on requested frames, overlap deduplication, cancellation, and explicit observed cadence metadata. Resampling never substitutes for requested visual observations.
-- **Focused check:** `uv run pytest tests/test_dense_pose.py tests/test_analysis_pipeline.py`.
-- **Exit:** Tests verify requested observed coverage, cache reuse/invalidation, overlapping windows, processing bounds, and truthful distinction between observed and interpolated samples.
+- **Objective:** Run the approved Heavy model on every native frame inside accepted attempts and persist `pose_world_landmarks` as the primary, source-bound 3D cache with synchronized normalized 2D companion landmarks, quality, missingness, and exact PTS.
+- **Dependency:** approved 3D waveform plan.
+- **Exit:** synthetic/cache tests prove identity, native support, world/2D alignment, missingness, cancellation, and no M3 mutation.
+
+### M4.8 — Segment-safe Butterworth filtering
+
+- **Objective:** Apply a versioned low-pass Butterworth filter to continuous qualified world-track segments on an exact-PTS native grid; never filter across gaps and retain boundary confidence.
+- **Dependency:** M4.7.
+- **Exit:** synthetic waveforms verify cutoff/order behavior, phase policy, gap isolation, irregular PTS handling, and deterministic quality propagation.
+
+### M4.9 — 3D kinematic waveform matrix
+
+- **Objective:** Derive versioned 3D joint/segment angles, transverse shoulder--hip separation, rise, relative-wrist, velocity, acceleration, inflection, settling, and audio waveform channels.
+- **Dependency:** M4.8.
+- **Exit:** hand-calculated/synthetic 3D sequences verify coordinate conventions, signs, missingness, derivatives, and deterministic codecs.
+
+### M4.10 — Composite anchors with existing DP
+
+- **Objective:** Generate weighted composite candidates for six anchor stages (`start`, `release`, `loading`, `cocking`, `contact`, `finish`) from M4.9 waveforms; retain existing DP search and emit `acceleration`/`deceleration` as temporal midpoint derived stages.
+- **Dependency:** M4.9 and approved versioned cue matrix.
+- **Exit:** tests prove composite support, audio-present/absent contact candidates, DP chronology/skips unchanged, and honest derived-stage availability.
+
+### M4.11 — Frozen development and held-out gate
+
+- **Objective:** calibrate composite weights only on frozen exemplar 1, freeze configuration, confirm once on frozen exemplar 2, then run once on session-disjoint held-out footage if confirmation is accepted.
+- **Dependency:** M4.10.
+- **Exit:** ignored diagnostic/evaluation artifacts document calibration, no-post-confirmation tuning, review of anomalies, and the one held-out result.
 
 ## Completion rules
 

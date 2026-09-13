@@ -1,6 +1,6 @@
 # M4 Remediation: Dense Body-Pose and Audio Checkpoints
 
-> **Status:** active remediation plan after the failed development phase gate. This is not M5 and does not introduce ball/racket tracking, learned scoring, TCN training, new model dependencies, multi-view support, or cross-player generalization claims.
+> **Status:** superseded on 2026-09-13 by [`m4-3d-waveform-plan.md`](m4-3d-waveform-plan.md). Retained as the frozen sparse-2D baseline and diagnostic history. The replacement still excludes ball/racket tracking, learned scoring, TCN training, multi-view support, and cross-player generalization claims.
 
 ## 1. Narrow operating contract
 
