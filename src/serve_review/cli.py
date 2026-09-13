@@ -386,6 +386,62 @@ def analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def analyze_serve(args: argparse.Namespace) -> int:
+    from serve_review.analyze_serve import (
+        AnalyzeServeCancelled,
+        AnalyzeServeError,
+        run_analyze_serve,
+    )
+
+    source = args.video.expanduser()
+    if not source.is_file():
+        print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
+        return 2
+
+    def _progress(message: str) -> None:
+        print(message, file=sys.stderr)
+
+    try:
+        result = run_analyze_serve(
+            source,
+            start_seconds=args.start_seconds,
+            end_seconds=args.end_seconds,
+            output_dir=args.output_dir,
+            cache_path=args.cache,
+            model_path=args.model,
+            overwrite=args.overwrite,
+            ffmpeg=args.ffmpeg,
+            ffprobe=args.ffprobe,
+            progress_callback=_progress,
+        )
+    except AnalyzeServeCancelled as exc:
+        print(
+            f"ERROR: analyze-serve was cancelled at {exc.stage}: {exc.message}.",
+            file=sys.stderr,
+        )
+        return 1
+    except AnalyzeServeError as exc:
+        if exc.stage == "validate":
+            print(f"ERROR: invalid serve range: {exc.message}.", file=sys.stderr)
+            return 2
+        print(
+            f"ERROR: analyze-serve failed at {exc.stage}: {exc.message}.",
+            file=sys.stderr,
+        )
+        return 1
+    print(str(result.checkpoints_path))
+    print(str(result.diagnostics_path))
+    print(str(result.index_html))
+    print(
+        f"analyzed {result.attempt_phase.attempt_id} "
+        f"[{result.attempt_range.start_seconds}, "
+        f"{result.attempt_range.end_seconds}): "
+        f"{result.image_count} image(s), "
+        f"structural={result.attempt_phase.structural_status}.",
+    )
+    return 0
+
+
 def review_phases(args: argparse.Namespace) -> int:
     from serve_review.phase_review import (
         ReviewCancelled,
@@ -867,6 +923,82 @@ def build_parser() -> argparse.ArgumentParser:
         help="ffprobe executable (default: ffprobe)",
     )
     analyze_parser.set_defaults(handler=analyze)
+
+    serve_parser = subparsers.add_parser(
+        "analyze-serve",
+        help="analyze one serve range through the audio-free 3D path",
+        description=(
+            "Analyze one explicit serve video/range using only the 3D "
+            "kinematic path (native-PTS world track, segment-safe filter, "
+            "3D waveforms, six composite anchor candidates, DP chronology "
+            "search, two derived midpoint stages) and atomically write "
+            "checkpoints.json, a 3D diagnostic JSON, and a source-frame "
+            "review page. Defaults to the entire source timeline; no "
+            "attempts.json, attempt id, or phase JSON is required. A "
+            "synthetic in-memory serve-001 range exists solely for output "
+            "linkage. Contact uses honest body_pose provenance with "
+            "contact_not_directly_observed and audio_transient_not_used "
+            "limitations; no audio is used."
+        ),
+    )
+    serve_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
+    serve_parser.add_argument(
+        "--start-seconds",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        dest="start_seconds",
+        help="serve range start in source seconds (default: 0.0)",
+    )
+    serve_parser.add_argument(
+        "--end-seconds",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        dest="end_seconds",
+        help="serve range end in source seconds (default: source duration)",
+    )
+    serve_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("output"),
+        help="generated output directory (default: output)",
+    )
+    serve_parser.add_argument(
+        "--cache",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "reusable kinematic-track cache file (default: "
+            "<output-dir>/<source-stem>/cache/kinematic-track-v1.jsonl)"
+        ),
+    )
+    serve_parser.add_argument(
+        "--model",
+        type=Path,
+        default=Path("models/pose_landmarker_heavy.task"),
+        metavar="PATH",
+        help="approved Pose Landmarker .task artifact (default: models/pose_landmarker_heavy.task)",
+    )
+    serve_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace existing outputs/cache (default: fail on collision)",
+    )
+    serve_parser.add_argument(
+        "--ffmpeg",
+        default="ffmpeg",
+        metavar="EXE",
+        help="ffmpeg executable (default: ffmpeg)",
+    )
+    serve_parser.add_argument(
+        "--ffprobe",
+        default="ffprobe",
+        metavar="EXE",
+        help="ffprobe executable (default: ffprobe)",
+    )
+    serve_parser.set_defaults(handler=analyze_serve)
 
     review_parser = subparsers.add_parser(
         "review-phases",

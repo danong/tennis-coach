@@ -1235,6 +1235,16 @@ _CONTACT_ALLOWED_PROVENANCES: tuple[str, ...] = (
     "manual",
 )
 
+#: Stable limitations identifying the explicit audio-free 3D exception for
+#: contact: the ``analyze-serve`` production path selects contact from 3D
+#: body kinematics alone (no audio transient) and must carry both tokens.
+#: This is the only ``body_pose`` contact allowance; every other
+#: ``body_pose`` contact is still rejected as claimed visual contact.
+_CONTACT_3D_BODY_POSE_LIMITATIONS: tuple[str, ...] = (
+    "contact_not_directly_observed",
+    "audio_transient_not_used",
+)
+
 
 class PhaseError(DomainError):
     """Raised when a phase stage, attempt phase, or phase document is invalid."""
@@ -1667,9 +1677,22 @@ class AttemptPhase:
                     )
                 previous_keyframe = stage.keyframe_seconds
         # Honest contact provenance: never visually observed contact.
+        # Narrow explicit exception: the audio-free 3D production path
+        # (``analyze-serve``) emits contact with ``body_pose`` provenance
+        # only when it carries both stable audio-free limitations; that
+        # contact still requires an explicit keyframe anchor and finite
+        # uncertainty like audio-anchored contact. Every other body-only
+        # contact is rejected as claimed visual contact.
         contact = ordered["contact"]
         if contact.availability in ("available", "partial"):
-            if contact.provenance not in _CONTACT_ALLOWED_PROVENANCES:
+            is_3d_body_contact = contact.provenance == "body_pose" and all(
+                token in contact.limitations
+                for token in _CONTACT_3D_BODY_POSE_LIMITATIONS
+            )
+            if (
+                contact.provenance not in _CONTACT_ALLOWED_PROVENANCES
+                and not is_3d_body_contact
+            ):
                 raise PhaseError(
                     f"{name}: contact with {contact.availability!r} availability "
                     f"must use provenance one of "
@@ -1677,6 +1700,18 @@ class AttemptPhase:
                     f"{contact.provenance!r}; body-only contact must never claim "
                     f"visually observed contact."
                 )
+            if is_3d_body_contact:
+                if contact.keyframe_seconds is None:
+                    raise PhaseError(
+                        f"{name}: contact with 'body_pose' provenance "
+                        f"requires a non-null keyframe_seconds anchor."
+                    )
+                if contact.temporal_uncertainty_seconds is None:
+                    raise PhaseError(
+                        f"{name}: contact with 'body_pose' provenance "
+                        f"requires finite nonnegative "
+                        f"temporal_uncertainty_seconds."
+                    )
             if contact.provenance in _CONTACT_AUDIO_PROVENANCES:
                 if contact.keyframe_seconds is None:
                     raise PhaseError(

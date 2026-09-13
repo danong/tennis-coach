@@ -64,6 +64,7 @@ serve-review probe VIDEO
 serve-review export VIDEO --ranges ranges.json --output {compilation,clips,both}
 serve-review cut VIDEO --padding SECONDS --output {compilation,clips,both}
 serve-review analyze VIDEO [--attempts attempts.json]
+serve-review analyze-serve VIDEO [--start-seconds S --end-seconds E]
 serve-review review-phases VIDEO [--checkpoints checkpoints.json]
 
 # local manual-gate tools (through mise)
@@ -80,10 +81,13 @@ output/<source-stem>/
   source.json
   attempts.json
   checkpoints.json             # only after checkpoint analysis
+  serve-3d-diagnostics.json    # only after analyze-serve (3D audit trail)
   review-phases/               # labeled JPEGs, HTML index, review manifest
+  review-serve-3d/             # only after analyze-serve (JPEGs + index.html)
   serves.mov                   # compilation/both
   clips/serve-001.mov          # clips/both
   cache/pose-v1.jsonl          # local derived cache
+  cache/kinematic-track-v1.jsonl  # only after analyze-serve (dense-world envelope)
   run.json                     # versions, options, timings, errors
 ```
 
