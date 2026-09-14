@@ -616,3 +616,258 @@ def test_body_pose_contact_requires_anchor_and_uncertainty() -> None:
         _attempt_with_contact(
             _stage(15.0, 16.0, uncertainty=None, limitations=limited)
         )
+
+
+# --- anchor2 manual comparison (fixed minimal JSON + CLI flag) --------------
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ANCHOR2_RELPATH = Path("refs/annotations/dev/single-serve-02.anchor2.json")
+
+ANCHOR2_EXPECTED = {
+    "start": 2.75,
+    "release": 3.13,
+    "loading": 3.51,
+    "cocking": 3.85,
+    "contact": 3.98,
+    "finish": 4.58,
+    "acceleration": 3.915,
+    "deceleration": 4.28,
+}
+
+# Synthetic in-range manual PTS for tmp-local anchor2 runs (duration 2.0s).
+SYNTH_ANCHOR2 = {
+    "start": 0.20,
+    "release": 0.40,
+    "loading": 0.60,
+    "cocking": 0.80,
+    "contact": 1.00,
+    "finish": 1.50,
+    "acceleration": 0.90,
+    "deceleration": 1.25,
+}
+
+
+def test_anchor2_file_content_and_midpoints() -> None:
+    path = REPO_ROOT / ANCHOR2_RELPATH
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload == ANCHOR2_EXPECTED
+    assert set(payload.keys()) == set(STAGE_ORDER)
+    for forbidden in (
+        "schema_version",
+        "schema",
+        "version",
+        "fingerprint",
+        "source_fingerprint",
+        "hash",
+        "source_hash",
+        "range",
+        "interval",
+        "start_seconds",
+        "end_seconds",
+    ):
+        assert forbidden not in payload
+    assert payload["acceleration"] == pytest.approx(
+        (payload["cocking"] + payload["contact"]) / 2.0
+    )
+    assert payload["deceleration"] == pytest.approx(
+        (payload["contact"] + payload["finish"]) / 2.0
+    )
+
+
+def test_cli_anchor2_flag_parsing() -> None:
+    from serve_review.cli import build_parser
+
+    default = build_parser().parse_args(["analyze-serve", "session.mov"])
+    assert default.anchor2comparison is False
+    long = build_parser().parse_args(
+        ["analyze-serve", "session.mov", "--anchor2comparison"]
+    )
+    assert long.anchor2comparison is True
+    aliased = build_parser().parse_args(
+        ["analyze-serve", "session.mov", "--anchor2-comparison"]
+    )
+    assert aliased.anchor2comparison is True
+
+
+def test_anchor2_rejects_other_basename(tmp_path: Path) -> None:
+    from serve_review.analyze_serve import AnalyzeServeError, run_analyze_serve
+
+    video = tmp_path / "other.mov"
+    video.write_bytes(b"fake-video-bytes")
+    with pytest.raises(AnalyzeServeError) as excinfo:
+        run_analyze_serve(
+            video,
+            output_dir=tmp_path / "output",
+            probe_fn=lambda path: _metadata(),
+            anchor2comparison=True,
+        )
+    assert excinfo.value.stage == "validate"
+    assert "single-serve-02.mov" in str(excinfo.value)
+
+
+def _write_tmp_anchor2(tmp_path: Path, payload: dict) -> None:
+    dest = tmp_path / ANCHOR2_RELPATH
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
+def _run_anchor2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict,
+    *,
+    missing: tuple[str, ...] = (),
+    no_legacy_sparse: None = None,
+):
+    from serve_review.analyze_serve import run_analyze_serve as _run_fn
+
+    _write_tmp_anchor2(tmp_path, payload)
+    monkeypatch.chdir(tmp_path)
+    video = tmp_path / "single-serve-02.mov"
+    video.write_bytes(b"fake-video-bytes")
+    backend = _FakeBackend(missing=missing)
+    sampled: list[float] = []
+    encoded: list[Path] = []
+
+    def _sample(video_path: Path, moment: float, metadata: SourceMetadata):
+        sampled.append(float(moment))
+        return SampledFrame(
+            time_seconds=float(moment),
+            timestamp_ms=int(round(float(moment) * 1000)),
+            width=16,
+            height=16,
+            image=np.zeros((16, 16, 3), dtype=np.uint8),
+        )
+
+    def _encode(image: np.ndarray, dest: Path) -> None:
+        encoded.append(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"fake-jpeg-bytes")
+
+    result = _run_fn(
+        video,
+        output_dir=tmp_path / "output",
+        probe_fn=lambda path: _metadata(),
+        native_times_fn=lambda _v, s, e: tuple(t for t in TIMES if t >= s - 1e-9 and t < e),
+        native_frame_factory=lambda remaining, _meta: _native_frames(tuple(remaining)),
+        backend_factory=lambda: backend,
+        sample_frame_fn=_sample,
+        encode_jpeg_fn=_encode,
+        anchor2comparison=True,
+    )
+    return result, sampled, encoded
+
+
+def test_anchor2_manual_images_pts_and_deltas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_legacy_sparse: None
+) -> None:
+    result, sampled, _ = _run_anchor2(
+        tmp_path, monkeypatch, dict(SYNTH_ANCHOR2), no_legacy_sparse=no_legacy_sparse
+    )
+    keyframes = _available_keyframes(result.attempt_phase)
+    review = json.loads(result.review_json.read_text(encoding="utf-8"))
+    assert review.get("anchor2comparison") is True
+    assert review.get("anchor2_source") == str(ANCHOR2_RELPATH)
+    assert len(review["entries"]) == len(STAGE_ORDER)
+    for entry in review["entries"]:
+        stage = entry["stage"]
+        manual_requested = SYNTH_ANCHOR2[stage]
+        assert entry["manual_requested_source_time"] == pytest.approx(manual_requested)
+        # Native sampler actual PTS is retained verbatim (fake sampler echoes).
+        assert entry["manual_actual_source_time"] == pytest.approx(manual_requested)
+        selected = keyframes.get(stage)
+        assert selected is not None
+        assert entry["requested_source_time"] == pytest.approx(selected)
+        assert entry["delta_selected_minus_manual_ms"] == pytest.approx(
+            (selected - manual_requested) * 1000.0
+        )
+        manual_rel = entry["manual_image"]
+        assert manual_rel == f"manual-{stage}.jpg"
+        assert (result.review_dir / manual_rel).is_file()
+        assert (result.review_dir / f"{stage}.jpg").is_file()
+        assert float(manual_requested) in sampled
+    html = result.index_html.read_text(encoding="utf-8")
+    assert "manual requested s" in html
+    assert "delta selected-minus-manual ms" in html
+    assert "manual-start.jpg" in html
+
+
+def test_anchor2_absent_sides_are_null(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_legacy_sparse: None
+) -> None:
+    # Pipeline side absent: missing right wrist drops finish/deceleration.
+    result, _, _ = _run_anchor2(
+        tmp_path, monkeypatch, dict(SYNTH_ANCHOR2),
+        missing=("right_wrist",), no_legacy_sparse=no_legacy_sparse,
+    )
+    review = json.loads(result.review_json.read_text(encoding="utf-8"))
+    by_stage = {entry["stage"]: entry for entry in review["entries"]}
+    for stage in ("finish", "deceleration"):
+        entry = by_stage[stage]
+        assert entry["requested_source_time"] is None
+        assert entry["actual_source_time"] is None
+        assert entry["manual_requested_source_time"] == pytest.approx(SYNTH_ANCHOR2[stage])
+        assert entry["manual_actual_source_time"] == pytest.approx(SYNTH_ANCHOR2[stage])
+        assert entry["delta_selected_minus_manual_ms"] is None
+        assert entry["manual_image"] == f"manual-{stage}.jpg"
+        assert (result.review_dir / f"manual-{stage}.jpg").is_file()
+    # Manual side absent: drop finish from the tmp manual JSON.
+    tmp_path2 = tmp_path / "second"
+    tmp_path2.mkdir()
+    payload = {k: v for k, v in SYNTH_ANCHOR2.items() if k != "finish"}
+    _write_tmp_anchor2(tmp_path2, payload)
+    monkeypatch.chdir(tmp_path2)
+    from serve_review.analyze_serve import run_analyze_serve as _run_fn
+
+    video = tmp_path2 / "single-serve-02.mov"
+    video.write_bytes(b"fake-video-bytes")
+    backend = _FakeBackend()
+
+    def _sample(video_path: Path, moment: float, metadata: SourceMetadata):
+        return SampledFrame(
+            time_seconds=float(moment),
+            timestamp_ms=int(round(float(moment) * 1000)),
+            width=16,
+            height=16,
+            image=np.zeros((16, 16, 3), dtype=np.uint8),
+        )
+
+    def _encode(image: np.ndarray, dest: Path) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"fake-jpeg-bytes")
+
+    result2 = _run_fn(
+        video,
+        output_dir=tmp_path2 / "output",
+        probe_fn=lambda path: _metadata(),
+        native_times_fn=lambda _v, s, e: tuple(t for t in TIMES if t >= s - 1e-9 and t < e),
+        native_frame_factory=lambda remaining, _meta: _native_frames(tuple(remaining)),
+        backend_factory=lambda: backend,
+        sample_frame_fn=_sample,
+        encode_jpeg_fn=_encode,
+        anchor2comparison=True,
+    )
+    review2 = json.loads(result2.review_json.read_text(encoding="utf-8"))
+    by_stage2 = {entry["stage"]: entry for entry in review2["entries"]}
+    assert by_stage2["finish"]["manual_requested_source_time"] is None
+    assert by_stage2["finish"]["manual_actual_source_time"] is None
+    assert by_stage2["finish"]["manual_image"] is None
+    assert by_stage2["finish"]["delta_selected_minus_manual_ms"] is None
+    assert not (result2.review_dir / "manual-finish.jpg").exists()
+
+
+def test_absent_flag_leaves_default_artifacts(
+    tmp_path: Path, no_legacy_sparse: None
+) -> None:
+    result, _ = _run(tmp_path)
+    review = json.loads(result.review_json.read_text(encoding="utf-8"))
+    assert "anchor2comparison" not in review
+    assert "anchor2_source" not in review
+    for entry in review["entries"]:
+        assert "manual_requested_source_time" not in entry
+        assert "manual_actual_source_time" not in entry
+        assert "manual_image" not in entry
+        assert "delta_selected_minus_manual_ms" not in entry
+    assert list(result.review_dir.glob("manual-*.jpg")) == []
+    html = result.index_html.read_text(encoding="utf-8")
+    assert "manual" not in html.lower()

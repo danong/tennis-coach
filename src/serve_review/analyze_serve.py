@@ -112,6 +112,8 @@ __all__ = [
     "ANALYZE_SERVE_SCHEMA_VERSION",
     "ANALYZE_SERVE_ATTEMPT_ID",
     "ANALYZE_SERVE_ANCHOR_STAGES",
+    "ANCHOR2_VIDEO_BASENAME",
+    "ANCHOR2_ANNOTATION_RELPATH",
     "CHECKPOINTS_FILENAME",
     "DIAGNOSTICS_FILENAME",
     "REVIEW_DIRNAME",
@@ -138,6 +140,13 @@ ANALYZE_SERVE_SCHEMA_VERSION = 1
 ANALYZE_SERVE_ATTEMPT_ID = "serve-001"
 #: Anchor stages searched by the DP (derived stages follow afterwards).
 ANALYZE_SERVE_ANCHOR_STAGES: tuple[str, ...] = SIX_ANCHOR_STAGES
+
+#: Fixed basename for the one known anchor video supporting --anchor2comparison.
+ANCHOR2_VIDEO_BASENAME = "single-serve-02.mov"
+#: Fixed minimal manual-anchor JSON loaded only when --anchor2comparison is set.
+ANCHOR2_ANNOTATION_RELPATH = Path(
+    "refs/annotations/dev/single-serve-02.anchor2.json"
+)
 
 #: Final checkpoint filename written atomically beside review outputs.
 CHECKPOINTS_FILENAME = "checkpoints.json"
@@ -460,6 +469,72 @@ def _build_caption_lines(
     return lines
 
 
+def _build_anchor2_caption_lines(
+    attempt_id: str,
+    stage_key: str,
+    *,
+    requested_time: float,
+    actual_time: float,
+) -> list[str]:
+    """Build the labeled manual caption burned into each anchor2 JPEG."""
+    return [
+        f"{attempt_id} manual-{stage_key} t={requested_time:.3f}s "
+        f"(frame t={actual_time:.3f}s)",
+        "manual anchor2 comparison",
+    ]
+
+
+def _load_anchor2_manual() -> dict[str, float | None]:
+    """Load the fixed minimal anchor2 manual PTS mapping.
+
+    Reads only ``ANCHOR2_ANNOTATION_RELPATH`` (a flat stage-to-seconds
+    object with no schema/version/fingerprint metadata). Missing stages
+    read as None; present values must be finite numbers.
+    """
+    path = ANCHOR2_ANNOTATION_RELPATH
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AnalyzeServeError(
+            "validate",
+            f"could not read anchor2 manual file {path}: {exc}.",
+        ) from exc
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise AnalyzeServeError(
+            "validate",
+            f"invalid anchor2 manual JSON in {path}: {exc}.",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise AnalyzeServeError(
+            "validate",
+            f"invalid anchor2 manual in {path}: expected an object of "
+            "stage to source seconds.",
+        )
+    manual: dict[str, float | None] = {}
+    for stage in STAGE_ORDER:
+        value = payload.get(stage)
+        if value is None:
+            manual[stage] = None
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise AnalyzeServeError(
+                "validate",
+                f"invalid anchor2 manual stage {stage!r}: {value!r}; "
+                "expected source seconds as a number.",
+            )
+        number = float(value)
+        if not math.isfinite(number):
+            raise AnalyzeServeError(
+                "validate",
+                f"invalid anchor2 manual stage {stage!r}: {value!r}; "
+                "expected a finite number of seconds.",
+            )
+        manual[stage] = number
+    return manual
+
+
 def _safe_component(name: str) -> str:
     cleaned = "".join(
         ch if (ch.isalnum() or ch in ("-", "_")) else "_" for ch in name
@@ -474,6 +549,7 @@ def _build_index_html(
     fingerprint: str,
     attempt_id: str,
     range_text: str,
+    anchor2comparison: bool = False,
 ) -> str:
     rows: list[str] = []
     for entry in entries:
@@ -485,6 +561,33 @@ def _build_index_html(
                 f'<a href="{img}"><img src="{img}" alt="{entry.get("stage")}" '
                 'style="max-width:320px"></a>'
             )
+        if anchor2comparison:
+            manual_img = entry.get("manual_image")
+            if manual_img is None:
+                manual_cell = "<em>no image</em>"
+            else:
+                manual_cell = (
+                    f'<a href="{manual_img}"><img src="{manual_img}" '
+                    f'alt="manual-{entry.get("stage")}" '
+                    'style="max-width:320px"></a>'
+                )
+            rows.append(
+                "<tr>"
+                f"<td>{entry.get('stage')}</td>"
+                f"<td>{entry.get('availability')}</td>"
+                f"<td>{entry.get('provenance')}</td>"
+                f"<td>{entry.get('confidence'):.2f}</td>"
+                f"<td>{entry.get('requested_source_time')}</td>"
+                f"<td>{entry.get('actual_source_time')}</td>"
+                f"<td>{cell}</td>"
+                f"<td>{entry.get('manual_requested_source_time')}</td>"
+                f"<td>{entry.get('manual_actual_source_time')}</td>"
+                f"<td>{entry.get('delta_selected_minus_manual_ms')}</td>"
+                f"<td>{manual_cell}</td>"
+                f"<td>{entry.get('status')}</td>"
+                "</tr>"
+            )
+            continue
         rows.append(
             "<tr>"
             f"<td>{entry.get('stage')}</td>"
@@ -498,6 +601,20 @@ def _build_index_html(
             "</tr>"
         )
     body = "\n".join(rows)
+    if anchor2comparison:
+        header = (
+            "<tr><th>stage</th><th>availability</th><th>provenance</th>"
+            "<th>confidence</th><th>requested s</th><th>frame s</th>"
+            "<th>image</th><th>manual requested s</th>"
+            "<th>manual frame s</th><th>delta selected-minus-manual ms</th>"
+            "<th>manual image</th><th>status</th></tr>\n"
+        )
+    else:
+        header = (
+            "<tr><th>stage</th><th>availability</th><th>provenance</th>"
+            "<th>confidence</th><th>requested s</th><th>frame s</th>"
+            "<th>image</th><th>status</th></tr>\n"
+        )
     return (
         "<!doctype html>\n<html><head><meta charset=\"utf-8\">"
         f"<title>Serve review {attempt_id}</title></head><body>\n"
@@ -508,9 +625,7 @@ def _build_index_html(
         "is never claimed as exact visual observation; no audio transient "
         "was used.</p>\n"
         "<table border=\"1\">\n"
-        "<tr><th>stage</th><th>availability</th><th>provenance</th>"
-        "<th>confidence</th><th>requested s</th><th>frame s</th>"
-        "<th>image</th><th>status</th></tr>\n"
+        f"{header}"
         f"{body}\n</table>\n</body></html>\n"
     )
 
@@ -551,6 +666,7 @@ def run_analyze_serve(
     encode_jpeg_fn: Callable[[np.ndarray, Path], None] | None = None,
     progress_callback: Callable[[str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
+    anchor2comparison: bool = False,
 ) -> AnalyzeServeResult:
     """Analyze one explicit serve range through the audio-free 3D path.
 
@@ -612,6 +728,16 @@ def run_analyze_serve(
     if not video_path.is_file():
         raise _fail("validate", f"input video does not exist: {video_path}.")
     overwrite_flag = _check_bool(overwrite, "overwrite")
+    anchor2_flag = _check_bool(anchor2comparison, "anchor2comparison")
+    if anchor2_flag and video_path.name != ANCHOR2_VIDEO_BASENAME:
+        raise _fail(
+            "validate",
+            f"--anchor2comparison supports only {ANCHOR2_VIDEO_BASENAME}; "
+            f"got {video_path.name!r}.",
+        )
+    manual_by_stage: dict[str, float | None] | None = None
+    if anchor2_flag:
+        manual_by_stage = _load_anchor2_manual()
     ffmpeg_exe = _check_executable("ffmpeg", ffmpeg)
     ffprobe_exe = _check_executable("ffprobe", ffprobe)
     start_opt = _check_optional_bound("start-seconds", start_seconds)
@@ -1792,6 +1918,92 @@ def run_analyze_serve(
                 actual_by_requested[requested] = actual
                 frames_by_time[requested] = image
 
+        manual_actual_by_requested: dict[float, float] = {}
+        manual_frames_by_time: dict[float, Any] = {}
+        manual_render_times: list[float] = []
+        if anchor2_flag:
+            assert manual_by_stage is not None
+            manual_render_times = sorted(
+                {
+                    float(value)
+                    for value in manual_by_stage.values()
+                    if value is not None
+                }
+            )
+            for moment in manual_render_times:
+                if not (
+                    math.isfinite(moment)
+                    and 0 <= moment < duration + 1e-9
+                ):
+                    raise _fail(
+                        "review",
+                        f"manual anchor2 timestamp {moment!r} lies outside "
+                        "the source timeline; refusing to render.",
+                    )
+            if manual_render_times:
+                try:
+                    if sample_frame_fn is not None:
+                        manual_sampled = [
+                            sample_frame_fn(video_path, moment, metadata)
+                            for moment in manual_render_times
+                        ]
+                    else:
+                        manual_iter = frames_module.iter_sampled_frames(
+                            video_path,
+                            tuple(manual_render_times),
+                            source=metadata,
+                            ffmpeg=ffmpeg_exe,
+                            ffprobe=ffprobe_exe,
+                            is_cancelled=is_cancelled,
+                        )
+                        manual_sampled = list(manual_iter)
+                except AnalyzeServeCancelled:
+                    raise
+                except AnalyzeServeError:
+                    raise
+                except frames_module.FrameCancelled as exc:
+                    raise AnalyzeServeCancelled(
+                        "review", f"review sampling was cancelled: {exc}."
+                    ) from exc
+                except frames_module.FrameError as exc:
+                    raise _fail(
+                        "review", f"could not sample source frames: {exc}."
+                    ) from exc
+                except Exception as exc:
+                    raise _fail(
+                        "review", f"could not sample source frames: {exc}."
+                    ) from exc
+                if len(manual_sampled) != len(manual_render_times):
+                    raise _fail(
+                        "review",
+                        f"source sampling returned {len(manual_sampled)} "
+                        f"frame(s) for {len(manual_render_times)} manual "
+                        "timestamp(s); refusing to publish mislinked "
+                        "review images.",
+                    )
+                for requested, sampled in zip(
+                    manual_render_times, manual_sampled
+                ):
+                    if _cancelled():
+                        raise AnalyzeServeCancelled(
+                            "review",
+                            "analyze-serve was cancelled during review "
+                            "rendering.",
+                        )
+                    try:
+                        actual = float(sampled.time_seconds)  # type: ignore[union-attr]
+                        image = np.ascontiguousarray(
+                            sampled.image, dtype=np.uint8  # type: ignore[union-attr]
+                        )
+                    except (AttributeError, TypeError, ValueError) as exc:
+                        raise _fail(
+                            "review",
+                            f"sampled manual frame at t={requested!r} is "
+                            f"malformed: {exc}.",
+                        ) from exc
+                    manual_actual_by_requested[requested] = actual
+                    manual_frames_by_time[requested] = image
+
         try:
             parent = review_dir.parent
             parent.mkdir(parents=True, exist_ok=True)
@@ -1842,6 +2054,62 @@ def run_analyze_serve(
                 }
                 if phase.availability == "unavailable" or requested is None:
                     base["reason"] = "stage_unavailable"
+                    if anchor2_flag:
+                        assert manual_by_stage is not None
+                        manual_requested = manual_by_stage.get(stage)
+                        base["manual_requested_source_time"] = manual_requested
+                        base["manual_actual_source_time"] = None
+                        base["manual_image"] = None
+                        base["delta_selected_minus_manual_ms"] = None
+                        if manual_requested is not None:
+                            manual_f = float(manual_requested)
+                            if manual_f not in manual_frames_by_time:
+                                raise _fail(
+                                    "review",
+                                    f"no sampled manual frame for {stage} at "
+                                    f"t={manual_f!r}; refusing to publish "
+                                    "mislinked review images.",
+                                )
+                            manual_actual = manual_actual_by_requested[manual_f]
+                            manual_image = manual_frames_by_time[manual_f]
+                            manual_caption = _build_anchor2_caption_lines(
+                                ANALYZE_SERVE_ATTEMPT_ID,
+                                stage,
+                                requested_time=manual_f,
+                                actual_time=manual_actual,
+                            )
+                            try:
+                                manual_final = render_caption(
+                                    manual_image, manual_caption
+                                )
+                            except Exception as exc:
+                                raise _fail(
+                                    "review",
+                                    f"could not render manual caption for "
+                                    f"{stage}: {exc}.",
+                                ) from exc
+                            manual_rel = f"manual-{_safe_component(stage)}.jpg"
+                            manual_dest = staging / manual_rel
+                            try:
+                                if encode_jpeg_fn is not None:
+                                    encode_jpeg_fn(manual_final, manual_dest)
+                                else:
+                                    _encode_jpeg_ffmpeg(
+                                        manual_final, manual_dest, ffmpeg_exe
+                                    )
+                            except AnalyzeServeCancelled:
+                                raise
+                            except AnalyzeServeError:
+                                raise
+                            except Exception as exc:
+                                raise _fail(
+                                    "review",
+                                    f"could not write review image "
+                                    f"{manual_dest}: {exc}.",
+                                ) from exc
+                            base["manual_actual_source_time"] = manual_actual
+                            base["manual_image"] = manual_rel
+                            image_count += 1
                     entries.append(base)
                     continue
                 requested_f = float(requested)
@@ -1886,6 +2154,67 @@ def run_analyze_serve(
                 base["actual_source_time"] = actual
                 base["image"] = rel
                 base["status"] = "rendered"
+                if anchor2_flag:
+                    assert manual_by_stage is not None
+                    manual_requested = manual_by_stage.get(stage)
+                    base["manual_requested_source_time"] = manual_requested
+                    base["manual_actual_source_time"] = None
+                    base["manual_image"] = None
+                    if requested is not None and manual_requested is not None:
+                        base["delta_selected_minus_manual_ms"] = (
+                            float(requested) - float(manual_requested)
+                        ) * 1000.0
+                    else:
+                        base["delta_selected_minus_manual_ms"] = None
+                    if manual_requested is not None:
+                        manual_f = float(manual_requested)
+                        if manual_f not in manual_frames_by_time:
+                            raise _fail(
+                                "review",
+                                f"no sampled manual frame for {stage} at "
+                                f"t={manual_f!r}; refusing to publish "
+                                "mislinked review images.",
+                            )
+                        manual_actual = manual_actual_by_requested[manual_f]
+                        manual_image = manual_frames_by_time[manual_f]
+                        manual_caption = _build_anchor2_caption_lines(
+                            ANALYZE_SERVE_ATTEMPT_ID,
+                            stage,
+                            requested_time=manual_f,
+                            actual_time=manual_actual,
+                        )
+                        try:
+                            manual_final = render_caption(
+                                manual_image, manual_caption
+                            )
+                        except Exception as exc:
+                            raise _fail(
+                                "review",
+                                f"could not render manual caption for "
+                                f"{stage}: {exc}.",
+                            ) from exc
+                        manual_rel = f"manual-{_safe_component(stage)}.jpg"
+                        manual_dest = staging / manual_rel
+                        try:
+                            if encode_jpeg_fn is not None:
+                                encode_jpeg_fn(manual_final, manual_dest)
+                            else:
+                                _encode_jpeg_ffmpeg(
+                                    manual_final, manual_dest, ffmpeg_exe
+                                )
+                        except AnalyzeServeCancelled:
+                            raise
+                        except AnalyzeServeError:
+                            raise
+                        except Exception as exc:
+                            raise _fail(
+                                "review",
+                                f"could not write review image "
+                                f"{manual_dest}: {exc}.",
+                            ) from exc
+                        base["manual_actual_source_time"] = manual_actual
+                        base["manual_image"] = manual_rel
+                        image_count += 1
                 entries.append(base)
                 image_count += 1
 
@@ -1900,6 +2229,11 @@ def run_analyze_serve(
                 "source_duration_seconds": duration,
                 "source_fingerprint": fingerprint,
             }
+            if anchor2_flag:
+                review_manifest["anchor2comparison"] = True
+                review_manifest["anchor2_source"] = str(
+                    ANCHOR2_ANNOTATION_RELPATH
+                )
             review_text = json.dumps(review_manifest, sort_keys=True, indent=2) + "\n"
             range_text = (
                 f"[{attempt_range.start_seconds}, {attempt_range.end_seconds})"
@@ -1909,6 +2243,7 @@ def run_analyze_serve(
                 fingerprint=fingerprint,
                 attempt_id=ANALYZE_SERVE_ATTEMPT_ID,
                 range_text=range_text,
+                anchor2comparison=anchor2_flag,
             )
             try:
                 (staging / REVIEW_JSON_FILENAME).write_text(

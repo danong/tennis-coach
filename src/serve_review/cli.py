@@ -412,6 +412,7 @@ def analyze_serve(args: argparse.Namespace) -> int:
             overwrite=args.overwrite,
             ffmpeg=args.ffmpeg,
             ffprobe=args.ffprobe,
+            anchor2comparison=args.anchor2comparison,
             progress_callback=_progress,
         )
     except AnalyzeServeCancelled as exc:
@@ -985,6 +986,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--overwrite",
         action="store_true",
         help="replace existing outputs/cache (default: fail on collision)",
+    )
+    serve_parser.add_argument(
+        "--anchor2comparison",
+        "--anchor2-comparison",
+        dest="anchor2comparison",
+        action="store_true",
+        default=False,
+        help=(
+            "compare against the fixed manual anchor for exactly "
+            "refs/anchors/single-serve-02.mov "
+            "(refs/annotations/dev/single-serve-02.anchor2.json)"
+        ),
     )
     serve_parser.add_argument(
         "--ffmpeg",
