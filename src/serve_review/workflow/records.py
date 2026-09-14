@@ -546,3 +546,163 @@ def attempt_id_for(
     )
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return "attempt-" + digest[:24]
+
+
+RUN_RECORD_SCHEMA_VERSION = 1
+_RUN_ID = re.compile(r"^run-[0-9a-f]{16}$")
+
+
+def _strict_string(name: str, value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise WorkflowRecordError(f"{name} must be a nonblank string.")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptOutcome:
+    """The deliberately small, provenance-only result of one analysis."""
+    attempt_id: str
+    start_seconds: float
+    end_seconds: float
+    status: str
+    error: str | None = None
+    artifacts: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.attempt_id, str) or _ATTEMPT_ID.fullmatch(self.attempt_id) is None:
+            raise WorkflowRecordError("attempt outcome has an invalid attempt_id.")
+        try:
+            MediaRange(self.start_seconds, self.end_seconds)
+        except Exception as exc:
+            raise WorkflowRecordError(f"invalid attempt outcome range: {exc}") from exc
+        if self.status not in {"complete", "failed"}:
+            raise WorkflowRecordError("attempt outcome status must be complete or failed.")
+        if (
+            self.status == "failed"
+            and (not isinstance(self.error, str) or not self.error.strip())
+        ) or (self.status == "complete" and self.error is not None):
+            raise WorkflowRecordError("attempt outcome error does not match status.")
+        if not isinstance(self.artifacts, tuple) or any(
+            not isinstance(path, str)
+            or not os.path.isabs(path)
+            or os.path.normpath(path) != path
+            for path in self.artifacts
+        ):
+            raise WorkflowRecordError(
+                "attempt outcome artifacts must be normalized absolute paths."
+            )
+        if self.artifacts != tuple(sorted(set(self.artifacts))):
+            raise WorkflowRecordError(
+                "attempt outcome artifacts must be sorted and unique."
+            )
+        if self.status == "complete" and not self.artifacts:
+            raise WorkflowRecordError("complete attempt outcome requires artifacts.")
+        if self.status == "failed" and self.artifacts:
+            raise WorkflowRecordError("failed attempt outcome cannot claim artifacts.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"artifacts": list(self.artifacts), "attempt_id": self.attempt_id, "end_seconds": self.end_seconds, "error": self.error, "start_seconds": self.start_seconds, "status": self.status}
+
+    @classmethod
+    def from_dict(cls, v: dict[str, Any]) -> "AttemptOutcome":
+        keys = {"artifacts", "attempt_id", "end_seconds", "error", "start_seconds", "status"}
+        if not isinstance(v, dict) or set(v) != keys or not isinstance(v["artifacts"], list):
+            raise WorkflowRecordError("attempt outcome keys are invalid.")
+        return cls(v["attempt_id"], v["start_seconds"], v["end_seconds"], v["status"], v["error"], tuple(v["artifacts"]))
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowRunRecord:
+    """Strict persisted provenance for one source processing invocation."""
+    schema_version: int
+    run_id: str
+    source_id: str
+    source_fingerprint: str
+    mode: str
+    producer_method: str
+    producer_config: str
+    detection_status: str
+    detection_error: str | None
+    attempts: tuple[AttemptOutcome, ...]
+    overall_status: str
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.schema_version, bool)
+            or not isinstance(self.schema_version, int)
+            or self.schema_version != RUN_RECORD_SCHEMA_VERSION
+        ):
+            raise WorkflowRecordError("unsupported workflow run schema version.")
+        if not isinstance(self.run_id, str) or _RUN_ID.fullmatch(self.run_id) is None:
+            raise WorkflowRecordError("run_id must have the form run- plus 16 lowercase hex digits.")
+        if not isinstance(self.source_id, str) or _SOURCE_ID.fullmatch(self.source_id) is None:
+            raise WorkflowRecordError("invalid source_id.")
+        fingerprint = _fingerprint(self.source_fingerprint)
+        if self.source_id != source_id_for_fingerprint(fingerprint):
+            raise WorkflowRecordError("source_id does not match source_fingerprint.")
+        if self.mode not in {"normal", "single-attempt", "explicit-range"}:
+            raise WorkflowRecordError("invalid processing mode.")
+        _strict_string("producer_method", self.producer_method); _strict_string("producer_config", self.producer_config)
+        if self.detection_status not in {"complete", "failed", "empty"}:
+            raise WorkflowRecordError("invalid detection status.")
+        if self.detection_status == "failed":
+            if not isinstance(self.detection_error, str) or not self.detection_error.strip():
+                raise WorkflowRecordError("failed detection requires an error.")
+        elif self.detection_error is not None:
+            raise WorkflowRecordError("successful or empty detection cannot have an error.")
+        if not isinstance(self.attempts, tuple) or any(not isinstance(a, AttemptOutcome) for a in self.attempts):
+            raise WorkflowRecordError("attempts must be a tuple of outcomes.")
+        ids = [a.attempt_id for a in self.attempts]
+        if len(ids) != len(set(ids)):
+            raise WorkflowRecordError("attempt outcome IDs collide.")
+        if self.overall_status not in {"complete", "partial", "failed", "empty"}:
+            raise WorkflowRecordError("invalid overall status.")
+        expected_status = (
+            "failed"
+            if self.detection_status == "failed"
+            else "empty"
+            if not self.attempts
+            else "failed"
+            if all(attempt.status == "failed" for attempt in self.attempts)
+            else "partial"
+            if any(attempt.status == "failed" for attempt in self.attempts)
+            else "complete"
+        )
+        if self.overall_status != expected_status:
+            raise WorkflowRecordError(
+                f"overall status must be {expected_status} for recorded outcomes."
+            )
+        if self.detection_status in {"failed", "empty"} and self.attempts:
+            raise WorkflowRecordError(
+                "failed or empty detection cannot contain attempt outcomes."
+            )
+        object.__setattr__(self, "source_fingerprint", fingerprint)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"attempts": [a.to_dict() for a in self.attempts], "detection_error": self.detection_error, "detection_status": self.detection_status, "mode": self.mode, "overall_status": self.overall_status, "producer_config": self.producer_config, "producer_method": self.producer_method, "run_id": self.run_id, "schema_version": self.schema_version, "source_fingerprint": self.source_fingerprint, "source_id": self.source_id}
+
+    @classmethod
+    def from_dict(cls, v: dict[str, Any]) -> "WorkflowRunRecord":
+        keys = {"attempts", "detection_error", "detection_status", "mode", "overall_status", "producer_config", "producer_method", "run_id", "schema_version", "source_fingerprint", "source_id"}
+        if not isinstance(v, dict) or set(v) != keys or not isinstance(v["attempts"], list):
+            raise WorkflowRecordError("workflow run record keys are invalid.")
+        return cls(v["schema_version"], v["run_id"], v["source_id"], v["source_fingerprint"], v["mode"], v["producer_method"], v["producer_config"], v["detection_status"], v["detection_error"], tuple(AttemptOutcome.from_dict(x) for x in v["attempts"]), v["overall_status"])
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n"
+
+    @classmethod
+    def from_json(cls, data: str | bytes | bytearray) -> "WorkflowRunRecord":
+        def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError(f"duplicate object key {key!r}")
+                result[key] = value
+            return result
+        try:
+            if isinstance(data, (bytes, bytearray)): data = bytes(data).decode("utf-8")
+            return cls.from_dict(json.loads(data, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)), object_pairs_hook=pairs))
+        except (TypeError, UnicodeError, ValueError, WorkflowRecordError) as exc:
+            if isinstance(exc, WorkflowRecordError): raise
+            raise WorkflowRecordError(f"invalid workflow run JSON: {exc}.") from exc
