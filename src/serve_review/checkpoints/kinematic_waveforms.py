@@ -11,8 +11,11 @@ Input contract:
 - Exactly one M4.8 ``FilteredWorldTrack``. Only its primary filtered 3D
   coordinates (``sample.filtered``) plus its per-joint
   availability/filter-confidence/observed-support metadata are
-  consumed. Raw unfiltered rows, 2D companions, and audio are never
-  read here.
+  consumed. Raw unfiltered rows and 2D companions are never read here.
+  Optional aligned audio (``audio_energies``/``audio``) is the sole audio
+  input: exactly one entry per filtered-track PTS in order, never decoded
+  or demuxed here. ``None`` (or no audio at all) leaves both audio
+  channels honestly unavailable, never zero-filled.
 - A filtered joint is usable only when ``sample.available[j]`` is True
   and ``sample.filtered[j]`` is not ``None``. Anything else is missing
   and stays missing; no zero-fill, no bridging, no fabrication.
@@ -88,7 +91,7 @@ Missingness and quality propagation:
   same way (quality ``min``, uncertainty ``max``) and are available
   only when the full stencil is qualified.
 
-Channel inventory (see :data:`CHANNEL_NAMES`, 36 channels):
+Channel inventory (see :data:`CHANNEL_NAMES`, 38 channels):
 
 - Bilateral knee/elbow flexion angles (deg) plus timestamp-aware first
   derivatives (deg/s).
@@ -156,7 +159,8 @@ ANGLE_UNIT = "degrees"
 #: Minimum plausible torso reference length in meters.
 DEFAULT_MIN_BODY_LENGTH_M = 1e-6
 
-#: Ordered channel inventory (36 named scalar channels).
+#: Ordered channel inventory (38 named scalar channels; 36 body-kinematic
+#: plus 2 optional per-PTS audio-transient channels appended at the end).
 CHANNEL_NAMES: tuple[str, ...] = (
     "knee_flexion_left",
     "knee_flexion_right",
@@ -194,6 +198,8 @@ CHANNEL_NAMES: tuple[str, ...] = (
     "right_wrist_speed_turning",
     "right_wrist_accel_turning",
     "whole_body_settling_energy",
+    "audio_transient_energy",
+    "audio_transient_flag",
 )
 
 #: Channel name to position lookup.
@@ -247,7 +253,10 @@ _BODY_LENGTH_CHANNELS = frozenset(
 _BODY_LENGTH_PER_SEC_CHANNELS = frozenset({"right_wrist_speed"})
 _BODY_LENGTH_PER_SEC2_CHANNELS = frozenset({"right_wrist_acceleration"})
 _ENERGY_CHANNELS = frozenset({"whole_body_settling_energy"})
-_FLAG_CHANNELS = frozenset({"right_wrist_speed_turning", "right_wrist_accel_turning"})
+_FLAG_CHANNELS = frozenset({"right_wrist_speed_turning", "right_wrist_accel_turning", "audio_transient_flag"})
+#: Band-limited RMS audio transient energy channels (non-negative, full-scale
+#: RMS units; never body-length normalized). Honestly unavailable without audio.
+_AUDIO_ENERGY_CHANNELS = frozenset({"audio_transient_energy"})
 
 #: Human-readable units per channel (documented, versioned via config).
 CHANNEL_UNITS: dict[str, str] = {
@@ -269,7 +278,11 @@ CHANNEL_UNITS: dict[str, str] = {
                         else (
                             "(body_lengths/second)^2"
                             if name in _ENERGY_CHANNELS
-                            else "flag(0/1)"
+                            else (
+                                "rms_energy"
+                                if name in _AUDIO_ENERGY_CHANNELS
+                                else "flag(0/1)"
+                            )
                         )
                     )
                 )
@@ -522,6 +535,11 @@ def _check_channel_values(name: str, values: Any) -> tuple[float | None, ...]:
         ):
             raise KinematicWaveformsError(
                 f"{name}: channel {channel!r} must lie in [-90, 90] or be null, "
+                f"got {entry!r}."
+            )
+        if channel in _AUDIO_ENERGY_CHANNELS and number < 0.0:
+            raise KinematicWaveformsError(
+                f"{name}: channel {channel!r} must be >= 0 or null, "
                 f"got {entry!r}."
             )
         normalized.append(number)
@@ -1143,9 +1161,200 @@ def _vector_derivative_series(
     return out
 
 
+_AUDIO_UNSET: Any = object()
+
+
+def _audio_energy_of(entry: Any) -> float | None:
+    """Extract a finite non-negative energy from a duck-typed audio entry."""
+    if isinstance(entry, bool):
+        raise KinematicWaveformsError(
+            "build_kinematic_waveform_track: audio energy entries must be finite "
+            f"numbers >= 0 or null, got {entry!r}."
+        )
+    if isinstance(entry, (int, float)):
+        number = float(entry)
+        if not math.isfinite(number) or number < 0.0:
+            raise KinematicWaveformsError(
+                "build_kinematic_waveform_track: audio energy entries must be finite "
+                f"numbers >= 0 or null, got {entry!r}."
+            )
+        return number
+    energy = getattr(entry, "energy", None)
+    if isinstance(energy, bool) or not isinstance(energy, (int, float)):
+        raise KinematicWaveformsError(
+            "build_kinematic_waveform_track: audio entries must be floats, null, "
+            f"AudioEnergy-like, mappings, or (energy, flag) pairs; got {entry!r}."
+        )
+    number = float(energy)
+    if not math.isfinite(number) or number < 0.0:
+        raise KinematicWaveformsError(
+            "build_kinematic_waveform_track: audio energy entries must be finite "
+            f"numbers >= 0 or null, got {entry!r}."
+        )
+    return number
+
+
+def _audio_flag_of(entry: Any) -> float | None:
+    """Extract an explicit 0.0/1.0 flag from a duck-typed audio entry."""
+    if isinstance(entry, bool):
+        return 1.0 if entry else 0.0
+    if isinstance(entry, (int, float)):
+        number = float(entry)
+        if number not in (0.0, 1.0):
+            raise KinematicWaveformsError(
+                "build_kinematic_waveform_track: audio flag entries must be 0.0, 1.0, "
+                f"or null, got {entry!r}."
+            )
+        return number
+    return None
+
+
+def _normalize_audio_inputs(
+    audio: Any, count: int, times: list[float]
+) -> tuple[list[float | None], list[Any]]:
+    """Normalize the optional aligned audio sequence to per-row energies/flags.
+
+    Returns ``(energies, explicit_flags)`` where ``explicit_flags[row]`` is
+    ``_AUDIO_UNSET`` when the caller supplied energy only (flag is then
+    derived as a strict local energy maximum), otherwise ``None``/``0.0``/``1.0``.
+    """
+    energies: list[float | None] = [None] * count
+    explicit: list[Any] = [_AUDIO_UNSET] * count
+    if audio is None:
+        return (energies, explicit)
+    if isinstance(audio, (str, bytes, bytearray)) or not isinstance(audio, (list, tuple)):
+        raise KinematicWaveformsError(
+            "build_kinematic_waveform_track: 'audio_energies' must be None or a "
+            f"list/tuple with one entry per filtered-track sample ({count}), "
+            f"got {type(audio).__name__}."
+        )
+    rows = list(audio)
+    if len(rows) != count:
+        raise KinematicWaveformsError(
+            "build_kinematic_waveform_track: 'audio_energies' must hold exactly one "
+            f"entry per filtered-track sample ({count}), got {len(rows)}."
+        )
+    for row, entry in enumerate(rows):
+        if entry is None:
+            energies[row] = None
+            explicit[row] = _AUDIO_UNSET
+            continue
+        if isinstance(entry, (list, tuple)) and len(entry) == 2 and not isinstance(
+            entry, (str, bytes, bytearray)
+        ):
+            raw_energy, raw_flag = entry[0], entry[1]
+            if raw_energy is None:
+                energies[row] = None
+            else:
+                energies[row] = _audio_energy_of(raw_energy)
+            if raw_flag is None:
+                explicit[row] = None
+            else:
+                explicit[row] = _audio_flag_of(raw_flag)
+            continue
+        if isinstance(entry, dict):
+            if "time_seconds" in entry:
+                moment = entry["time_seconds"]
+                if isinstance(moment, bool) or not isinstance(moment, (int, float)):
+                    raise KinematicWaveformsError(
+                        "build_kinematic_waveform_track: audio mapping 'time_seconds' "
+                        f"must be a finite number, got {moment!r}."
+                    )
+                if not math.isfinite(float(moment)) or abs(float(moment) - times[row]) > 1e-9:
+                    raise KinematicWaveformsError(
+                        "build_kinematic_waveform_track: audio mapping time "
+                        f"{moment!r} does not match filtered-track PTS {times[row]!r} "
+                        f"at row {row}; audio must align one-for-one in order."
+                    )
+            raw_energy = None
+            for key in ("energy", "audio_energy", "value"):
+                if key in entry:
+                    raw_energy = entry[key]
+                    break
+            else:
+                raise KinematicWaveformsError(
+                    "build_kinematic_waveform_track: audio mappings must carry an "
+                    f"'energy' key, got {sorted(entry.keys())!r}."
+                )
+            if raw_energy is None:
+                energies[row] = None
+            else:
+                energies[row] = _audio_energy_of(raw_energy)
+            raw_flag = None
+            flag_found = False
+            for key in ("flag", "audio_flag", "audio_transient_flag", "candidate"):
+                if key in entry:
+                    raw_flag = entry[key]
+                    flag_found = True
+                    break
+            if not flag_found:
+                explicit[row] = _AUDIO_UNSET
+            elif raw_flag is None:
+                explicit[row] = None
+            else:
+                explicit[row] = _audio_flag_of(raw_flag)
+            continue
+        moment = getattr(entry, "time_seconds", None)
+        if moment is not None:
+            if isinstance(moment, bool) or not isinstance(moment, (int, float)):
+                raise KinematicWaveformsError(
+                    "build_kinematic_waveform_track: audio 'time_seconds' must be a "
+                    f"finite number, got {moment!r}."
+                )
+            if not math.isfinite(float(moment)) or abs(float(moment) - times[row]) > 1e-9:
+                raise KinematicWaveformsError(
+                    "build_kinematic_waveform_track: audio time "
+                    f"{moment!r} does not match filtered-track PTS {times[row]!r} "
+                    f"at row {row}; audio must align one-for-one in order."
+                )
+            if hasattr(entry, "energy"):
+                energies[row] = _audio_energy_of(entry)
+                flag_attr = getattr(entry, "flag", getattr(entry, "audio_flag", _AUDIO_UNSET))
+                if flag_attr is _AUDIO_UNSET:
+                    explicit[row] = _AUDIO_UNSET
+                elif flag_attr is None:
+                    explicit[row] = None
+                else:
+                    explicit[row] = _audio_flag_of(flag_attr)
+                continue
+        if hasattr(entry, "energy"):
+            energies[row] = _audio_energy_of(entry)
+            explicit[row] = _AUDIO_UNSET
+            continue
+        energies[row] = _audio_energy_of(entry)
+        explicit[row] = _AUDIO_UNSET
+    return (energies, explicit)
+
+
+def _derive_audio_flags(energies: list[float | None]) -> list[float | None]:
+    """Derive transient flags as strict local energy maxima (peak-picking).
+
+    Interior rows with a fully qualified triple carry ``1.0`` for a strict
+    local maximum (louder than both neighbors) and ``0.0`` otherwise;
+    edges, gaps, and isolated rows are honestly ``None`` (mirrors the
+    wrist turning-point stencil policy without fabricating support).
+    """
+    count = len(energies)
+    out: list[float | None] = [None] * count
+    for row in range(count):
+        center = energies[row]
+        if center is None:
+            continue
+        if row == 0 or row == count - 1:
+            continue
+        prev = energies[row - 1]
+        nxt = energies[row + 1]
+        if prev is None or nxt is None:
+            continue
+        out[row] = 1.0 if (float(center) > float(prev) and float(center) > float(nxt)) else 0.0
+    return out
+
+
 def build_kinematic_waveform_track(
     track: FilteredWorldTrack,
     config: KinematicWaveformsConfig | None = None,
+    audio_energies: Sequence[Any] | None = None,
+    audio: Sequence[Any] | None = None,
 ) -> KinematicWaveformTrack:
     """Build a deterministic waveform track from an M4.8 filtered track.
 
@@ -1154,14 +1363,35 @@ def build_kinematic_waveform_track(
             never mutated.
         config: Immutable waveform configuration (defaults pin the
             versioned coordinate/normalization/derivative conventions).
+        audio_energies: Optional aligned audio sequence with exactly one
+            entry per filtered-track sample in PTS order (``None`` when
+            absent). Each entry is either ``None`` (honestly quiet/missing
+            at that PTS), a finite non-negative energy ``float``, an
+            ``AudioEnergy``-like object (``.time_seconds`` must match the
+            filtered-track PTS within ``1e-9`` and ``.energy`` holds the
+            RMS value), a mapping with ``energy`` (plus optional
+            ``flag`` and optional ``time_seconds`` checked the same way),
+            or an ``(energy, flag)`` pair carrying an explicit ``0.0``/``1.0``
+            transient flag. ``audio`` is an accepted alias; supplying both
+            with differing payloads raises.
 
     Returns:
         An immutable :class:`KinematicWaveformTrack` with one sample
-        per M4.8 PTS, in the same order with verbatim times.
+        per M4.8 PTS, in the same order with verbatim times. The trailing
+        ``audio_transient_energy`` channel stores the aligned RMS energy
+        (``None`` without audio, never zero-filled) and
+        ``audio_transient_flag`` stores the explicit flag when supplied,
+        else the strict-local-maximum peak flag derived from the energy
+        series (``None`` without audio or without a qualified triple).
+        Both channels carry availability/quality/uncertainty like every
+        body channel (quality ``1.0`` when available, ``0.0`` when missing;
+        uncertainty is the honest M4.8 temporal bound, widened over the
+        flag stencil when derived).
 
     Raises:
-        KinematicWaveformsError: On wrong input/config types or an
-            empty track. Missing joints never raise; they propagate as
+        KinematicWaveformsError: On wrong input/config types, an
+            empty track, a misaligned audio sequence, or invalid audio
+            values. Missing joints never raise; they propagate as
             honestly unavailable channels.
     """
     active = config if config is not None else KinematicWaveformsConfig()
@@ -1183,6 +1413,21 @@ def build_kinematic_waveform_track(
         )
     times = [float(sample.time_seconds) for sample in track.samples]
     stamps = [int(sample.timestamp_ms) for sample in track.samples]
+    if audio_energies is not None and audio is not None:
+        if list(audio_energies) != list(audio):  # type: ignore[arg-type]
+            raise KinematicWaveformsError(
+                "build_kinematic_waveform_track: 'audio_energies' and alias 'audio' "
+                "disagree; supply exactly one aligned audio sequence."
+            )
+        resolved_audio = audio_energies
+    elif audio is not None:
+        resolved_audio = audio
+    else:
+        resolved_audio = audio_energies
+    audio_energy_series, audio_explicit_flags = _normalize_audio_inputs(
+        resolved_audio, count, times
+    )
+    audio_derived_flags = _derive_audio_flags(audio_energy_series)
 
     min_length = float(active.min_body_length_m)
 
@@ -1651,6 +1896,42 @@ def build_kinematic_waveform_track(
                 base_uncertainty["whole_body_settling_energy"][row] = max(
                     settling_vel_uncertainty[joint][row] for joint in _SETTLING_INDICES
                 )
+
+    # --- Optional aligned audio-transient channels (never zero-filled) ----------
+    for row in range(count):
+        row_uncertainty = float(track.samples[row].temporal_uncertainty_seconds)
+        energy = audio_energy_series[row]
+        if energy is not None:
+            base_values["audio_transient_energy"][row] = float(energy)
+            base_quality["audio_transient_energy"][row] = 1.0
+            base_uncertainty["audio_transient_energy"][row] = row_uncertainty
+        else:
+            base_values["audio_transient_energy"][row] = None
+            base_quality["audio_transient_energy"][row] = 0.0
+            base_uncertainty["audio_transient_energy"][row] = row_uncertainty
+        marker = audio_explicit_flags[row]
+        if marker is _AUDIO_UNSET:
+            flag = audio_derived_flags[row]
+            if flag is not None:
+                base_values["audio_transient_flag"][row] = float(flag)
+                base_quality["audio_transient_flag"][row] = 1.0
+                base_uncertainty["audio_transient_flag"][row] = max(
+                    float(track.samples[k].temporal_uncertainty_seconds)
+                    for k in (row - 1, row, row + 1)
+                    if 0 <= k < count
+                )
+            else:
+                base_values["audio_transient_flag"][row] = None
+                base_quality["audio_transient_flag"][row] = 0.0
+                base_uncertainty["audio_transient_flag"][row] = row_uncertainty
+        elif marker is None:
+            base_values["audio_transient_flag"][row] = None
+            base_quality["audio_transient_flag"][row] = 0.0
+            base_uncertainty["audio_transient_flag"][row] = row_uncertainty
+        else:
+            base_values["audio_transient_flag"][row] = float(marker)
+            base_quality["audio_transient_flag"][row] = 1.0
+            base_uncertainty["audio_transient_flag"][row] = row_uncertainty
 
     # --- Assemble immutable samples --------------------------------------------
     samples: list[KinematicWaveformSample] = []

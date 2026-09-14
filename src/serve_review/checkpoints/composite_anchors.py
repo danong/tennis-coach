@@ -67,7 +67,9 @@ evidence after the documented orientation):
   (``right_wrist_rel_shoulder_dy``), ``right_wrist_speed_turn``
   (``right_wrist_speed_turning`` flag), ``right_wrist_acceleration_turn``
   (``right_wrist_accel_turning`` flag), ``torso_rise``, ``late_arm``
-  (``right_wrist_rel_shoulder_distance`` reach proxy).
+  (``right_wrist_rel_shoulder_distance`` reach proxy), ``audio_transient``
+  (``audio_transient_flag`` when available, else ``audio_transient_energy``;
+  honestly ``None`` without audio, never zero-filled).
 - finish: ``whole_body_settling``
   (``-whole_body_settling_energy``), ``right_wrist_settling``
   (``-right_wrist_speed``), ``torso_settling``
@@ -170,6 +172,7 @@ COMPOSITE_CUE_NAMES: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "right_wrist_acceleration_turn",
             "torso_rise",
             "late_arm",
+            "audio_transient",
         ),
         "finish": (
             "whole_body_settling",
@@ -219,11 +222,12 @@ COMPOSITE_DEFAULT_WEIGHTS: Mapping[str, Mapping[str, float]] = MappingProxyType(
         ),
         "contact": MappingProxyType(
             {
-                "right_wrist_elevation_apex": 0.30,
-                "right_wrist_speed_turn": 0.25,
-                "right_wrist_acceleration_turn": 0.20,
-                "torso_rise": 0.15,
+                "right_wrist_elevation_apex": 0.25,
+                "right_wrist_speed_turn": 0.20,
+                "right_wrist_acceleration_turn": 0.15,
+                "torso_rise": 0.10,
                 "late_arm": 0.10,
+                "audio_transient": 0.20,
             }
         ),
         "finish": MappingProxyType(
@@ -675,6 +679,41 @@ def _extension_from_flexion(
     return out
 
 
+def _optional_series(track: KinematicWaveformTrack, channel: str) -> list[float | None]:
+    """Return a channel series, or all-``None`` when the track predates it.
+
+    Legacy 36-channel tracks carry no audio channels; the audio contact cue
+    is then honestly unavailable at every frame instead of raising.
+    """
+    try:
+        return list(track.channel_series(channel))
+    except Exception:
+        return [None] * len(track.samples)
+
+
+def _audio_transient_cue(
+    flags: Sequence[float | None], energies: Sequence[float | None]
+) -> list[float | None]:
+    """Derive the contact audio cue: explicit flag when available, else energy.
+
+    Per-frame preference is the binary ``audio_transient_flag`` (``1.0`` =
+    transient, ``0.0`` = no transient); frames where the flag is missing but
+    the continuous ``audio_transient_energy`` is available fall back to the
+    energy value. Frames with neither are honestly ``None`` (unavailable
+    without audio, never zero-filled). Non-finite entries are treated as
+    missing.
+    """
+    out: list[float | None] = []
+    for flag, energy in zip(flags, energies):
+        if flag is not None and math.isfinite(float(flag)):
+            out.append(float(flag))
+        elif energy is not None and math.isfinite(float(energy)):
+            out.append(float(energy))
+        else:
+            out.append(None)
+    return out
+
+
 def _extract_raw_cues(
     track: KinematicWaveformTrack,
 ) -> dict[str, dict[str, list[float | None]]]:
@@ -698,6 +737,9 @@ def _extract_raw_cues(
     speed_turn = list(_series(track, "right_wrist_speed_turning"))
     accel_turn = list(_series(track, "right_wrist_accel_turning"))
     settling = list(_series(track, "whole_body_settling_energy"))
+    audio_flags = _optional_series(track, "audio_transient_flag")
+    audio_energies = _optional_series(track, "audio_transient_energy")
+    audio_cue = _audio_transient_cue(audio_flags, audio_energies)
 
     left_elev_rise = _local_rise(left_elev, times)
     left_elbow_ext = _extension_from_flexion(elbow_left)
@@ -745,6 +787,7 @@ def _extract_raw_cues(
             "right_wrist_acceleration_turn": list(accel_turn),
             "torso_rise": list(torso),
             "late_arm": list(wrist_dist),
+            "audio_transient": list(audio_cue),
         },
         "finish": {
             "whole_body_settling": list(stillness_raw),
@@ -1196,6 +1239,8 @@ def _validate_track(name: str, track: Any) -> KinematicWaveformTrack:
         "right_wrist_speed_turning",
         "right_wrist_accel_turning",
         "whole_body_settling_energy",
+        "audio_transient_energy",
+        "audio_transient_flag",
     ):
         if channel not in CHANNEL_INDEX:
             raise CompositeAnchorsError(

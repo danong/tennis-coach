@@ -397,8 +397,9 @@ def test_channel_inventory_and_units_are_versioned() -> None:
     assert kw.COORDINATE_CONVENTION_VERSION == "mediapipe-world-hip-centered-v1"
     assert kw.NORMALIZATION_VERSION == "torso-length-normalization-v1"
     assert kw.DERIVATIVE_METHOD_VERSION == "centered-nonuniform-pts-v1"
-    assert kw.NUM_CHANNELS == 36
-    assert len(kw.CHANNEL_NAMES) == 36
+    assert kw.NUM_CHANNELS == 38
+    assert len(kw.CHANNEL_NAMES) == 38
+    assert kw.CHANNEL_NAMES[-2:] == ("audio_transient_energy", "audio_transient_flag")
     assert set(kw.CHANNEL_UNITS) == set(kw.CHANNEL_NAMES)
     for required in (
         "knee_flexion_left",
@@ -417,6 +418,8 @@ def test_channel_inventory_and_units_are_versioned() -> None:
         "right_wrist_speed_turning",
         "right_wrist_accel_turning",
         "whole_body_settling_energy",
+        "audio_transient_energy",
+        "audio_transient_flag",
     ):
         assert required in kw.CHANNEL_INDEX
 
@@ -516,3 +519,101 @@ def test_input_validation() -> None:
         filtered_track.channel_series("no_such_channel")
     with pytest.raises(kw.KinematicWaveformsError, match="unknown channel"):
         filtered_track.samples[0].value("no_such_channel")
+
+
+# --- synthetic audio alignment / codec / missing audio --------------------------
+
+
+def _audio_positions() -> tuple[int, int]:
+    return (
+        kw.CHANNEL_INDEX["audio_transient_energy"],
+        kw.CHANNEL_INDEX["audio_transient_flag"],
+    )
+
+
+def test_synthetic_audio_alignment_places_energy_and_peak_flag() -> None:
+    count = 30
+    filtered = _constant_track(count)
+    times = [s.time_seconds for s in filtered.samples]
+    energies: list[float | None] = [0.02] * count
+    energies[15] = 0.90  # synthetic transient spike at one PTS
+    track = kw.build_kinematic_waveform_track(filtered, audio_energies=energies)
+    epos, fpos = _audio_positions()
+    assert track.channel_series("audio_transient_energy") == tuple(energies)
+    assert [s.time_seconds for s in track.samples] == times
+    # Peak-picked flag: strict local maximum fires exactly at the spike.
+    assert track.samples[15].channel_values[fpos] == 1.0
+    assert track.samples[15].channel_available[fpos] is True
+    assert track.samples[14].channel_values[fpos] == 0.0
+    assert track.samples[16].channel_values[fpos] == 0.0
+    # Edges can never carry a derived flag (no full triple).
+    assert track.samples[0].channel_values[fpos] is None
+    assert track.samples[count - 1].channel_values[fpos] is None
+    assert track.samples[0].channel_available[fpos] is False
+    # Energy availability/quality/uncertainty mirror honest support.
+    assert track.samples[15].channel_available[epos] is True
+    assert track.samples[15].channel_quality[epos] == pytest.approx(1.0)
+    assert track.samples[15].channel_uncertainty_seconds[epos] >= 0.0
+
+
+def test_audio_explicit_flag_pairs_and_audioenergy_objects_align() -> None:
+    count = 10
+    filtered = _constant_track(count)
+    times = [s.time_seconds for s in filtered.samples]
+    pairs = [(0.05, 0.0)] * count
+    pairs[4] = (0.70, 1.0)
+    track = kw.build_kinematic_waveform_track(filtered, audio_energies=pairs)
+    epos, fpos = _audio_positions()
+    assert track.samples[4].channel_values[epos] == pytest.approx(0.70)
+    assert track.samples[4].channel_values[fpos] == 1.0
+    assert track.samples[3].channel_values[fpos] == 0.0
+    # AudioEnergy-like objects must match PTS one-for-one in order.
+    from serve_review.media.audio import AudioEnergy as _AE
+
+    aligned = [_AE(time_seconds=t, energy=(0.80 if i == 6 else 0.03)) for i, t in enumerate(times)]
+    track2 = kw.build_kinematic_waveform_track(filtered, audio_energies=aligned)
+    assert track2.samples[6].channel_values[epos] == pytest.approx(0.80)
+    assert track2.samples[6].channel_values[fpos] == 1.0
+    # Alias spelling carries the same payload.
+    track3 = kw.build_kinematic_waveform_track(filtered, audio=list(aligned))
+    assert track3.to_dict() == track2.to_dict()
+    # Misaligned time raises rather than silently shifting support.
+    shifted = [_AE(time_seconds=t + 0.5, energy=0.10) for t in times]
+    with pytest.raises(kw.KinematicWaveformsError, match="[Aa]lign|match"):
+        kw.build_kinematic_waveform_track(filtered, audio_energies=shifted)
+
+
+def test_audio_codec_roundtrip_and_missing_audio_is_unavailable() -> None:
+    filtered = _constant_track(12)
+    epos, fpos = _audio_positions()
+    # Absent audio: both channels unavailable on every sample, never zero.
+    silent = kw.build_kinematic_waveform_track(filtered)
+    for sample in silent.samples:
+        assert sample.channel_values[epos] is None
+        assert sample.channel_values[fpos] is None
+        assert sample.channel_available[epos] is False
+        assert sample.channel_available[fpos] is False
+        assert sample.channel_quality[epos] == 0.0
+        assert sample.channel_quality[fpos] == 0.0
+    assert silent.channel_series("audio_transient_energy") == (None,) * 12
+    # Present audio round-trips deterministically through both codecs.
+    energies = [0.04 + 0.01 * (i % 3) for i in range(12)]
+    energies[7] = 0.95
+    loud = kw.build_kinematic_waveform_track(filtered, audio_energies=energies)
+    assert kw.KinematicWaveformTrack.from_dict(loud.to_dict()) == loud
+    assert kw.KinematicWaveformTrack.from_json(loud.to_json()) == loud
+    assert kw.build_kinematic_waveform_track(filtered, audio_energies=energies).to_json() == loud.to_json()
+    assert loud.samples[7].channel_values[fpos] == 1.0
+    # Partial Nones stay missing without fabrication.
+    gapped = list(energies)
+    gapped[5] = None
+    partial = kw.build_kinematic_waveform_track(filtered, audio_energies=gapped)
+    assert partial.samples[5].channel_values[epos] is None
+    assert partial.samples[5].channel_available[epos] is False
+    # Misaligned shapes and invalid values raise.
+    with pytest.raises(kw.KinematicWaveformsError, match="exactly one|per filtered"):
+        kw.build_kinematic_waveform_track(filtered, audio_energies=[0.1] * 3)
+    with pytest.raises(kw.KinematicWaveformsError, match="energy"):
+        kw.build_kinematic_waveform_track(filtered, audio_energies=[-0.5] * 12)
+    with pytest.raises(kw.KinematicWaveformsError, match="flag"):
+        kw.build_kinematic_waveform_track(filtered, audio_energies=[(0.1, 2.0)] * 12)

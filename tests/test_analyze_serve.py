@@ -460,7 +460,7 @@ def test_missing_wrist_support_skips_honestly(
     assert diagnostics["derived"]["deceleration"]["status"] == "skipped"
     contact_record = diagnostics["selected"]["contact"]
     assert contact_record["status"] == "selected"
-    assert contact_record["coverage"] == pytest.approx(0.15)
+    assert contact_record["coverage"] == pytest.approx(0.10)
 
 
 def test_outputs_are_deterministic(tmp_path: Path, no_legacy_sparse: None) -> None:

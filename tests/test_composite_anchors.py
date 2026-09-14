@@ -40,8 +40,10 @@ def _make_track(
     base = _blank_series(count, 0.5)
     # Sensible neutral defaults per channel family so tests control cues.
     for name in kw.CHANNEL_NAMES:
-        if name in ("right_wrist_speed_turning", "right_wrist_accel_turning"):
+        if name in ("right_wrist_speed_turning", "right_wrist_accel_turning", "audio_transient_flag"):
             base[name] = [0.0] * count
+        elif name in ("audio_transient_energy",):
+            base[name] = [0.1] * count
         elif name in ("shoulder_tilt_deg", "hip_tilt_deg"):
             base[name] = [0.0] * count
         elif name in ("knee_flexion_left", "knee_flexion_right"):
@@ -116,11 +118,12 @@ def test_default_weights_match_exact_initial_generic_values() -> None:
         "loading_unwind": 0.25,
     }
     assert dict(config.weight_for("contact")) == {
-        "right_wrist_elevation_apex": 0.30,
-        "right_wrist_speed_turn": 0.25,
-        "right_wrist_acceleration_turn": 0.20,
-        "torso_rise": 0.15,
+        "right_wrist_elevation_apex": 0.25,
+        "right_wrist_speed_turn": 0.20,
+        "right_wrist_acceleration_turn": 0.15,
+        "torso_rise": 0.10,
         "late_arm": 0.10,
+        "audio_transient": 0.20,
     }
     assert dict(config.weight_for("finish")) == {
         "whole_body_settling": 0.45,
@@ -333,6 +336,8 @@ def test_fully_missing_support_is_honest_zero() -> None:
         "right_wrist_speed_turning": [None] * count,
         "right_wrist_accel_turning": [None] * count,
         "whole_body_settling_energy": [None] * count,
+        "audio_transient_energy": [None] * count,
+        "audio_transient_flag": [None] * count,
     }
     track = _make_track(times, overrides)
     anchor_set = ca.build_composite_anchor_set(track)
@@ -469,3 +474,65 @@ def test_synthetic_geometry_waveform_pts_flows_verbatim() -> None:
         assert [c.timestamp_ms for c in anchor_set.for_stage(stage)] == [
             s.timestamp_ms for s in wave.samples
         ]
+
+
+# --- contact scoring with/without the audio cue ---------------------------------
+
+
+def test_contact_audio_cue_unavailable_without_audio() -> None:
+    count = 12
+    times = _times(count)
+    # No audio channels available -> audio cue honestly missing everywhere.
+    silent = _make_track(
+        times,
+        {
+            "audio_transient_energy": [None] * count,
+            "audio_transient_flag": [None] * count,
+        },
+    )
+    rows = ca.build_composite_anchor_set(silent).for_stage("contact")
+    for candidate in rows:
+        assert candidate.cue_values["audio_transient"] is None
+    # Mean available weight without the 0.20 audio cue is 0.80.
+    for candidate in rows:
+        assert candidate.coverage == pytest.approx(0.80, abs=1e-12)
+
+
+def test_contact_audio_cue_rewards_transient_and_shifts_score() -> None:
+    count = 21
+    times = _times(count)
+    dy = [1.0 - abs(i - 10) * 0.1 for i in range(count)]
+    # Identical body evidence; only the audio cue differs.
+    silent = _make_track(
+        times,
+        {
+            "right_wrist_rel_shoulder_dy": dy,
+            "audio_transient_energy": [None] * count,
+            "audio_transient_flag": [None] * count,
+        },
+    )
+    flags = [1.0 if 9 <= i <= 11 else 0.0 for i in range(count)]
+    energies = [0.10 + 0.80 * (1.0 - abs(i - 10) * 0.1) for i in range(count)]
+    loud = _make_track(
+        times,
+        {
+            "right_wrist_rel_shoulder_dy": dy,
+            "audio_transient_energy": energies,
+            "audio_transient_flag": flags,
+        },
+    )
+    silent_rows = ca.build_composite_anchor_set(silent).for_stage("contact")
+    loud_rows = ca.build_composite_anchor_set(loud).for_stage("contact")
+    # Flag-preferred cue normalizes the lone spike to 1.0 at contact.
+    assert loud_rows[10].cue_values["audio_transient"] == pytest.approx(1.0)
+    assert loud_rows[0].cue_values["audio_transient"] == pytest.approx(0.0)
+    assert all(c.cue_values["audio_transient"] is None for c in silent_rows)
+    # Full coverage with audio; reduced without.
+    assert loud_rows[10].coverage == pytest.approx(1.0, abs=1e-12)
+    assert silent_rows[10].coverage == pytest.approx(0.80, abs=1e-12)
+    # The coincident transient deterministically raises the contact score.
+    assert loud_rows[10].score > silent_rows[10].score
+    # Diagnostic helper exposes the same normalized cue series.
+    normalized = ca.compute_composite_anchor_scores(loud)["contact"]["audio_transient"]
+    assert normalized[10] == pytest.approx(1.0)
+    assert normalized[0] == pytest.approx(0.0)
