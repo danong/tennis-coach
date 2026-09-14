@@ -45,7 +45,7 @@ Give Tau a concise task specification outside the repository that names the outc
 | M4.8 | done | direct/Tau history | `91865adf` lineage | segment-safe order-4, 12 Hz SOS world-track filter |
 | M4.9 | done | direct/Tau history | `91865adf` lineage | 3D waveform matrix, corrected vertical convention, aligned audio channels |
 | M4.10 | done | direct/Tau history | `c5449dcf` | composite six anchors, DP integration, start/contact/finish development calibration |
-| M4.11 | in progress | — | — | freeze configuration, one second-development-exemplar confirmation, then one held-out gate |
+| M4.11 | confirmation accepted; held-out pending | direct | `ec2c5b1b` configuration baseline | frozen configuration passed no-change second-development-exemplar review; one held-out gate remains |
 
 ## M1 — Trusted media path
 
@@ -294,7 +294,8 @@ M3 improvement is out of scope for this M4 remediation. This remediation neither
 - The dense 3D path corrected the earlier contact failure: the selected contact is audio-supported near the manually labeled impact rather than the later arm-down state. Current development calibration also prioritizes start arm-low/stillness, uses right-wrist speed trough for finish, and caps M4 `contact -> finish` at `0.80 s`. These are development settings, not held-out claims.
 - A cache-reuse smoke check reports `cache_hit=True` and `inferred_frames=0`; backend initialization remains necessary to validate model/cache identity.
 - Remaining deliberate deferrals are timestamp-uniform filter resampling, 3D geometry reliability/angle-quality gating, arbitrary-time audit presentation, sparse stage-specific event eligibility, robust first-post-contact-trough finish selection, and any formally approved 2D observation-quality contract.
-- **Next gate:** freeze this configuration, confirm it once on the second frozen development exemplar, and inspect the resulting review/diagnostics. Only then may one session-disjoint held-out run occur; do not tune afterward.
+- **Confirmation:** the frozen configuration was run once without changes on the second frozen development exemplar and passed owner visual review. Do not tune afterward.
+- **Next gate:** one session-disjoint held-out run may now occur. Inspect its review/diagnostics and report the result without changing configuration.
 
 ### M4.7 — Native 3D kinematic track
 
@@ -323,9 +324,9 @@ M3 improvement is out of scope for this M4 remediation. This remediation neither
 
 ### M4.11 — Frozen development and held-out gate
 
-- **Objective:** freeze the current versioned 3D waveform/composite/serve-solver configuration, confirm once on the second frozen development exemplar, then run once on session-disjoint held-out footage if confirmation is accepted.
+- **Objective:** frozen configuration confirmed once without changes on the second development exemplar; run once on session-disjoint held-out footage.
 - **Dependency:** M4.10.
-- **Exit:** ignored diagnostic/evaluation artifacts document the frozen identities, confirmation review, no-post-confirmation tuning, review of anomalies, and the one held-out result.
+- **Exit:** ignored diagnostic/evaluation artifacts document frozen identities, accepted confirmation review, no-post-confirmation tuning, review of anomalies, and the one held-out result.
 
 ## Completion rules
 

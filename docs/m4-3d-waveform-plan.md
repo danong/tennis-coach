@@ -1,6 +1,6 @@
 # M4 3D Kinematic Waveform Remediation
 
-> **Status:** implemented 3D production path; development calibration is in progress. This supersedes the 2D sparse-feature repair sequence in `m4-remediation-plan.md`. M3 improvement, including use of phase coherence to reduce false positives, is explicitly out of scope here; frozen development annotations remain the only tuning evidence; held-out footage remains unread until configuration is frozen.
+> **Status:** implemented 3D production path; development configuration frozen and second-exemplar confirmation accepted. This supersedes the 2D sparse-feature repair sequence in `m4-remediation-plan.md`. M3 improvement, including use of phase coherence to reduce false positives, is explicitly out of scope here; frozen development annotations remain the only tuning evidence; held-out footage remains unread pending its one permitted evaluation run.
 
 ## Goal
 
@@ -80,7 +80,7 @@ A derived stage is unavailable when either bounding anchor is unavailable. Its c
 
 Native world caching, filtering, waveform construction, composite anchors, six-anchor DP integration, checkpoint writing, diagnostics, and source-frame review are implemented through `serve-review analyze-serve VIDEO`. Current calibration evidence is development-only; it is not held-out performance and does not complete the confirmation gate.
 
-Before a held-out run, freeze the configuration and run the frozen second development exemplar once. Do not tune afterward. Deferred work, deliberately not folded into the current production path, is:
+The configuration is frozen after direct calibration on the first development exemplar and an accepted no-change confirmation run on the second. Do not tune afterward. Deferred work, deliberately not folded into the current production path, is:
 
 1. timestamp-uniform filtering with evaluation back at exact PTS;
 2. 3D geometry reliability/limb-length consistency and angle-quality gating;
@@ -88,6 +88,6 @@ Before a held-out run, freeze the configuration and run the frozen second develo
 4. sparse stage-specific event eligibility, including a low-before-sustained-rise start and first meaningful post-contact wrist trough finish;
 5. a formally approved companion-2D observation-quality contract, if desired. Normalized 2D coordinates remain overlay-only unless that contract is explicitly revised.
 
-Only after frozen development confirmation is acceptable may the pipeline run once on session-disjoint held-out footage.
+The remaining gate is one session-disjoint held-out run. Its result must be reported without further tuning.
 
 Filtering, waveform construction, and candidate scoring may be in-memory analysis stages. Persist the reusable kinematic track, final checkpoints, and compact debug/review evidence rather than treating every intermediate representation as a separate user-facing pipeline artifact. Every development run retains exact PTS, candidate support, DP reconciliation, and manual-versus-selected review evidence.
