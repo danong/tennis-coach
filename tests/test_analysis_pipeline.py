@@ -981,3 +981,44 @@ def test_grid_config_identity_flows_to_features(tmp_path: Path) -> None:
         grid_fn=_grid,
     )
     assert seen["config"] is config
+
+
+# --- Shared transient helper matches the M3 legacy candidate times ---
+
+
+def test_shared_helper_matches_m3_legacy_candidate_times() -> None:
+    from serve_review.detection import decoder as decoder_module
+    from serve_review.media import audio as audio_module
+
+    bed = tuple(
+        AudioEnergy(time_seconds=t * 0.1, energy=0.01) for t in range(20)
+    )
+    spiked = list(bed)
+    spiked[10] = AudioEnergy(time_seconds=1.0, energy=0.20)
+    spiked = tuple(spiked)
+    config = DecoderConfig()
+    # The pipeline derivation is exactly the shared audio helper at the
+    # decoder ratio/floor contract: no second transient algorithm.
+    assert derive_contact_candidate_times(
+        spiked, config
+    ) == audio_module.qualify_audio_transients(
+        spiked, config.audio_transient_ratio, config.audio_transient_floor
+    )
+    assert derive_contact_candidate_times(spiked, config) == (1.0,)
+    # The M3 window check agrees with the shared qualification: the
+    # qualified transient validates near acceleration but not far away.
+    assert (
+        decoder_module._has_validating_transient(1.05, spiked, config) is True
+    )
+    assert (
+        decoder_module._has_validating_transient(5.0, spiked, config) is False
+    )
+    # Quiet sessions stay honestly empty through the same helper.
+    quiet = tuple(
+        AudioEnergy(time_seconds=t * 0.1, energy=0.005) for t in range(10)
+    )
+    assert derive_contact_candidate_times(quiet, config) == ()
+    assert audio_module.qualify_audio_transients(
+        quiet, config.audio_transient_ratio, config.audio_transient_floor
+    ) == ()
+    assert derive_contact_candidate_times((), config) == ()

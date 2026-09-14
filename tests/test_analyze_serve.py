@@ -965,3 +965,164 @@ def test_absent_flag_leaves_default_artifacts(
     assert list(result.review_dir.glob("manual-*.jpg")) == []
     html = result.index_html.read_text(encoding="utf-8")
     assert "manual" not in html.lower()
+
+
+# --- Shared transient policy supplies explicit waveform flags ---
+
+
+def _run_with_audio_hook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    audio_hook,
+    *,
+    no_legacy_sparse: None = None,
+    capture: dict | None = None,
+):
+    from serve_review.analyze_serve import run_analyze_serve as _run_fn
+    from serve_review.checkpoints import kinematic_waveforms as kw_module
+
+    if capture is not None:
+        real_build = kw_module.build_kinematic_waveform_track
+
+        def _spy(track, config=None, audio_energies=None, audio=None, **kwargs):
+            capture["audio_energies"] = audio_energies
+            capture["audio"] = audio
+            return real_build(
+                track, config, audio_energies=audio_energies, audio=audio
+            )
+
+        monkeypatch.setattr(kw_module, "build_kinematic_waveform_track", _spy)
+
+    video = tmp_path / "serve.mov"
+    video.write_bytes(b"fake-video-bytes")
+    backend = _FakeBackend()
+
+    def _sample(video_path: Path, moment: float, metadata: SourceMetadata):
+        return SampledFrame(
+            time_seconds=float(moment),
+            timestamp_ms=int(round(float(moment) * 1000)),
+            width=16,
+            height=16,
+            image=np.zeros((16, 16, 3), dtype=np.uint8),
+        )
+
+    def _encode(image: np.ndarray, dest: Path) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"fake-jpeg-bytes")
+
+    return _run_fn(
+        video,
+        output_dir=tmp_path / "output",
+        probe_fn=lambda path: _metadata(),
+        native_times_fn=lambda _v, s, e: tuple(
+            t for t in TIMES if t >= s - 1e-9 and t < e
+        ),
+        native_frame_factory=lambda remaining, _meta: _native_frames(
+            tuple(remaining)
+        ),
+        backend_factory=lambda: backend,
+        sample_frame_fn=_sample,
+        encode_jpeg_fn=_encode,
+        audio_energies_fn=audio_hook,
+    )
+
+
+def test_analyze_serve_supplies_explicit_shared_policy_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_legacy_sparse: None
+) -> None:
+    from serve_review.detection.decoder import DecoderConfig
+    from serve_review.media import audio as audio_module
+
+    # Rippled bed (every 0.03 row is a strict local energy maximum) plus
+    # one shared-policy spike: local peak-picking would flag ~14 rows,
+    # the shared session-relative policy qualifies exactly one.
+    energies = [0.03 if i % 2 else 0.02 for i in range(N_FRAMES)]
+    energies[15] = 0.90
+
+    def _rippled(video_path: Path, frame_times: tuple[float, ...]):
+        assert tuple(frame_times) == TIMES
+        return list(energies)
+
+    capture: dict = {}
+    result = _run_with_audio_hook(
+        tmp_path, monkeypatch, _rippled,
+        no_legacy_sparse=no_legacy_sparse, capture=capture,
+    )
+    supplied = capture["audio_energies"]
+    assert isinstance(supplied, list) and len(supplied) == N_FRAMES
+    # Every row carries an explicit 1/0 flag: the builder can never fall
+    # back to derived local maxima.
+    for entry in supplied:
+        assert isinstance(entry, (list, tuple)) and len(entry) == 2
+        assert entry[1] in (0.0, 1.0)
+    flags = [entry[1] for entry in supplied]
+    assert flags[15] == 1.0
+    assert sum(flags) == 1.0
+    # Ripple rows that strict local-maximum peak-picking would flag stay
+    # honestly 0.0 under the shared policy.
+    assert energies[13] > energies[12] and energies[13] > energies[14]
+    assert flags[13] == 0.0
+    assert [entry[0] for entry in supplied] == pytest.approx(energies)
+    # Flags equal the shared helper at DecoderConfig defaults.
+    defaults = DecoderConfig()
+    policy_audio = tuple(
+        audio_module.AudioEnergy(time_seconds=t, energy=e)
+        for t, e in zip(TIMES, energies)
+    )
+    qualified = audio_module.qualify_audio_transients(
+        policy_audio, defaults.audio_transient_ratio, defaults.audio_transient_floor
+    )
+    assert qualified == (TIMES[15],)
+    assert [TIMES[i] for i, flag in enumerate(flags) if flag == 1.0] == list(
+        qualified
+    )
+    # The qualified spike still supports contact through the audio cue.
+    phase = PhaseDocument.from_dict(
+        json.loads(result.checkpoints_path.read_text(encoding="utf-8"))
+    )[0]
+    assert phase.stages["contact"].availability == "available"
+    assert phase.stages["contact"].provenance == "body_pose_audio"
+
+
+def test_analyze_serve_silence_yields_explicit_zeros_safely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_legacy_sparse: None
+) -> None:
+    from serve_review.media import audio as audio_module
+
+    quiet = [0.005] * N_FRAMES
+
+    def _quiet(video_path: Path, frame_times: tuple[float, ...]):
+        return list(quiet)
+
+    capture: dict = {}
+    result = _run_with_audio_hook(
+        tmp_path, monkeypatch, _quiet,
+        no_legacy_sparse=no_legacy_sparse, capture=capture,
+    )
+    supplied = capture["audio_energies"]
+    assert isinstance(supplied, list) and len(supplied) == N_FRAMES
+    # No qualified transient: explicit 0.0 everywhere, never derived
+    # peaks, never missing, never a crash.
+    assert all(
+        isinstance(entry, (list, tuple))
+        and len(entry) == 2
+        and entry[1] == 0.0
+        for entry in supplied
+    )
+    assert [entry[0] for entry in supplied] == pytest.approx(quiet)
+    assert (
+        audio_module.qualify_audio_transients(
+            tuple(
+                audio_module.AudioEnergy(time_seconds=t, energy=e)
+                for t, e in zip(TIMES, quiet)
+            ),
+            5.0,
+            0.01,
+        )
+        == ()
+    )
+    phase = PhaseDocument.from_dict(
+        json.loads(result.checkpoints_path.read_text(encoding="utf-8"))
+    )[0]
+    assert phase.stages["contact"].availability == "available"
+    assert result.image_count == len(STAGE_ORDER)

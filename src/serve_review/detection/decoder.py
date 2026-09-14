@@ -81,7 +81,7 @@ from typing import Any, Sequence
 
 from serve_review.detection.features import FeatureFrame
 from serve_review.detection.ranges import CandidateRange
-from serve_review.media.audio import AudioEnergy
+from serve_review.media.audio import AudioEnergy, qualify_audio_transients
 
 __all__ = [
     "DECODER_SCHEMA_VERSION",
@@ -779,24 +779,6 @@ def _is_stillness_exit(frame: FeatureFrame, config: DecoderConfig) -> bool:
     return frame.overhead_evidence == 0.0
 
 
-def _session_baseline(audio: Sequence[AudioEnergy]) -> float:
-    """Return the session-median ``A_t`` baseline (robust to transients).
-
-    The median over every audio sample's energy; ``0.0`` for empty
-    input. A median (not a mean) keeps one narrow impact spike from
-    lifting its own baseline, so a real-scale 0.053 peak over a 0.009
-    bed validates at ratio ~5.9 while skirt-level peaks near the median
-    do not.
-    """
-    energies = sorted(sample.energy for sample in audio)
-    if not energies:
-        return 0.0
-    midpoint = len(energies) // 2
-    if len(energies) % 2 == 1:
-        return energies[midpoint]
-    return (energies[midpoint - 1] + energies[midpoint]) / 2.0
-
-
 def _has_validating_transient(
     accel_time: float,
     audio: Sequence[AudioEnergy],
@@ -804,24 +786,22 @@ def _has_validating_transient(
 ) -> bool:
     """Return True when a scale-invariant transient validates acceleration.
 
-    Scans every audio sample by source time: the peak energy with
-    ``|t - accel| <= window`` (1e-9 tolerance) validates when it clears
-    both the small absolute ``audio_transient_floor`` (near-silence
-    guard) and ``audio_transient_ratio`` times the session-median
-    baseline. Empty or missing audio yields False (unknown, never
-    fabricated).
+    Qualifies session-level transients with the shared
+    :func:`serve_review.media.audio.qualify_audio_transients` policy
+    (session-median baseline computed once, threshold
+    ``max(audio_transient_floor,
+    baseline * audio_transient_ratio)``) and returns True when a
+    qualified transient lies within ``|t - accel| <= audio_window``
+    (1e-9 tolerance). Empty or missing audio yields False (unknown,
+    never fabricated).
     """
-    peak: float | None = None
-    for sample in audio:
-        if abs(sample.time_seconds - accel_time) <= config.audio_window_seconds + 1e-9:
-            if peak is None or sample.energy > peak:
-                peak = sample.energy
-    if peak is None:
-        return False
-    if peak < config.audio_transient_floor:
-        return False
-    baseline = _session_baseline(audio)
-    return peak >= baseline * config.audio_transient_ratio
+    qualified = qualify_audio_transients(
+        tuple(audio),
+        float(config.audio_transient_ratio),
+        float(config.audio_transient_floor),
+    )
+    window = float(config.audio_window_seconds) + 1e-9
+    return any(abs(moment - accel_time) <= window for moment in qualified)
 
 
 def decode_sequence(

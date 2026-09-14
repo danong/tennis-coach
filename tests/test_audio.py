@@ -506,3 +506,78 @@ def test_maxpool_is_deterministic() -> None:
     assert [(a.time_seconds, a.energy) for a in first] == [
         (a.time_seconds, a.energy) for a in second
     ]
+
+
+# --- Shared scale-invariant transient qualification (M3 policy) ---
+
+
+def test_qualify_audio_transients_threshold_and_scale_invariance() -> None:
+    from serve_review.media.audio import qualify_audio_transients
+
+    base = tuple(AudioEnergy(time_seconds=t * 0.1, energy=0.01) for t in range(20))
+    spiked = list(base)
+    spiked[10] = AudioEnergy(time_seconds=1.0, energy=0.20)
+    spiked = tuple(spiked)
+    # Median bed 0.01, ratio 5.0, floor 0.01: threshold 0.05, spike only.
+    assert qualify_audio_transients(spiked, 5.0, 0.01) == (1.0,)
+    # Scaling every energy by 10x leaves the qualified set unchanged.
+    scaled = tuple(
+        AudioEnergy(time_seconds=a.time_seconds, energy=a.energy * 10.0)
+        for a in spiked
+    )
+    assert qualify_audio_transients(scaled, 5.0, 0.01) == (1.0,)
+    # Real phone scale: 0.053 peak over a 0.009 bed validates at ~5.9.
+    phone = tuple(
+        AudioEnergy(
+            time_seconds=t * 0.1, energy=(0.053 if t == 10 else 0.009)
+        )
+        for t in range(20)
+    )
+    assert qualify_audio_transients(phone, 5.0, 0.01) == (1.0,)
+    assert qualify_audio_transients(phone, 20.0, 0.01) == ()
+    assert qualify_audio_transients(spiked, 5.0, 0.01) == (
+        qualify_audio_transients(spiked, 5.0, 0.01)
+    )  # deterministic
+
+
+def test_qualify_audio_transients_silence_and_empty_are_safe() -> None:
+    from serve_review.media.audio import qualify_audio_transients
+
+    assert qualify_audio_transients((), 5.0, 0.01) == ()
+    assert qualify_audio_transients([], 5.0, 0.01) == ()
+    # Uniform bed below the near-silence floor: ratio alone would fire,
+    # the floor keeps the session honestly quiet.
+    quiet = tuple(
+        AudioEnergy(time_seconds=t * 0.1, energy=0.005) for t in range(10)
+    )
+    assert qualify_audio_transients(quiet, 5.0, 0.01) == ()
+    # Flat bed at/above the floor with no outlier: median equals the bed
+    # so ratio 5.0 excludes every row.
+    flat = tuple(
+        AudioEnergy(time_seconds=t * 0.1, energy=0.05) for t in range(10)
+    )
+    assert qualify_audio_transients(flat, 5.0, 0.01) == ()
+
+
+def test_qualify_audio_transients_rejects_invalid_inputs() -> None:
+    from serve_review.media.audio import qualify_audio_transients
+
+    good = tuple(AudioEnergy(time_seconds=t * 0.1, energy=0.01) for t in range(4))
+    with pytest.raises(AudioError, match="[Aa]udio"):
+        qualify_audio_transients("audio", 5.0, 0.01)  # type: ignore[arg-type]
+    with pytest.raises(AudioError, match="[Aa]udio"):
+        qualify_audio_transients(["x"], 5.0, 0.01)  # type: ignore[list-item]
+    with pytest.raises(AudioError, match="[Ss]trictly increasing"):
+        qualify_audio_transients(
+            [AudioEnergy(0.2, 0.1), AudioEnergy(0.2, 0.3)], 5.0, 0.01
+        )
+    with pytest.raises(AudioError, match="[Ss]trictly increasing"):
+        qualify_audio_transients(
+            [AudioEnergy(0.3, 0.1), AudioEnergy(0.2, 0.3)], 5.0, 0.01
+        )
+    for bad_ratio in (0, -1.0, float("nan"), float("inf"), "5", None, True):
+        with pytest.raises(AudioError, match="transient_ratio"):
+            qualify_audio_transients(good, bad_ratio, 0.01)  # type: ignore[arg-type]
+    for bad_floor in (-0.001, float("nan"), float("inf"), "0.01", None, True):
+        with pytest.raises(AudioError, match="transient_floor"):
+            qualify_audio_transients(good, 5.0, bad_floor)  # type: ignore[arg-type]

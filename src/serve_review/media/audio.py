@@ -61,6 +61,7 @@ __all__ = [
     "dense_audio_schedule",
     "iter_audio_energy",
     "probe_audio_stream",
+    "qualify_audio_transients",
     "rms_energy",
     "validate_audio_schedule",
     "validate_window_seconds",
@@ -826,3 +827,104 @@ def align_audio_maxpool(
                 best = sample.energy
         aligned.append(AudioEnergy(time_seconds=moment, energy=best))
     return tuple(aligned)
+
+
+def qualify_audio_transients(
+    audio: Sequence[AudioEnergy],
+    transient_ratio: float,
+    transient_floor: float,
+) -> tuple[float, ...]:
+    """Qualify scale-invariant audio transients (shared M3 policy).
+
+    The single transient qualification owned by this module and shared by
+    the M3 macro decoder, the M4.5 contact-candidate derivation, and the
+    ``analyze-serve`` 3D path. The session-median baseline is computed
+    once over every sample's energy (a median, not a mean, so one narrow
+    impact spike cannot lift its own baseline); the qualification
+    threshold is ``max(transient_floor, baseline * transient_ratio)``;
+    every sample whose energy reaches the threshold qualifies. Scaling
+    every energy by a constant factor leaves the qualified set unchanged
+    (up to the near-silence floor). Pure, deterministic, std-lib only.
+
+    Args:
+        audio: Session-level :class:`AudioEnergy` values in strictly
+            increasing source-time order (empty yields no candidates).
+        transient_ratio: Peak factor over the session-median baseline;
+            must be a finite number greater than zero (the decoder
+            contract owns the default).
+        transient_floor: Small absolute energy floor against
+            near-silence; must be a finite number greater than or equal
+            to zero (the decoder contract owns the default).
+
+    Returns:
+        Qualified source times in strictly increasing order, possibly
+        empty (honestly quiet sessions yield no candidates). Callers
+        needing per-row waveform flags use ``1.0`` at qualified times
+        and ``0.0`` elsewhere.
+
+    Raises:
+        AudioError: On a non-list/tuple series, a non-``AudioEnergy``
+            entry, non-strictly-increasing times, or an invalid
+            ratio/floor.
+    """
+    if isinstance(transient_ratio, bool) or not isinstance(
+        transient_ratio, (int, float)
+    ):
+        raise AudioError(
+            f"invalid transient_ratio: {transient_ratio!r}; "
+            "expected a finite number greater than zero."
+        )
+    ratio = float(transient_ratio)
+    if not math.isfinite(ratio) or ratio <= 0.0:
+        raise AudioError(
+            f"invalid transient_ratio: {transient_ratio!r}; "
+            "expected a finite number greater than zero."
+        )
+    if isinstance(transient_floor, bool) or not isinstance(
+        transient_floor, (int, float)
+    ):
+        raise AudioError(
+            f"invalid transient_floor: {transient_floor!r}; "
+            "expected a finite number greater than or equal to zero."
+        )
+    floor = float(transient_floor)
+    if not math.isfinite(floor) or floor < 0.0:
+        raise AudioError(
+            f"invalid transient_floor: {transient_floor!r}; "
+            "expected a finite number greater than or equal to zero."
+        )
+    if isinstance(audio, (AudioEnergy, str, bytes, bytearray)) or not isinstance(
+        audio, (list, tuple)
+    ):
+        raise AudioError(
+            "invalid audio: expected a list/tuple of AudioEnergy, "
+            f"got {type(audio).__name__}."
+        )
+    items = list(audio)
+    for entry in items:
+        if not isinstance(entry, AudioEnergy):
+            raise AudioError(
+                "invalid audio: every entry must be an AudioEnergy, "
+                f"got {type(entry).__name__}."
+            )
+    for earlier, later in zip(items, items[1:]):
+        if not later.time_seconds > earlier.time_seconds:
+            raise AudioError(
+                "invalid audio: times must be strictly increasing, "
+                f"got {earlier.time_seconds!r} followed by "
+                f"{later.time_seconds!r}."
+            )
+    if not items:
+        return ()
+    energies = sorted(sample.energy for sample in items)
+    midpoint = len(energies) // 2
+    if len(energies) % 2 == 1:
+        baseline = energies[midpoint]
+    else:
+        baseline = (energies[midpoint - 1] + energies[midpoint]) / 2.0
+    threshold = max(floor, baseline * ratio)
+    return tuple(
+        float(sample.time_seconds)
+        for sample in items
+        if float(sample.energy) >= threshold
+    )

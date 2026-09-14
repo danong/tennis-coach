@@ -64,7 +64,6 @@ from serve_review.checkpoints.phase_solver import (
     PHASE_SOLVER_METHOD_VERSION,
     PhaseSolverConfig,
 )
-from serve_review.detection import decoder as decoder_module
 from serve_review.detection.decoder import DecoderConfig
 from serve_review.domain import (
     STAGE_ORDER,
@@ -253,14 +252,14 @@ def derive_contact_candidate_times(
     """Derive session-relative contact candidate times from audio.
 
     This reuses the existing AV decoder's scale-invariant transient
-    policy: the session-median baseline (via the decoder's own
-    ``_session_baseline`` helper, robust to a narrow impact spike) and
-    the decoder configuration's ``audio_transient_ratio`` plus the
-    small ``audio_transient_floor`` against near-silence. Every
-    aligned sample whose energy clears both the floor and
-    ``ratio * baseline`` becomes a candidate time. No new absolute
-    threshold is introduced: scaling every energy by a constant factor
-    leaves the candidate set unchanged (up to the near-silence floor).
+    policy via the single shared helper
+    :func:`serve_review.media.audio.qualify_audio_transients` (robust
+    session-median baseline computed once; threshold
+    ``max(audio_transient_floor, baseline * audio_transient_ratio)``).
+    Every aligned sample whose energy clears the shared threshold
+    becomes a candidate time. No new absolute threshold is introduced:
+    scaling every energy by a constant factor leaves the candidate set
+    unchanged (up to the near-silence floor).
 
     Args:
         aligned_audio: Session-level aligned :class:`AudioEnergy`
@@ -279,33 +278,17 @@ def derive_contact_candidate_times(
             f"invalid decoder_config: {type(cfg).__name__}; "
             "expected DecoderConfig.",
         )
-    items = list(aligned_audio)
-    for entry in items:
-        if not isinstance(entry, AudioEnergy):
-            raise AnalyzeError(
-                "audio",
-                "invalid aligned audio: every entry must be an "
-                f"AudioEnergy, got {type(entry).__name__}.",
-            )
-    for earlier, later in zip(items, items[1:]):
-        if not later.time_seconds > earlier.time_seconds:
-            raise AnalyzeError(
-                "audio",
-                "invalid aligned audio: times must be strictly "
-                f"increasing, got {earlier.time_seconds!r} followed by "
-                f"{later.time_seconds!r}.",
-            )
-    if not items:
-        return ()
-    # Session-relative baseline owned by the decoder module so the
-    # transient policy cannot drift from the M3 cutting contract.
-    baseline = float(decoder_module._session_baseline(items))  # noqa: SLF001
-    threshold = max(float(cfg.audio_transient_floor), baseline * float(cfg.audio_transient_ratio))
-    return tuple(
-        float(sample.time_seconds)
-        for sample in items
-        if float(sample.energy) >= threshold
-    )
+    # Single shared transient policy: validation plus the
+    # session-relative threshold live in serve_review.media.audio so
+    # the M3 cutting contract cannot drift between callers.
+    try:
+        return audio_module.qualify_audio_transients(
+            tuple(aligned_audio),  # type: ignore[arg-type]
+            float(cfg.audio_transient_ratio),
+            float(cfg.audio_transient_floor),
+        )
+    except audio_module.AudioError as exc:
+        raise AnalyzeError("audio", f"invalid aligned audio: {exc}.") from exc
 
 
 def _unavailable_attempt_phase(

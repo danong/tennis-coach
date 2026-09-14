@@ -96,6 +96,7 @@ from serve_review.checkpoints.kinematic_waveforms import KinematicWaveformsConfi
 from serve_review.checkpoints.phase_solver import PhaseSolverConfig
 from serve_review.checkpoints.six_anchor_solver import SIX_ANCHOR_STAGES
 from serve_review.checkpoints.world_filter import WorldFilterConfig
+from serve_review.detection.decoder import DecoderConfig
 from serve_review.domain import (
     STAGE_ORDER,
     AttemptPhase,
@@ -625,6 +626,102 @@ def _build_index_html(
         f"{header}"
         f"{body}\n</table>\n</body></html>\n"
     )
+
+
+def _attach_shared_transient_flags(
+    aligned: Sequence[Any],
+    frame_times: Sequence[float],
+) -> list[Any]:
+    """Attach shared-policy explicit 1/0 flags to aligned audio rows.
+
+    Converts each aligned row to an ``(energy, flag)`` pair whose flag
+    comes from the single shared
+    :func:`serve_review.media.audio.qualify_audio_transients` policy
+    with ``DecoderConfig`` defaults (``1.0`` at qualified transient
+    times, ``0.0`` elsewhere), so the waveform builder never falls back
+    to strict local energy maxima. Rows without energy stay ``None``
+    (honestly unavailable). No threshold, baseline, or peak-picking
+    logic lives here: energy extraction only, qualification delegated.
+    """
+    defaults = DecoderConfig()
+    rows = list(aligned)
+    times = [float(moment) for moment in frame_times]
+    if len(rows) != len(times):
+        raise AnalyzeServeError(
+            "solve",
+            "aligned audio holds "
+            f"{len(rows)} row(s) for {len(times)} frame time(s); "
+            "audio must align one-for-one in order.",
+        )
+
+    def _row_energy(entry: Any) -> float | None:
+        if entry is None:
+            return None
+        if isinstance(entry, bool):
+            raise AnalyzeServeError(
+                "solve", f"invalid aligned audio energy: {entry!r}."
+            )
+        if isinstance(entry, (int, float)):
+            number = float(entry)
+            if not math.isfinite(number) or number < 0.0:
+                raise AnalyzeServeError(
+                    "solve",
+                    f"invalid aligned audio energy: {entry!r}.",
+                )
+            return number
+        if isinstance(entry, (list, tuple)) and len(entry) == 2:
+            raw = entry[0]
+            if raw is None:
+                return None
+            return _row_energy(raw)
+        if isinstance(entry, dict):
+            raw_energy: Any = None
+            found = False
+            for key in ("energy", "audio_energy", "value"):
+                if key in entry:
+                    raw_energy = entry[key]
+                    found = True
+                    break
+            if not found:
+                raise AnalyzeServeError(
+                    "solve",
+                    "aligned audio mappings must carry an 'energy' key.",
+                )
+            if raw_energy is None:
+                return None
+            return _row_energy(raw_energy)
+        energy_attr = getattr(entry, "energy", None)
+        if energy_attr is not None:
+            return _row_energy(energy_attr)
+        return _row_energy(float(entry))  # type: ignore[arg-type]
+
+    energies = [_row_energy(entry) for entry in rows]
+    present = tuple(
+        audio_module.AudioEnergy(time_seconds=moment, energy=energy)
+        for moment, energy in zip(times, energies)
+        if energy is not None
+    )
+    try:
+        qualified = set(
+            audio_module.qualify_audio_transients(
+                present,
+                float(defaults.audio_transient_ratio),
+                float(defaults.audio_transient_floor),
+            )
+        )
+    except audio_module.AudioError as exc:
+        raise AnalyzeServeError(
+            "solve", f"shared transient qualification failed: {exc}."
+        ) from exc
+    explicit: list[Any] = []
+    for moment, energy in zip(times, energies):
+        if energy is None:
+            explicit.append(None)
+        else:
+            explicit.append(
+                (float(energy), 1.0 if float(moment) in qualified else 0.0)
+            )
+    return explicit
 
 
 def _structural_status(availabilities: Sequence[str]) -> str:
@@ -1460,6 +1557,20 @@ def run_analyze_serve(
         except Exception:
             aligned_audio = None
             audio_status = "unavailable"
+        # Shared-policy explicit flags (never local maxima): qualify the
+        # aligned energies with the M3 session-relative policy at
+        # DecoderConfig defaults so the waveform flag channel carries
+        # the shared contract instead of derived local peaks.
+        if aligned_audio is not None:
+            try:
+                aligned_audio = _attach_shared_transient_flags(
+                    aligned_audio, tuple(expected)
+                )
+            except AnalyzeServeCancelled:
+                raise
+            except Exception:
+                aligned_audio = None
+                audio_status = "unavailable"
         try:
             track = waveforms_module.build_kinematic_waveform_track(
                 filtered, cfg_waveforms, audio_energies=aligned_audio
