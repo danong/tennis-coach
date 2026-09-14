@@ -32,6 +32,7 @@ from serve_review.workflow.workspace import (
     ensure_workspace,
     resolve_workspace,
 )
+from serve_review.workflow.status import project_status, render_human
 
 
 def _range(value: str) -> MediaRange:
@@ -80,6 +81,15 @@ def add_workflow_parsers(subparsers: Any) -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.set_defaults(handler=process_command)
 
+    status = subparsers.add_parser("status", help="show read-only workflow status")
+    status.add_argument("source", nargs="?", metavar="SOURCE")
+    status.add_argument("--workspace", type=Path, default=None)
+    selectors = status.add_mutually_exclusive_group()
+    selectors.add_argument("--session", metavar="SELECTOR")
+    selectors.add_argument("--collection", metavar="SELECTOR")
+    status.add_argument("--json", action="store_true", dest="json_output")
+    status.set_defaults(handler=status_command)
+
     # Organization commands deliberately remain thin wrappers around the
     # already-tested manifest stores.  They do not know anything about media
     # processing or artifact ownership.
@@ -90,6 +100,28 @@ def add_workflow_parsers(subparsers: Any) -> None:
     collection = subparsers.add_parser("collection", help="organize explicit collections")
     collection_parsers = collection.add_subparsers(dest="collection_command", required=True)
     _add_organization_parsers(collection_parsers, "collection")
+
+
+def status_command(args: argparse.Namespace) -> int:
+    """Render status without invoking any workflow producer or writer."""
+    try:
+        workspace = resolve_workspace(args.workspace)
+        kind = None
+        value = args.source
+        if args.source is not None and (args.session is not None or args.collection is not None):
+            raise ValueError("SOURCE, --session, and --collection are mutually exclusive")
+        if args.session is not None: kind, value = "session", args.session
+        elif args.collection is not None: kind, value = "collection", args.collection
+        if args.source is not None:
+            if args.source.startswith("source-"): kind = "source_id"
+            else: kind = "source_path"
+        document = project_status(workspace, kind, value)
+        if args.json_output: print(document.to_json(), end="")
+        else: print(render_human(document))
+        return 2 if document.errors else 0
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
 
 def _add_organization_parsers(parsers: Any, kind: str) -> None:

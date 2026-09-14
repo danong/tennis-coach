@@ -708,6 +708,121 @@ class WorkflowRunRecord:
             raise WorkflowRecordError(f"invalid workflow run JSON: {exc}.") from exc
 
 
+# DS2.10 read-only projection records.  These deliberately have no producer
+# semantics: a projection may say that evidence is absent or unusable, but it
+# never upgrades that evidence to an acceptance decision.
+STATUS_SCHEMA_VERSION = 1
+_STATUS_STATES = {"present", "missing", "corrupt", "stale", "unavailable", "unknown"}
+
+@dataclass(frozen=True, slots=True)
+class StatusValue:
+    state: str
+    reason: str | None = None
+    value: Any = None
+
+    def __post_init__(self) -> None:
+        if self.state not in _STATUS_STATES:
+            raise WorkflowRecordError("invalid status state")
+        if self.state != "present" and (not isinstance(self.reason, str) or not self.reason.strip()):
+            raise WorkflowRecordError("non-present status values require a reason")
+        if self.state == "present" and self.reason is not None and (not isinstance(self.reason, str) or not self.reason.strip()):
+            raise WorkflowRecordError("status reason must be nonblank")
+
+    def to_dict(self) -> dict[str, Any]:
+        result = {"state": self.state}
+        if self.reason is not None: result["reason"] = self.reason
+        if self.value is not None: result["value"] = self.value
+        return result
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "StatusValue":
+        if not isinstance(value, dict) or set(value) - {"state", "reason", "value"} or "state" not in value:
+            raise WorkflowRecordError("status value keys are invalid")
+        return cls(value["state"], value.get("reason"), value.get("value"))
+
+@dataclass(frozen=True, slots=True)
+class SourceStatus:
+    source_id: str
+    source_fingerprint: str
+    known_paths: tuple[str, ...]
+    source: StatusValue
+    sessions: tuple[str, ...]
+    collections: tuple[str, ...]
+    runs: StatusValue
+    latest_run: StatusValue
+    compatibility: StatusValue
+    checkpoints: StatusValue
+    cache: StatusValue
+    landing_paths: tuple[str, ...]
+    attempt_count: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_id, str) or _SOURCE_ID.fullmatch(self.source_id) is None: raise WorkflowRecordError("invalid status source_id")
+        fingerprint = _fingerprint(self.source_fingerprint)
+        if self.source_id != source_id_for_fingerprint(fingerprint):
+            raise WorkflowRecordError("status source_id does not match fingerprint")
+        for values in (self.known_paths, self.sessions, self.collections, self.landing_paths):
+            if not isinstance(values, tuple) or any(not isinstance(x, str) for x in values):
+                raise WorkflowRecordError("invalid status arrays")
+        if self.sessions != tuple(sorted(set(self.sessions))):
+            raise WorkflowRecordError("status sessions must be sorted and unique")
+        if self.collections != tuple(sorted(set(self.collections))):
+            raise WorkflowRecordError("status collections must be sorted and unique")
+        if self.landing_paths != tuple(sorted(set(self.landing_paths))):
+            raise WorkflowRecordError("status landing paths must be sorted and unique")
+        if isinstance(self.attempt_count, bool) or not isinstance(self.attempt_count, int) or self.attempt_count < 0: raise WorkflowRecordError("invalid attempt count")
+        for x in (self.source, self.runs, self.latest_run, self.compatibility, self.checkpoints, self.cache):
+            if not isinstance(x, StatusValue): raise WorkflowRecordError("invalid status value")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"source_id": self.source_id, "source_fingerprint": self.source_fingerprint, "known_paths": list(self.known_paths), "source": self.source.to_dict(), "sessions": list(self.sessions), "collections": list(self.collections), "runs": self.runs.to_dict(), "latest_run": self.latest_run.to_dict(), "compatibility": self.compatibility.to_dict(), "checkpoints": self.checkpoints.to_dict(), "cache": self.cache.to_dict(), "landing_paths": list(self.landing_paths), "attempt_count": self.attempt_count}
+
+    @classmethod
+    def from_dict(cls, v: Any) -> "SourceStatus":
+        keys = {"source_id","source_fingerprint","known_paths","source","sessions","collections","runs","latest_run","compatibility","checkpoints","cache","landing_paths","attempt_count"}
+        if not isinstance(v, dict) or set(v) != keys: raise WorkflowRecordError("source status keys are invalid")
+        if any(not isinstance(v[x], list) for x in ("known_paths","sessions","collections","landing_paths")): raise WorkflowRecordError("status arrays are required")
+        return cls(v["source_id"],v["source_fingerprint"],tuple(v["known_paths"]),StatusValue.from_dict(v["source"]),tuple(v["sessions"]),tuple(v["collections"]),StatusValue.from_dict(v["runs"]),StatusValue.from_dict(v["latest_run"]),StatusValue.from_dict(v["compatibility"]),StatusValue.from_dict(v["checkpoints"]),StatusValue.from_dict(v["cache"]),tuple(v["landing_paths"]),v["attempt_count"])
+
+@dataclass(frozen=True, slots=True)
+class StatusDocument:
+    schema_version: int
+    workspace: str
+    sources: tuple[SourceStatus, ...]
+    errors: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int) or self.schema_version != STATUS_SCHEMA_VERSION: raise WorkflowRecordError("unsupported status schema version")
+        if not isinstance(self.workspace, str) or not os.path.isabs(self.workspace) or os.path.normpath(self.workspace) != self.workspace: raise WorkflowRecordError("invalid status workspace")
+        if not isinstance(self.sources, tuple) or any(not isinstance(x, SourceStatus) for x in self.sources): raise WorkflowRecordError("invalid status sources")
+        source_ids = tuple(x.source_id for x in self.sources)
+        if source_ids != tuple(sorted(set(source_ids))): raise WorkflowRecordError("status sources must be sorted and unique")
+        if not isinstance(self.errors, tuple) or any(not isinstance(x, str) or not x.strip() for x in self.errors) or self.errors != tuple(sorted(set(self.errors))): raise WorkflowRecordError("invalid status errors")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"schema_version": self.schema_version, "workspace": self.workspace, "sources": [x.to_dict() for x in self.sources], "errors": list(self.errors)}
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    @classmethod
+    def from_dict(cls, v: Any) -> "StatusDocument":
+        if not isinstance(v, dict) or set(v) != {"schema_version","workspace","sources","errors"} or not isinstance(v["sources"], list) or not isinstance(v["errors"], list): raise WorkflowRecordError("status document keys are invalid")
+        return cls(v["schema_version"],v["workspace"],tuple(SourceStatus.from_dict(x) for x in v["sources"]),tuple(v["errors"]))
+    @classmethod
+    def from_json(cls, data: str | bytes | bytearray) -> "StatusDocument":
+        def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError(f"duplicate object key {key!r}")
+                result[key] = value
+            return result
+        try:
+            if isinstance(data,(bytes,bytearray)): data=bytes(data).decode("utf-8")
+            return cls.from_dict(json.loads(data, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)), object_pairs_hook=pairs))
+        except (TypeError,UnicodeError,ValueError,WorkflowRecordError) as exc:
+            if isinstance(exc, WorkflowRecordError): raise
+            raise WorkflowRecordError(f"invalid status JSON: {exc}") from exc
+
 _LANDING_KINDS = {"clip", "compilation", "checkpoint", "review", "json", "diagnostic", "other"}
 _LANDING_STATUSES = {"available", "missing", "stale", "failed"}
 def _landing_path(value: Any) -> str:
