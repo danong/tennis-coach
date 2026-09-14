@@ -80,9 +80,174 @@ def add_workflow_parsers(subparsers: Any) -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.set_defaults(handler=process_command)
 
+    # Organization commands deliberately remain thin wrappers around the
+    # already-tested manifest stores.  They do not know anything about media
+    # processing or artifact ownership.
+    session = subparsers.add_parser("session", help="organize recording sessions")
+    session_parsers = session.add_subparsers(dest="session_command", required=True)
+    _add_organization_parsers(session_parsers, "session")
+
+    collection = subparsers.add_parser("collection", help="organize explicit collections")
+    collection_parsers = collection.add_subparsers(dest="collection_command", required=True)
+    _add_organization_parsers(collection_parsers, "collection")
+
+
+def _add_organization_parsers(parsers: Any, kind: str) -> None:
+    """Register the public session/collection grammar."""
+    names = ("list", "show", "create", "add", "remove", "tag")
+    if kind == "collection":
+        names += ("delete",)
+    for command in names:
+        p = parsers.add_parser(command)
+        p.add_argument("--workspace", type=Path, default=None)
+        if command == "list":
+            p.set_defaults(handler=organization_command, organization=kind, organization_action=command)
+        elif command in {"show", "create", "delete"}:
+            p.add_argument("selector_or_name")
+            p.set_defaults(handler=organization_command, organization=kind, organization_action=command)
+        elif command == "tag":
+            p.add_argument("selector")
+            p.add_argument("--tag", action="append", required=True)
+            p.set_defaults(handler=organization_command, organization=kind, organization_action=command)
+        elif command == "add":
+            p.add_argument("selector")
+            p.add_argument("videos", nargs=("*" if kind == "collection" else "+"), type=Path, metavar="VIDEO")
+            if kind == "collection":
+                p.add_argument("--attempt", action="append", default=[])
+            p.set_defaults(handler=organization_command, organization=kind, organization_action=command)
+        elif command == "remove":
+            p.add_argument("selector")
+            p.add_argument("--source", action="append", default=[])
+            if kind == "collection":
+                p.add_argument("--attempt", action="append", default=[])
+            p.set_defaults(handler=organization_command, organization=kind, organization_action=command)
+
 
 def _id(prefix: str) -> str:
     return prefix + secrets.token_hex(8)
+
+
+def _organization_error(exc: Exception) -> int:
+    print(f"ERROR: {exc}", file=sys.stderr)
+    return 2
+
+
+def _org_path(workspace: WorkspacePaths, kind: str, identifier: str) -> Path:
+    if kind == "session":
+        from serve_review.workflow.sessions import session_record_path
+        return session_record_path(workspace, identifier)
+    from serve_review.workflow.collections import collection_record_path
+    return collection_record_path(workspace, identifier)
+
+
+def _print_org(record: Any, kind: str, *, detail: bool = False) -> None:
+    ident = record.session_id if kind == "session" else record.collection_id
+    print(f"{ident} {record.display_name}")
+    if detail:
+        print(f"id: {ident}")
+        print(f"name: {record.display_name}")
+        print("tags: " + (" ".join(record.tags) if record.tags else "-"))
+        print("sources: " + (" ".join(record.source_ids) if record.source_ids else "-"))
+        if kind == "collection":
+            print("attempts: " + (" ".join(record.attempt_ids) if record.attempt_ids else "-"))
+    else:
+        members = len(record.source_ids) + (len(record.attempt_ids) if kind == "collection" else 0)
+        print(f"members: {members}")
+
+
+def _register_videos(args: argparse.Namespace, workspace: WorkspacePaths, services: dict[str, Any]) -> list[str]:
+    register = services.get("register_source", register_source)
+    ids: list[str] = []
+    for video in args.videos:
+        try:
+            kwargs = {"probe_fn": services["probe_fn"]} if "probe_fn" in services else {}
+            record = register(Path(video), workspace, **kwargs)
+            ids.append(record.source_id)
+            print(f"Registered: {record.source_id}")
+        except Exception as exc:
+            raise ValueError(f"registration failed for {video}: {exc}") from exc
+    return ids
+
+
+def organization_command(args: argparse.Namespace, *, services: dict[str, Any] | None = None) -> int:
+    """Run one session or explicit-collection command."""
+    services = {} if services is None else services
+    try:
+        workspace = resolve_workspace(args.workspace)
+        kind = args.organization
+        if kind == "session":
+            from serve_review.workflow import sessions as store
+            records_fn = services.get("list_sessions", store.list_sessions)
+            resolve_fn = services.get("resolve_session", store.resolve_session)
+        else:
+            from serve_review.workflow import collections as store
+            records_fn = services.get("list_collections", store.list_collections)
+            resolve_fn = services.get("resolve_collection", store.resolve_collection)
+
+        action = args.organization_action
+        if action == "list":
+            for record in records_fn(workspace):
+                _print_org(record, kind)
+            return 0
+        if action == "show":
+            record = resolve_fn(workspace, args.selector_or_name)
+            _print_org(record, kind, detail=True)
+            return 0
+        if action == "create":
+            factory = services.get(f"{kind}_id_factory", lambda: _id(kind + "-"))
+            creator = services.get("create_session", store.create_session) if kind == "session" else services.get("create_collection", store.create_collection)
+            record = creator(workspace, args.selector_or_name, id_factory=factory)
+            print(f"Created: {record.session_id if kind == 'session' else record.collection_id}")
+            print(f"Manifest: {_org_path(workspace, kind, record.session_id if kind == 'session' else record.collection_id)}")
+            return 0
+        if action == "delete":
+            record = resolve_fn(workspace, args.selector_or_name)
+            ident = record.collection_id
+            services.get("delete_collection", store.delete_collection)(workspace, ident)
+            print(f"Deleted: {ident}")
+            print(f"Manifest: {_org_path(workspace, kind, ident)}")
+            return 0
+        record = resolve_fn(workspace, args.selector)
+        ident = record.session_id if kind == "session" else record.collection_id
+        if action == "tag":
+            tags = tuple(sorted(set(record.tags).union(args.tag)))
+            tag_fn = (
+                services.get("set_session_tags", store.set_session_tags)
+                if kind == "session"
+                else services.get("set_collection_tags", store.set_collection_tags)
+            )
+            updated = tag_fn(workspace, ident, tags)
+        elif action == "add":
+            source_ids = _register_videos(args, workspace, services)
+            if kind == "session":
+                updated = record
+                for source_id in source_ids:
+                    updated = services.get("add_session_source", store.add_source)(workspace, ident, source_id)
+            else:
+                if not source_ids and not args.attempt:
+                    raise ValueError("collection add requires at least one VIDEO or --attempt reference")
+                updated = record
+                for source_id in source_ids:
+                    updated = services.get("add_collection_source", store.add_source)(workspace, ident, source_id)
+                for attempt_id in args.attempt:
+                    updated = services.get("add_collection_attempt", store.add_attempt)(workspace, ident, attempt_id)
+        elif action == "remove":
+            if not args.source and (kind != "collection" or not args.attempt):
+                raise ValueError("remove requires at least one --source or --attempt reference")
+            updated = record
+            for source_id in args.source:
+                updated = (services.get("remove_session_source", store.remove_source)(workspace, ident, source_id)
+                           if kind == "session" else services.get("remove_collection_source", store.remove_source)(workspace, ident, source_id))
+            if kind == "collection":
+                for attempt_id in args.attempt:
+                    updated = services.get("remove_collection_attempt", store.remove_attempt)(workspace, ident, attempt_id)
+        else:
+            raise ValueError(f"unsupported {kind} command {action}")
+        print(f"Updated: {ident}")
+        print(f"Manifest: {_org_path(workspace, kind, ident)}")
+        return 0
+    except Exception as exc:
+        return _organization_error(exc)
 
 
 def _kind(path: str) -> str:
