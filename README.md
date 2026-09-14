@@ -1,16 +1,22 @@
 # Serve Review
 
-A local command-line tool for finding serve attempts in long iPhone slow-motion recordings and exporting the useful footage without dead time.
+A local command-line tool for aiding the analysis of videos, ideally slow-motion recordings, of tennis serves.
 
-**Status:** M1–M3 cutting and export, pose extraction, detection, and evaluation are complete. M4 phase-analysis code and review tooling are implemented, but the current development phase-timing gate has failed and needs a narrow heuristic/chronology repair before held-out evaluation. A later iPhone application is out of the current roadmap.
+**Status:** Research and prototyping. 
 
 ## What we are building
 
-**Serve cutting:** pass one MOV/MP4 recording, context padding, and an output mode to produce either one gap-free serve compilation, one clip per serve, or both.
+### Complete
 
-**Checkpoint analysis:** after cutting is reliable, identify optional review moments such as loading, upward swing, estimated contact, follow-through, and landing. Racket/ball-dependent claims remain unavailable until supported by appropriate visual evidence.
+**Serve cutting:** From a video with multiple serves, detect serve attempts, cut out the intermediate footage, and produce either one gap-free serve compilation, one clip per serve, or both. Proven to work on 120 fps videos of my own serve filmed from the rear on a tripod.
 
-Everything runs locally. The project does not prescribe practice protocols, score technique, generate coaching, or estimate speed.
+**Checkpoint analysis:** From a video of a single serve, automatically detect the following checkpoints (8): start, release, loading, cocking, acceleration, contact, deceleration, finish. Note that while these stage names are taken from [An 8-Stage Model for Evaluating the Tennis Serve](https://pmc.ncbi.nlm.nih.gov/articles/PMC3445225/), the implemented definition and heuristics differ slightly. On my manually labeled serves, we achieved a MAE of ~70ms, which is generally good enough to be useful for analysis.
+
+### Future Work
+
+**iOS app:** Process, cut, and analyze videos from my phone directly on the tennis court.
+
+**Automated analysis:** Maybe some transformer based thing? TBD. 
 
 ## Documents
 
