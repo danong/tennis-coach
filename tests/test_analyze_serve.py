@@ -153,9 +153,15 @@ def no_legacy_sparse(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _present_audio_energies(video_path: Path, frame_times: tuple[float, ...]):
-    """Synthetic present-audio hook: quiet bed with one impact peak."""
+    """Synthetic present-audio hook: quiet bed with one impact peak.
+
+    The spike sits at index 5, the DP-selected contact for the constant
+    synthetic geometry, so the selected contact carries a strictly
+    positive audio cue (body_pose_audio); a spike elsewhere would lose
+    the DP tie-break to motion peaks and correctly stay body_pose.
+    """
     times = list(frame_times)
-    peak = len(times) // 2
+    peak = 5 if len(times) > 6 else len(times) // 2
     out: list[float] = []
     for index in range(len(times)):
         out.append(0.9 if index == peak else 0.01)
@@ -608,9 +614,9 @@ def _direct_candidate(
         cue_values=cues,
         provenance="kinematic_waveform",
         temporal_uncertainty_seconds=0.002,
-        method_version="composite-anchors-v1",
-        config_id="composite-anchors-default-v1",
-        schema_version=1,
+        method_version="composite-anchors-v2",
+        config_id="composite-anchors-default-v2",
+        schema_version=2,
     )
 
 
@@ -1037,7 +1043,7 @@ def test_analyze_serve_supplies_explicit_shared_policy_flags(
     # one shared-policy spike: local peak-picking would flag ~14 rows,
     # the shared session-relative policy qualifies exactly one.
     energies = [0.03 if i % 2 else 0.02 for i in range(N_FRAMES)]
-    energies[15] = 0.90
+    energies[5] = 0.90
 
     def _rippled(video_path: Path, frame_times: tuple[float, ...]):
         assert tuple(frame_times) == TIMES
@@ -1056,7 +1062,7 @@ def test_analyze_serve_supplies_explicit_shared_policy_flags(
         assert isinstance(entry, (list, tuple)) and len(entry) == 2
         assert entry[1] in (0.0, 1.0)
     flags = [entry[1] for entry in supplied]
-    assert flags[15] == 1.0
+    assert flags[5] == 1.0
     assert sum(flags) == 1.0
     # Ripple rows that strict local-maximum peak-picking would flag stay
     # honestly 0.0 under the shared policy.
@@ -1072,7 +1078,7 @@ def test_analyze_serve_supplies_explicit_shared_policy_flags(
     qualified = audio_module.qualify_audio_transients(
         policy_audio, defaults.audio_transient_ratio, defaults.audio_transient_floor
     )
-    assert qualified == (TIMES[15],)
+    assert qualified == (TIMES[5],)
     assert [TIMES[i] for i, flag in enumerate(flags) if flag == 1.0] == list(
         qualified
     )
@@ -1126,3 +1132,55 @@ def test_analyze_serve_silence_yields_explicit_zeros_safely(
     )[0]
     assert phase.stages["contact"].availability == "available"
     assert result.image_count == len(STAGE_ORDER)
+
+
+# --- M4 feature-correctness: strictly-positive audio provenance -----------------
+
+
+def _quiet_audio_energies(video_path: Path, frame_times: tuple[float, ...]):
+    """Synthetic present-but-quiet hook: constant bed, no qualified transient."""
+    return [0.01] * len(frame_times)
+
+
+def test_audio_cue_zero_gives_body_pose_while_one_gives_body_pose_audio(
+    tmp_path: Path, no_legacy_sparse: None
+) -> None:
+    from serve_review.analyze_serve import run_analyze_serve as _run_fn
+
+    # Quiet bed: shared qualification yields all-zero explicit flags, so the
+    # selected contact carries audio_transient == 0.0 -> body_pose.
+    video = tmp_path / "serve.mov"
+    video.write_bytes(b"fake-video-bytes")
+    backend = _FakeBackend()
+    result_quiet = _run_fn(
+        video,
+        output_dir=tmp_path / "output-quiet",
+        probe_fn=lambda path: _metadata(),
+        native_times_fn=lambda _v, s, e: tuple(t for t in TIMES if t >= s - 1e-9 and t < e),
+        native_frame_factory=lambda remaining, _meta: _native_frames(tuple(remaining)),
+        backend_factory=lambda: backend,
+        sample_frame_fn=lambda vp, m, md: SampledFrame(
+            time_seconds=float(m),
+            timestamp_ms=int(round(float(m) * 1000)),
+            width=16,
+            height=16,
+            image=__import__("numpy").zeros((16, 16, 3), dtype=__import__("numpy").uint8),
+        ),
+        encode_jpeg_fn=lambda image, dest: (dest.parent.mkdir(parents=True, exist_ok=True), dest.write_bytes(b"fake-jpeg-bytes")),
+        audio_energies_fn=_quiet_audio_energies,
+    )
+    quiet_phase = PhaseDocument.from_dict(
+        __import__("json").loads(result_quiet.checkpoints_path.read_text(encoding="utf-8"))
+    )[0]
+    quiet_contact = quiet_phase.stages["contact"]
+    assert quiet_contact.provenance == "body_pose"
+
+    # Impact peak at the DP-selected index: selected contact carries
+    # audio_transient == 1.0 -> body_pose_audio.
+    result_loud, _ = _run(tmp_path, audio="present")
+    import json as _json
+    loud_doc = PhaseDocument.from_dict(
+        _json.loads(result_loud.checkpoints_path.read_text(encoding="utf-8"))
+    )
+    loud_contact = loud_doc[0].stages["contact"]
+    assert loud_contact.provenance == "body_pose_audio"

@@ -40,7 +40,7 @@ def _make_track(
     base = _blank_series(count, 0.5)
     # Sensible neutral defaults per channel family so tests control cues.
     for name in kw.CHANNEL_NAMES:
-        if name in ("right_wrist_speed_turning", "right_wrist_accel_turning", "audio_transient_flag"):
+        if name in ("right_wrist_speed_peak", "right_wrist_speed_trough", "right_wrist_accel_peak", "right_wrist_accel_trough", "audio_transient_flag"):
             base[name] = [0.0] * count
         elif name in ("audio_transient_energy",):
             base[name] = [0.1] * count
@@ -119,10 +119,10 @@ def test_default_weights_match_exact_initial_generic_values() -> None:
     }
     assert dict(config.weight_for("contact")) == {
         "right_wrist_elevation_apex": 0.25,
-        "right_wrist_speed_turn": 0.20,
-        "right_wrist_acceleration_turn": 0.15,
+        "right_wrist_speed_peak": 0.20,
+        "right_wrist_acceleration_peak": 0.15,
         "torso_rise": 0.10,
-        "late_arm": 0.10,
+        "right_arm_extension": 0.10,
         "audio_transient": 0.20,
     }
     assert dict(config.weight_for("finish")) == {
@@ -142,7 +142,7 @@ def test_config_immutable_versioned_and_json_roundtrip() -> None:
     with pytest.raises(Exception):
         config.config_id = "mutated"  # type: ignore[misc]
     payload = config.to_dict()
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == ca.COMPOSITE_ANCHORS_SCHEMA_VERSION
     assert payload["weights"]["start"]["left_arm_elevation_rise"] == 0.35
     assert payload["start"]["left_arm_elevation_rise"] == 0.35
     restored = ca.CompositeAnchorConfig.from_dict(payload)
@@ -333,8 +333,10 @@ def test_fully_missing_support_is_honest_zero() -> None:
         "right_wrist_rel_shoulder_distance": [None] * count,
         "right_wrist_speed": [None] * count,
         "right_wrist_acceleration": [None] * count,
-        "right_wrist_speed_turning": [None] * count,
-        "right_wrist_accel_turning": [None] * count,
+        "right_wrist_speed_peak": [None] * count,
+        "right_wrist_speed_trough": [None] * count,
+        "right_wrist_accel_peak": [None] * count,
+        "right_wrist_accel_trough": [None] * count,
         "whole_body_settling_energy": [None] * count,
         "audio_transient_energy": [None] * count,
         "audio_transient_flag": [None] * count,
@@ -536,3 +538,132 @@ def test_contact_audio_cue_rewards_transient_and_shifts_score() -> None:
     normalized = ca.compute_composite_anchor_scores(loud)["contact"]["audio_transient"]
     assert normalized[10] == pytest.approx(1.0)
     assert normalized[0] == pytest.approx(0.0)
+
+
+# --- M4 feature-correctness: flags, peaks, directional extension --------------
+
+
+def test_rare_single_audio_flag_retains_score_one() -> None:
+    # A rare [0, ..., 1, ..., 0] explicit flag must survive verbatim: the
+    # lone spike normalizes to 1.0 instead of collapsing to all zeros.
+    count = 21
+    times = _times(count)
+    flags = [0.0] * count
+    flags[10] = 1.0
+    track = _make_track(
+        times,
+        {
+            "audio_transient_energy": [0.05] * count,
+            "audio_transient_flag": flags,
+        },
+    )
+    normalized = ca.compute_composite_anchor_scores(track)["contact"]["audio_transient"]
+    assert normalized[10] == pytest.approx(1.0)
+    assert normalized[0] == pytest.approx(0.0)
+    rows = ca.build_composite_anchor_set(track).for_stage("contact")
+    assert rows[10].cue_values["audio_transient"] == pytest.approx(1.0)
+    assert rows[0].cue_values["audio_transient"] == pytest.approx(0.0)
+    # Energy-only fallback still normalizes continuously when no flag exists.
+    no_flag = _make_track(
+        times,
+        {
+            "audio_transient_energy": [0.05 + 0.05 * i for i in range(count)],
+            "audio_transient_flag": [None] * count,
+        },
+    )
+    fallback = ca.compute_composite_anchor_scores(no_flag)["contact"]["audio_transient"]
+    assert fallback[0] == pytest.approx(0.0)
+    assert fallback[-1] == pytest.approx(1.0)
+
+
+def test_low_valleys_do_not_receive_peak_flags_or_contact_reward() -> None:
+    # A strict local minimum must set trough=1/peak=0, never peak=1; contact
+    # rewards only the peak channel.
+    count = 9
+    times = _times(count)
+    speed = [3.0, 2.0, 1.0, 0.2, 1.0, 2.0, 3.0, 2.0, 3.0]
+    accel = [1.0, 1.0, 1.0, 0.1, 1.0, 1.0, 2.5, 1.0, 1.0]
+    track = _make_track(
+        times,
+        {
+            "right_wrist_speed": speed,
+            "right_wrist_acceleration": accel,
+            "right_wrist_speed_peak": [None] * count,
+            "right_wrist_speed_trough": [None] * count,
+            "right_wrist_accel_peak": [None] * count,
+            "right_wrist_accel_trough": [None] * count,
+        },
+    )
+    # Build the peak/trough flags directly through the waveform-independent
+    # helper path: emulate a track whose peak/trough channels are set by hand
+    # so the contact-cue wiring itself is under test.
+    peak = [0.0] * count
+    peak[6] = 1.0  # strict local speed maximum at index 6
+    trough = [0.0] * count
+    trough[3] = 1.0  # strict local speed minimum at index 3
+    accel_peak = [0.0] * count
+    accel_peak[6] = 1.0
+    wired = _make_track(
+        times,
+        {
+            "right_wrist_rel_shoulder_dy": [0.5] * count,
+            "right_wrist_rel_shoulder_distance": [0.8] * count,
+            "right_wrist_speed_peak": peak,
+            "right_wrist_speed_trough": trough,
+            "right_wrist_accel_peak": accel_peak,
+            "right_wrist_accel_trough": [0.0] * count,
+            "torso_rise": [0.2] * count,
+            "audio_transient_energy": [None] * count,
+            "audio_transient_flag": [None] * count,
+        },
+    )
+    rows = ca.build_composite_anchor_set(wired).for_stage("contact")
+    assert rows[6].cue_values["right_wrist_speed_peak"] == pytest.approx(1.0)
+    assert rows[3].cue_values["right_wrist_speed_peak"] == pytest.approx(0.0)
+    assert rows[6].score > rows[3].score
+
+
+def test_arm_down_extension_contributes_zero_arm_up_contributes() -> None:
+    # Same reach distance scores zero when the wrist is at/below the
+    # shoulder (dy <= 0) and positively when above (dy > 0).
+    count = 12
+    times = _times(count)
+    dy_down = [-0.5] * count
+    dy_up = [0.5] * count
+    dist = [0.9 + 0.01 * i for i in range(count)]
+    down = _make_track(
+        times,
+        {
+            "right_wrist_rel_shoulder_dy": dy_down,
+            "right_wrist_rel_shoulder_distance": dist,
+            "right_wrist_speed_peak": [0.0] * count,
+            "right_wrist_accel_peak": [0.0] * count,
+            "torso_rise": [0.2] * count,
+            "audio_transient_energy": [None] * count,
+            "audio_transient_flag": [None] * count,
+        },
+    )
+    up = _make_track(
+        times,
+        {
+            "right_wrist_rel_shoulder_dy": dy_up,
+            "right_wrist_rel_shoulder_distance": dist,
+            "right_wrist_speed_peak": [0.0] * count,
+            "right_wrist_accel_peak": [0.0] * count,
+            "torso_rise": [0.2] * count,
+            "audio_transient_energy": [None] * count,
+            "audio_transient_flag": [None] * count,
+        },
+    )
+    down_rows = ca.build_composite_anchor_set(down).for_stage("contact")
+    up_rows = ca.build_composite_anchor_set(up).for_stage("contact")
+    for candidate in down_rows:
+        assert candidate.cue_values["right_arm_extension"] == pytest.approx(0.0)
+    # Arm-up extension varies with reach and carries positive evidence.
+    assert any(
+        c.cue_values["right_arm_extension"] is not None
+        and c.cue_values["right_arm_extension"] > 0.0
+        for c in up_rows
+    )
+    assert "right_arm_extension" in ca.COMPOSITE_CUE_NAMES["contact"]
+    assert "late_arm" not in ca.COMPOSITE_CUE_NAMES["contact"]

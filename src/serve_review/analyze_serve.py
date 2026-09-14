@@ -44,8 +44,9 @@ Behavior:
   sequence. Demux/alignment failure or an absent audio stream is
   nonfatal and yields honestly unavailable audio channels. ``contact``
   uses ``body_pose_audio`` provenance iff the selected contact carries
-  an available supporting ``audio_transient`` cue, otherwise
-  ``body_pose``.
+  a strictly positive/true supporting ``audio_transient`` cue value
+  (``> 0``), otherwise ``body_pose``; a merely available ``0.0`` flag
+  never qualifies.
 - Writes a normal compatible ``checkpoints.json``
   (:class:`PhaseDocument`), a compact deterministic 3D diagnostic
   JSON, and a review directory with source-frame JPEGs plus a
@@ -1767,7 +1768,12 @@ def run_analyze_serve(
                 provenance = "body_pose"
                 if stage == "contact":
                     audio_cue = candidate.cue_values.get("audio_transient")
-                    if audio_cue is not None:
+                    if (
+                        audio_cue is not None
+                        and not isinstance(audio_cue, bool)
+                        and math.isfinite(float(audio_cue))
+                        and float(audio_cue) > 0.0
+                    ):
                         provenance = "body_pose_audio"
                     else:
                         provenance = "body_pose"
@@ -1934,8 +1940,9 @@ def run_analyze_serve(
             },
             "contact_note": (
                 "contact uses body_pose_audio provenance when the selected "
-                "contact carries an available supporting audio_transient cue, "
-                "otherwise body_pose; audio channels are unavailable without "
+                "contact carries a strictly positive audio_transient cue "
+                "(> 0), otherwise body_pose; a merely available 0.0 flag "
+                "never qualifies; audio channels are unavailable without "
                 "present raw-source audio."
             ),
             "coordinate_2d": "not_used",

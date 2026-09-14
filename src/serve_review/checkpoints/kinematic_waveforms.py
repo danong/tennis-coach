@@ -24,13 +24,17 @@ Versioned conventions (pinned in :class:`KinematicWaveformsConfig`):
 
 - Coordinate convention
   (``COORDINATE_CONVENTION_VERSION =
-  "mediapipe-world-hip-centered-v1"``): input axes are MediaPipe
+  "mediapipe-world-hip-centered-v2"``): input axes are MediaPipe
   ``pose_world_landmarks`` meters as stored by M4.7/M4.8
   (hip-centered, finite ``x``/``y``/``z``). Axes are preserved verbatim
   with no mirroring, rotation, or re-centering. ``+y`` is documented as
-  superior (up); ``+x``/``+z`` keep their stored MediaPipe sense and
-  only enter documented differences, distances, and transverse (``x/z``)
-  projections, so no handedness or viewpoint inference is required.
+  inferior (down, MediaPipe world sense); ``+x``/``+z`` keep their
+  stored MediaPipe sense and only enter documented differences,
+  distances, and transverse (``x/z``) projections, so no handedness or
+  viewpoint inference is required. Every vertical directional formula is
+  upward-positive by construction: upward elevation is
+  ``reference_y - joint_y`` (positive when the joint is above the
+  reference despite ``+y`` pointing down).
 - Normalization (``NORMALIZATION_VERSION =
   "torso-length-normalization-v1"``): every scalar distance, relative
   component, speed, acceleration, rise, elevation, and extension
@@ -41,7 +45,7 @@ Versioned conventions (pinned in :class:`KinematicWaveformsConfig`):
   ``min_body_length_m`` leave every normalized channel honestly
   unavailable (``None``); no fallback length and no cross-sample
   borrowing are ever used. Angles, angular velocities, and binary
-  turning-point indicators are not length-normalized (degrees,
+  peak/trough indicators are not length-normalized (degrees,
   degrees/second, and unitless flags respectively).
 - Derivative method (``DERIVATIVE_METHOD_VERSION =
   "centered-nonuniform-pts-v1"``): first derivatives use exact-PTS
@@ -69,7 +73,8 @@ Angles (numerically safe, documented):
   flexion. A right angle reads ``90`` under both conventions.
 - Tilt channels are ``asin(clamp(dy / length, -1, 1))`` in degrees over
   ``[-90, 90]``: ``0`` is level, positive means the left joint is
-  higher (``+y`` superior) than the right joint.
+  higher (``+y`` inferior/down, so left-above-right reads
+  ``right_y - left_y > 0``) than the right joint.
 - Transverse shoulder-hip separation is the unsigned angle in degrees
   over ``[0, 180]`` between the shoulder-axis and hip-axis projections
   onto the transverse (``x/z``) plane via ``acos(clamp(cos, -1, 1))``.
@@ -87,27 +92,36 @@ Missingness and quality propagation:
   weak support honestly caps the derived channel.
 - Base channel temporal uncertainty is ``max_j`` of the supporting
   filtered samples' ``temporal_uncertainty_seconds``.
-- Derivative/turning/settling channels combine the stencil members the
-  same way (quality ``min``, uncertainty ``max``) and are available
+- Derivative/peak/trough/settling channels combine the stencil members
+  the same way (quality ``min``, uncertainty ``max``) and are available
   only when the full stencil is qualified.
 
-Channel inventory (see :data:`CHANNEL_NAMES`, 38 channels):
+Channel inventory (see :data:`CHANNEL_NAMES`, 40 channels):
 
 - Bilateral knee/elbow flexion angles (deg) plus timestamp-aware first
   derivatives (deg/s).
 - Shoulder-line and hip-line tilt (deg); transverse shoulder-hip
-  separation (deg); torso and hip rise (body lengths, body-relative
-  vertical extents, not absolute court height, because MediaPipe world
-  is hip-centered per frame).
-- Left-arm elevation (body lengths, wrist-minus-shoulder vertical) and
-  extension (body lengths, shoulder-wrist reach).
+  separation (deg); torso and hip rise (body lengths, explicitly
+  upward-positive body-relative vertical extents
+  ``torso_rise = (hip_mid_y - shoulder_mid_y) / body_length`` and
+  ``hip_rise = (ankle_mid_y - hip_mid_y) / body_length`` with ``+y``
+  down, not absolute court height, because MediaPipe world is
+  hip-centered per frame and global translation is unsolved).
+- Left-arm elevation (body lengths, shoulder-minus-wrist vertical,
+  ``(shoulder_y - wrist_y) / body_length``, upward-positive with ``+y``
+  down) and extension (body lengths, shoulder-wrist reach).
 - Right wrist relative to right shoulder, right elbow, torso midpoint,
-  and pelvis midpoint: normalized ``dx``/``dy``/``dz`` components plus
-  normalized distance (body lengths each).
+  and pelvis midpoint: normalized ``dx``/``dz`` components are
+  ``wrist - reference`` while normalized ``dy`` is upward-positive
+  ``reference_y - wrist_y`` (body lengths each) plus normalized distance
+  (body lengths).
 - Right wrist speed (body lengths/s), acceleration (body lengths/s^2),
-  and velocity/acceleration turning-point indicators (strict local
-  extremum flags ``1.0``/``0.0`` over a qualified triple, ``None``
-  when the triple is not fully qualified).
+  and separate velocity/acceleration local-peak and local-trough
+  indicators (``*_peak`` is ``1.0`` at a strict local maximum, ``*_trough``
+  is ``1.0`` at a strict local minimum, ``0.0`` at other qualified
+  triples, ``None`` when the triple is not fully qualified). The v1
+  ambiguous ``*_turning`` channels (peak-or-valley) are removed in v2;
+  contact must reward only the peak channels, never trough valleys.
 - Whole-body post-contact settling proxy (velocity energy):
   mean squared normalized speed over 12 major joints
   (shoulders/elbows/wrists/hips/knees/ankles bilaterally),
@@ -145,11 +159,11 @@ __all__ = [
 ]
 
 #: Version of every kinematic-waveform schema in this module.
-KINEMATIC_WAVEFORMS_SCHEMA_VERSION = 1
+KINEMATIC_WAVEFORMS_SCHEMA_VERSION = 2
 #: Method identity recorded on every waveform track.
-KINEMATIC_WAVEFORMS_METHOD_VERSION = "kinematic-waveforms-v1"
+KINEMATIC_WAVEFORMS_METHOD_VERSION = "kinematic-waveforms-v2"
 #: Versioned coordinate-frame convention (axes preserved verbatim).
-COORDINATE_CONVENTION_VERSION = "mediapipe-world-hip-centered-v1"
+COORDINATE_CONVENTION_VERSION = "mediapipe-world-hip-centered-v2"
 #: Versioned body-length normalization policy.
 NORMALIZATION_VERSION = "torso-length-normalization-v1"
 #: Versioned derivative policy (centered nonuniform PTS differences).
@@ -159,8 +173,11 @@ ANGLE_UNIT = "degrees"
 #: Minimum plausible torso reference length in meters.
 DEFAULT_MIN_BODY_LENGTH_M = 1e-6
 
-#: Ordered channel inventory (38 named scalar channels; 36 body-kinematic
+#: Ordered channel inventory (40 named scalar channels; 38 body-kinematic
 #: plus 2 optional per-PTS audio-transient channels appended at the end).
+#: v2 replaces the two ambiguous v1 ``*_turning`` (peak-or-valley) channels
+#: with four explicit ``*_peak``/``*_trough`` channels; the old names are
+#: removed, not aliased.
 CHANNEL_NAMES: tuple[str, ...] = (
     "knee_flexion_left",
     "knee_flexion_right",
@@ -195,8 +212,10 @@ CHANNEL_NAMES: tuple[str, ...] = (
     "right_wrist_rel_pelvis_mid_distance",
     "right_wrist_speed",
     "right_wrist_acceleration",
-    "right_wrist_speed_turning",
-    "right_wrist_accel_turning",
+    "right_wrist_speed_peak",
+    "right_wrist_speed_trough",
+    "right_wrist_accel_peak",
+    "right_wrist_accel_trough",
     "whole_body_settling_energy",
     "audio_transient_energy",
     "audio_transient_flag",
@@ -253,7 +272,7 @@ _BODY_LENGTH_CHANNELS = frozenset(
 _BODY_LENGTH_PER_SEC_CHANNELS = frozenset({"right_wrist_speed"})
 _BODY_LENGTH_PER_SEC2_CHANNELS = frozenset({"right_wrist_acceleration"})
 _ENERGY_CHANNELS = frozenset({"whole_body_settling_energy"})
-_FLAG_CHANNELS = frozenset({"right_wrist_speed_turning", "right_wrist_accel_turning", "audio_transient_flag"})
+_FLAG_CHANNELS = frozenset({"right_wrist_speed_peak", "right_wrist_speed_trough", "right_wrist_accel_peak", "right_wrist_accel_trough", "audio_transient_flag"})
 #: Band-limited RMS audio transient energy channels (non-negative, full-scale
 #: RMS units; never body-length normalized). Honestly unavailable without audio.
 _AUDIO_ENERGY_CHANNELS = frozenset({"audio_transient_energy"})
@@ -389,7 +408,7 @@ class KinematicWaveformsConfig:
     torso-length reference against degenerate geometry.
     """
 
-    config_id: str = "kinematic-waveforms-default-v1"
+    config_id: str = "kinematic-waveforms-default-v2"
     coordinate_convention: str = COORDINATE_CONVENTION_VERSION
     normalization: str = NORMALIZATION_VERSION
     derivative_method: str = DERIVATIVE_METHOD_VERSION
@@ -1001,9 +1020,14 @@ def _interior_angle_deg(
 def _tilt_deg(
     left: tuple[float, float, float], right: tuple[float, float, float]
 ) -> float | None:
-    """Line tilt in degrees over ``[-90, 90]`` (positive = left higher)."""
+    """Line tilt in degrees over ``[-90, 90]`` (positive = left higher).
+
+    With ``+y`` downward (inferior), left-above-right means
+    ``left_y < right_y``, so the upward-positive rise is
+    ``dy = right_y - left_y``.
+    """
     dx = right[0] - left[0]
-    dy = left[1] - right[1]
+    dy = right[1] - left[1]
     dz = right[2] - left[2]
     length = math.sqrt(dx * dx + dy * dy + dz * dz)
     if not math.isfinite(length) or length <= 0.0:
@@ -1332,7 +1356,7 @@ def _derive_audio_flags(energies: list[float | None]) -> list[float | None]:
     Interior rows with a fully qualified triple carry ``1.0`` for a strict
     local maximum (louder than both neighbors) and ``0.0`` otherwise;
     edges, gaps, and isolated rows are honestly ``None`` (mirrors the
-    wrist turning-point stencil policy without fabricating support).
+    wrist peak/trough stencil policy without fabricating support).
     """
     count = len(energies)
     out: list[float | None] = [None] * count
@@ -1604,7 +1628,8 @@ def build_kinematic_waveform_track(
         ankle_mid = _midpoint(_get(row, _LEFT_ANKLE), _get(row, _RIGHT_ANKLE))
         torso_rise: float | None = None
         if shoulder_mid is not None and hip_mid is not None and length is not None:
-            torso_rise = (shoulder_mid[1] - hip_mid[1]) / scale
+            # Upward-positive with +y down: hip_above_shoulder reads positive.
+            torso_rise = (hip_mid[1] - shoulder_mid[1]) / scale
         _set_base(
             "torso_rise",
             row,
@@ -1614,7 +1639,8 @@ def build_kinematic_waveform_track(
         )
         hip_rise: float | None = None
         if hip_mid is not None and ankle_mid is not None and length is not None:
-            hip_rise = (hip_mid[1] - ankle_mid[1]) / scale
+            # Upward-positive with +y down: hip_above_ankle reads positive.
+            hip_rise = (ankle_mid[1] - hip_mid[1]) / scale
         _set_base(
             "hip_rise",
             row,
@@ -1633,7 +1659,8 @@ def build_kinematic_waveform_track(
         ):
             wrist = _get(row, _LEFT_WRIST) or (0.0, 0.0, 0.0)
             shoulder = _get(row, _LEFT_SHOULDER) or (0.0, 0.0, 0.0)
-            elevation = (wrist[1] - shoulder[1]) / scale
+            # Upward-positive with +y down: reference_y - joint_y.
+            elevation = (shoulder[1] - wrist[1]) / scale
             extension = _norm(_sub(wrist, shoulder)) / scale
         _set_base(
             "left_arm_elevation", row, elevation, (_LEFT_SHOULDER, _LEFT_WRIST),
@@ -1658,7 +1685,9 @@ def build_kinematic_waveform_track(
             distance: float | None = None
             if wrist is not None and ref is not None and length is not None:
                 diff = _sub(wrist, ref)
-                vector = (diff[0] / scale, diff[1] / scale, diff[2] / scale)
+                # Transverse (x/z) stay wrist-minus-reference; vertical dy is
+                # upward-positive reference_y - wrist_y because +y points down.
+                vector = (diff[0] / scale, (ref[1] - wrist[1]) / scale, diff[2] / scale)
                 distance = _norm(diff) / scale
             for axis, suffix in ((0, "dx"), (1, "dy"), (2, "dz")):
                 component = vector[axis] if vector is not None else None
@@ -1754,11 +1783,15 @@ def build_kinematic_waveform_track(
                 wrist_acc_uncertainty[row]
             )
 
-    # Turning-point indicators: strict local extrema over qualified triples.
+    # Local peak/trough indicators: strict local extrema over qualified
+    # triples. ``*_peak`` fires only at strict local maxima (high-motion
+    # bursts for contact); ``*_trough`` fires only at strict local minima
+    # (low-motion valleys, never rewarded by contact). Non-extremum
+    # qualified triples read 0.0; unqualified triples stay None.
     for row in range(count):
-        for series, vel_quality, vel_uncertainty, channel in (
-            (speed, wrist_vel_quality, wrist_vel_uncertainty, "right_wrist_speed_turning"),
-            (accel, wrist_acc_quality, wrist_acc_uncertainty, "right_wrist_accel_turning"),
+        for series, vel_quality, vel_uncertainty, peak_channel, trough_channel in (
+            (speed, wrist_vel_quality, wrist_vel_uncertainty, "right_wrist_speed_peak", "right_wrist_speed_trough"),
+            (accel, wrist_acc_quality, wrist_acc_uncertainty, "right_wrist_accel_peak", "right_wrist_accel_trough"),
         ):
             center = series[row]
             if (
@@ -1773,14 +1806,19 @@ def build_kinematic_waveform_track(
             curr = float(center)
             nxt = float(series[row + 1] or 0.0)
             is_peak = curr > prev and curr > nxt
-            is_valley = curr < prev and curr < nxt
-            base_values[channel][row] = 1.0 if (is_peak or is_valley) else 0.0
-            base_quality[channel][row] = min(
+            is_trough = curr < prev and curr < nxt
+            base_values[peak_channel][row] = 1.0 if is_peak else 0.0
+            base_values[trough_channel][row] = 1.0 if is_trough else 0.0
+            quality = min(
                 vel_quality[row - 1], vel_quality[row], vel_quality[row + 1]
             )
-            base_uncertainty[channel][row] = max(
+            uncertainty = max(
                 vel_uncertainty[row - 1], vel_uncertainty[row], vel_uncertainty[row + 1]
             )
+            base_quality[peak_channel][row] = quality
+            base_quality[trough_channel][row] = quality
+            base_uncertainty[peak_channel][row] = uncertainty
+            base_uncertainty[trough_channel][row] = uncertainty
 
     # --- Angle velocities (same nonuniform operator on flexion series) ---------
     for flexion_channel, velocity_channel in (

@@ -137,7 +137,8 @@ def test_relative_geometry_components_and_distance() -> None:
         dy = _value(track, row, "right_wrist_rel_shoulder_dy")
         dist = _value(track, row, "right_wrist_rel_shoulder_distance")
         assert dx == pytest.approx(1.0 / body, abs=0.02)
-        assert dy == pytest.approx(-1.0 / body, abs=0.02)
+        # +y down: upward-positive dy = reference_y - wrist_y = +1.0/body.
+        assert dy == pytest.approx(1.0 / body, abs=0.02)
         assert dist == pytest.approx(_math.hypot(1.0, 1.0) / body, abs=0.02)
 
 
@@ -151,10 +152,11 @@ def test_tilt_and_separation_on_level_geometry() -> None:
         assert _value(track, row, "shoulder_hip_separation_transverse_deg") == pytest.approx(
             0.0, abs=1.0
         )
-        # Canonical torso: shoulder_mid_y - hip_mid_y = 1.0, body = 1.0.
-        assert _value(track, row, "torso_rise") == pytest.approx(1.0, abs=0.02)
-        # Hip mid y=0, ankle mid y=-1 -> hip_rise = 1.0 body lengths.
-        assert _value(track, row, "hip_rise") == pytest.approx(1.0, abs=0.02)
+        # +y down, upward-positive: torso = (hip - shoulder)/body = -1.0,
+        # hip = (ankle - hip)/body = -1.0 for the canonical numbers.
+        assert _value(track, row, "torso_rise") == pytest.approx(-1.0, abs=0.02)
+        # Hip mid y=0, ankle mid y=-1 -> hip_rise = -1.0 body lengths.
+        assert _value(track, row, "hip_rise") == pytest.approx(-1.0, abs=0.02)
 
 
 def test_left_arm_elevation_and_extension() -> None:
@@ -162,8 +164,8 @@ def test_left_arm_elevation_and_extension() -> None:
     track = kw.build_kinematic_waveform_track(filtered)
     pad = _padlen(filtered)
     for row in range(pad, 40 - pad):
-        # wrist (-0.40,0.3,0) minus shoulder (-0.25,1.0,0) = (-0.15,-0.7,0).
-        assert _value(track, row, "left_arm_elevation") == pytest.approx(-0.7, abs=0.03)
+        # +y down, upward-positive: shoulder_y - wrist_y = 1.0-0.3 = +0.7.
+        assert _value(track, row, "left_arm_elevation") == pytest.approx(0.7, abs=0.03)
         assert _value(track, row, "left_arm_extension") == pytest.approx(
             math.hypot(0.15, 0.7), abs=0.03
         )
@@ -235,14 +237,23 @@ def test_turning_point_indicators_fire_on_oscillation() -> None:
     filtered = wf.build_filtered_world_track(frames)
     track = kw.build_kinematic_waveform_track(filtered)
     pad = _padlen(filtered)
-    flags = [_value(track, r, "right_wrist_speed_turning") for r in range(count)]
-    interior = flags[pad + 1 : count - pad - 1]
-    assert all(f in (0.0, 1.0) for f in interior)
-    assert any(f == 1.0 for f in interior)  # peaks/valleys detected
-    assert any(f == 0.0 for f in interior)
+    peaks = [_value(track, r, "right_wrist_speed_peak") for r in range(count)]
+    troughs = [_value(track, r, "right_wrist_speed_trough") for r in range(count)]
+    interior_peaks = peaks[pad + 1 : count - pad - 1]
+    interior_troughs = troughs[pad + 1 : count - pad - 1]
+    assert all(f in (0.0, 1.0) for f in interior_peaks)
+    assert all(f in (0.0, 1.0) for f in interior_troughs)
+    assert any(f == 1.0 for f in interior_peaks)  # speed maxima detected
+    assert any(f == 1.0 for f in interior_troughs)  # speed minima detected
+    assert any(f == 0.0 for f in interior_peaks)
+    # Peaks and troughs never coincide on the same qualified triple.
+    for peak, trough in zip(interior_peaks, interior_troughs):
+        assert not (peak == 1.0 and trough == 1.0)
     # Endpoints can never be extrema (no full triple).
-    assert _value(track, 0, "right_wrist_speed_turning") is None
-    assert _value(track, count - 1, "right_wrist_speed_turning") is None
+    assert _value(track, 0, "right_wrist_speed_peak") is None
+    assert _value(track, count - 1, "right_wrist_speed_peak") is None
+    assert _value(track, 0, "right_wrist_speed_trough") is None
+    assert _value(track, count - 1, "right_wrist_speed_trough") is None
 
 
 # --- missingness / quality propagation -----------------------------------------
@@ -295,9 +306,11 @@ def test_gap_breaks_derivative_stencil_honestly() -> None:
     # stay available; rows inside the gap (no support at all) do not.
     assert _value(track, 29, "right_wrist_speed") is not None
     assert _value(track, 56, "right_wrist_speed") is not None
-    # Turning flags need a full qualified triple: unavailable at boundaries.
-    assert _value(track, 29, "right_wrist_speed_turning") is None
-    assert _value(track, 56, "right_wrist_speed_turning") is None
+    # Peak/trough flags need a full qualified triple: unavailable at boundaries.
+    assert _value(track, 29, "right_wrist_speed_peak") is None
+    assert _value(track, 56, "right_wrist_speed_peak") is None
+    assert _value(track, 29, "right_wrist_speed_trough") is None
+    assert _value(track, 56, "right_wrist_speed_trough") is None
     # Far from the gap, speed is available again (constant pose -> ~0).
     far = _value(track, 70, "right_wrist_speed")
     assert far is not None and far == pytest.approx(0.0, abs=0.05)
@@ -392,13 +405,13 @@ def test_quality_reflects_edge_and_interpolated_support() -> None:
 
 
 def test_channel_inventory_and_units_are_versioned() -> None:
-    assert kw.KINEMATIC_WAVEFORMS_SCHEMA_VERSION == 1
-    assert kw.KINEMATIC_WAVEFORMS_METHOD_VERSION == "kinematic-waveforms-v1"
-    assert kw.COORDINATE_CONVENTION_VERSION == "mediapipe-world-hip-centered-v1"
+    assert kw.KINEMATIC_WAVEFORMS_SCHEMA_VERSION == 2
+    assert kw.KINEMATIC_WAVEFORMS_METHOD_VERSION == "kinematic-waveforms-v2"
+    assert kw.COORDINATE_CONVENTION_VERSION == "mediapipe-world-hip-centered-v2"
     assert kw.NORMALIZATION_VERSION == "torso-length-normalization-v1"
     assert kw.DERIVATIVE_METHOD_VERSION == "centered-nonuniform-pts-v1"
-    assert kw.NUM_CHANNELS == 38
-    assert len(kw.CHANNEL_NAMES) == 38
+    assert kw.NUM_CHANNELS == 40
+    assert len(kw.CHANNEL_NAMES) == 40
     assert kw.CHANNEL_NAMES[-2:] == ("audio_transient_energy", "audio_transient_flag")
     assert set(kw.CHANNEL_UNITS) == set(kw.CHANNEL_NAMES)
     for required in (
@@ -415,8 +428,10 @@ def test_channel_inventory_and_units_are_versioned() -> None:
         "left_arm_extension",
         "right_wrist_speed",
         "right_wrist_acceleration",
-        "right_wrist_speed_turning",
-        "right_wrist_accel_turning",
+        "right_wrist_speed_peak",
+        "right_wrist_speed_trough",
+        "right_wrist_accel_peak",
+        "right_wrist_accel_trough",
         "whole_body_settling_energy",
         "audio_transient_energy",
         "audio_transient_flag",
@@ -617,3 +632,44 @@ def test_audio_codec_roundtrip_and_missing_audio_is_unavailable() -> None:
         kw.build_kinematic_waveform_track(filtered, audio_energies=[-0.5] * 12)
     with pytest.raises(kw.KinematicWaveformsError, match="flag"):
         kw.build_kinematic_waveform_track(filtered, audio_energies=[(0.1, 2.0)] * 12)
+
+
+# --- M4 feature-correctness: +y-down vertical convention -----------------------
+
+
+def test_wrist_above_gives_positive_elevation_wrist_below_negative() -> None:
+    # +y down: elevation = (shoulder_y - wrist_y)/body. Wrist above the
+    # shoulder (smaller y) must read positive; below must read negative.
+    up = dict(BASE_POSITIONS)
+    up[15] = (-0.40, 0.2, 0.0)  # left wrist well above shoulder y=1.0
+    track_up = kw.build_kinematic_waveform_track(_constant_track(40, {15: up[15]}))
+    pad = _padlen(_constant_track(40))
+    row = 20
+    assert _value(track_up, row, "left_arm_elevation") is not None
+    assert float(_value(track_up, row, "left_arm_elevation")) > 0.0
+    down = dict(BASE_POSITIONS)
+    down[15] = (-0.40, 1.8, 0.0)  # wrist below shoulder
+    track_down = kw.build_kinematic_waveform_track(_constant_track(40, {15: down[15]}))
+    assert float(_value(track_down, row, "left_arm_elevation")) < 0.0
+    # Right-wrist dy follows the same upward-positive rule.
+    up_r = kw.build_kinematic_waveform_track(_constant_track(40, {16: (-0.40, 0.2, 0.0)}))
+    # right shoulder y=1.0, wrist y=0.2 -> dy = +0.8/body > 0.
+    assert float(_value(up_r, row, "right_wrist_rel_shoulder_dy")) > 0.0
+    down_r = kw.build_kinematic_waveform_track(_constant_track(40, {16: (0.40, 1.8, 0.0)}))
+    assert float(_value(down_r, row, "right_wrist_rel_shoulder_dy")) < 0.0
+
+
+def test_tilt_signs_match_y_down_convention() -> None:
+    # Left shoulder above right shoulder in the world means left_y < right_y
+    # with +y down; tilt must read positive (left higher).
+    overrides = {11: (-0.25, 0.8, 0.0), 12: (0.25, 1.2, 0.0)}
+    track = kw.build_kinematic_waveform_track(_constant_track(40, overrides))
+    row = 20
+    assert float(_value(track, row, "shoulder_tilt_deg")) > 0.0
+    flipped = {11: (-0.25, 1.2, 0.0), 12: (0.25, 0.8, 0.0)}
+    track2 = kw.build_kinematic_waveform_track(_constant_track(40, flipped))
+    assert float(_value(track2, row, "shoulder_tilt_deg")) < 0.0
+    # Same rule for the hip line.
+    hips_up = {23: (-0.15, -0.2, 0.0), 24: (0.15, 0.2, 0.0)}
+    track3 = kw.build_kinematic_waveform_track(_constant_track(40, hips_up))
+    assert float(_value(track3, row, "hip_tilt_deg")) > 0.0

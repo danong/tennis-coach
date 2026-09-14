@@ -28,6 +28,11 @@ Scoring contract:
   than two finite raw values, non-finite quantiles, or a quantile span
   ``<= 1e-9`` yields ``0.0`` for every available raw value (no
   discriminative evidence) rather than amplifying numerical noise.
+  Exception: the contact ``audio_transient`` cue never normalizes an
+  explicit binary flag (a rare ``[0, ..., 1, ..., 0]`` spike would
+  otherwise collapse to all zeros); explicit ``0.0``/``1.0`` flags pass
+  through verbatim and only flag-missing frames fall back to the
+  quantile-normalized continuous energy.
 - Coverage is the mean available cue weight
   (``sum(available weights) / sum(all weights)``) in ``[0, 1]``.
 - The unary score is the availability-weighted mean of the available
@@ -60,16 +65,23 @@ evidence after the documented orientation):
   ``left_arm`` (``left_arm_elevation``), ``right_elbow_flexion``
   (``elbow_flexion_right``), ``stillness``.
 - cocking: ``right_wrist_elevation_trough``
-  (``-right_wrist_rel_shoulder_dy``), ``right_wrist_acceleration``,
+  (``-right_wrist_rel_shoulder_dy`` with ``+y``-down upward-positive dy), ``right_wrist_acceleration``,
   ``torso_rise``, ``knee_unload`` (``-mean knee flexion``),
   ``loading_unwind`` (``-shoulder_hip_separation_transverse_deg``).
 - contact: ``right_wrist_elevation_apex``
-  (``right_wrist_rel_shoulder_dy``), ``right_wrist_speed_turn``
-  (``right_wrist_speed_turning`` flag), ``right_wrist_acceleration_turn``
-  (``right_wrist_accel_turning`` flag), ``torso_rise``, ``late_arm``
-  (``right_wrist_rel_shoulder_distance`` reach proxy), ``audio_transient``
-  (``audio_transient_flag`` when available, else ``audio_transient_energy``;
-  honestly ``None`` without audio, never zero-filled).
+  (``right_wrist_rel_shoulder_dy``, upward-positive with ``+y`` down),
+  ``right_wrist_speed_peak`` (``right_wrist_speed_peak`` flag: strict local
+  speed maximum only; trough valleys never score), ``right_wrist_acceleration_peak``
+  (``right_wrist_accel_peak`` flag: strict local acceleration maximum only),
+  ``torso_rise``, ``right_arm_extension`` (directional
+  ``right_wrist_rel_shoulder_distance`` gated by positive
+  ``right_wrist_rel_shoulder_dy``: raw is ``distance`` when the wrist is
+  above the shoulder and ``0.0`` when at/below, so a straight arm hanging
+  down contributes zero; missing support stays ``None``),
+  ``audio_transient`` (explicit binary ``audio_transient_flag`` preserved
+  directly as ``0``/``1`` per frame, never p5/p95-normalized; continuous
+  ``audio_transient_energy`` is quantile-normalized only on frames without
+  an explicit flag; honestly ``None`` without audio, never zero-filled).
 - finish: ``whole_body_settling``
   (``-whole_body_settling_energy``), ``right_wrist_settling``
   (``-right_wrist_speed``), ``torso_settling``
@@ -118,11 +130,11 @@ __all__ = [
 ]
 
 #: Version of the composite-anchor schemas in this module.
-COMPOSITE_ANCHORS_SCHEMA_VERSION = 1
+COMPOSITE_ANCHORS_SCHEMA_VERSION = 2
 #: Method identity recorded on every candidate and set.
-COMPOSITE_ANCHORS_METHOD_VERSION = "composite-anchors-v1"
+COMPOSITE_ANCHORS_METHOD_VERSION = "composite-anchors-v2"
 #: Default configuration identity (untuned generic weights).
-COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v1"
+COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v2"
 #: Provenance recorded on every candidate (pure waveform evidence only).
 COMPOSITE_ANCHOR_PROVENANCE = "kinematic_waveform"
 
@@ -168,10 +180,10 @@ COMPOSITE_CUE_NAMES: Mapping[str, tuple[str, ...]] = MappingProxyType(
         ),
         "contact": (
             "right_wrist_elevation_apex",
-            "right_wrist_speed_turn",
-            "right_wrist_acceleration_turn",
+            "right_wrist_speed_peak",
+            "right_wrist_acceleration_peak",
             "torso_rise",
-            "late_arm",
+            "right_arm_extension",
             "audio_transient",
         ),
         "finish": (
@@ -223,10 +235,10 @@ COMPOSITE_DEFAULT_WEIGHTS: Mapping[str, Mapping[str, float]] = MappingProxyType(
         "contact": MappingProxyType(
             {
                 "right_wrist_elevation_apex": 0.25,
-                "right_wrist_speed_turn": 0.20,
-                "right_wrist_acceleration_turn": 0.15,
+                "right_wrist_speed_peak": 0.20,
+                "right_wrist_acceleration_peak": 0.15,
                 "torso_rise": 0.10,
-                "late_arm": 0.10,
+                "right_arm_extension": 0.10,
                 "audio_transient": 0.20,
             }
         ),
@@ -714,6 +726,70 @@ def _audio_transient_cue(
     return out
 
 
+def _directional_arm_extension(
+    wrist_dy: Sequence[float | None], wrist_dist: Sequence[float | None]
+) -> list[float | None]:
+    """Directional right-arm extension: reach gated by upward elevation.
+
+    Raw support is ``distance`` only when the corrected upward-positive
+    ``right_wrist_rel_shoulder_dy`` is strictly ``> 0`` (wrist above the
+    shoulder with ``+y`` down); when the wrist is at or below the shoulder
+    the raw is ``0.0`` so a straight arm hanging down contributes zero
+    after normalization; when either input is missing/non-finite the raw
+    is honestly ``None``.
+    """
+    out: list[float | None] = []
+    for dy, dist in zip(wrist_dy, wrist_dist):
+        if (
+            dy is None
+            or dist is None
+            or not math.isfinite(float(dy))
+            or not math.isfinite(float(dist))
+        ):
+            out.append(None)
+        elif float(dy) > 0.0:
+            out.append(float(dist))
+        else:
+            out.append(0.0)
+    return out
+
+
+def _normalize_audio_transient_cue(
+    flags: Sequence[float | None], energies: Sequence[float | None]
+) -> tuple[float | None, ...]:
+    """Normalize the contact audio cue without destroying rare binary flags.
+
+    Explicit binary flags (``0.0``/``1.0``) pass through verbatim per frame,
+    so a rare ``[0, ..., 1, ..., 0]`` spike retains ``1`` instead of being
+    p5/p95-collapsed to all zeros. Frames without an explicit flag fall back
+    to the quantile-normalized continuous energy (``None`` where neither
+    exists). Non-finite entries count as missing.
+    """
+    clean_flags: list[float | None] = []
+    for flag in flags:
+        if flag is not None and math.isfinite(float(flag)):
+            clean_flags.append(float(flag))
+        else:
+            clean_flags.append(None)
+    normalized_energy = quantile_normalize_series(
+        [
+            (float(e) if (e is not None and math.isfinite(float(e))) else None)
+            for e in energies
+        ]
+    )
+    out: list[float | None] = []
+    for flag, norm_e, energy in zip(clean_flags, normalized_energy, energies):
+        if flag is not None:
+            out.append(flag)
+        elif norm_e is not None:
+            out.append(norm_e)
+        elif energy is not None and math.isfinite(float(energy)):
+            out.append(norm_e)
+        else:
+            out.append(None)
+    return tuple(out)
+
+
 def _extract_raw_cues(
     track: KinematicWaveformTrack,
 ) -> dict[str, dict[str, list[float | None]]]:
@@ -734,8 +810,8 @@ def _extract_raw_cues(
     wrist_dist = list(_series(track, "right_wrist_rel_shoulder_distance"))
     wrist_acc = list(_series(track, "right_wrist_acceleration"))
     wrist_speed = list(_series(track, "right_wrist_speed"))
-    speed_turn = list(_series(track, "right_wrist_speed_turning"))
-    accel_turn = list(_series(track, "right_wrist_accel_turning"))
+    speed_peak = list(_series(track, "right_wrist_speed_peak"))
+    accel_peak = list(_series(track, "right_wrist_accel_peak"))
     settling = list(_series(track, "whole_body_settling_energy"))
     audio_flags = _optional_series(track, "audio_transient_flag")
     audio_energies = _optional_series(track, "audio_transient_energy")
@@ -783,10 +859,10 @@ def _extract_raw_cues(
         },
         "contact": {
             "right_wrist_elevation_apex": list(wrist_dy),
-            "right_wrist_speed_turn": list(speed_turn),
-            "right_wrist_acceleration_turn": list(accel_turn),
+            "right_wrist_speed_peak": list(speed_peak),
+            "right_wrist_acceleration_peak": list(accel_peak),
             "torso_rise": list(torso),
-            "late_arm": list(wrist_dist),
+            "right_arm_extension": _directional_arm_extension(wrist_dy, wrist_dist),
             "audio_transient": list(audio_cue),
         },
         "finish": {
@@ -1236,8 +1312,10 @@ def _validate_track(name: str, track: Any) -> KinematicWaveformTrack:
         "right_wrist_rel_shoulder_distance",
         "right_wrist_speed",
         "right_wrist_acceleration",
-        "right_wrist_speed_turning",
-        "right_wrist_accel_turning",
+        "right_wrist_speed_peak",
+        "right_wrist_speed_trough",
+        "right_wrist_accel_peak",
+        "right_wrist_accel_trough",
         "whole_body_settling_energy",
         "audio_transient_energy",
         "audio_transient_flag",
@@ -1273,6 +1351,11 @@ def compute_composite_anchor_scores(
         for cue in COMPOSITE_CUE_NAMES[stage]:
             staged[cue] = quantile_normalize_series(raw[stage][cue])
         normalized[stage] = staged
+    # Preserve explicit binary audio flags verbatim (never p5/p95-normalize).
+    normalized["contact"]["audio_transient"] = _normalize_audio_transient_cue(
+        _optional_series(track, "audio_transient_flag"),
+        _optional_series(track, "audio_transient_energy"),
+    )
     outer: dict[str, Mapping[str, tuple[float | None, ...]]] = {
         stage: MappingProxyType(dict(staged)) for stage, staged in normalized.items()
     }
@@ -1303,6 +1386,11 @@ def build_composite_anchor_set(
         for cue in COMPOSITE_CUE_NAMES[stage]:
             staged[cue] = quantile_normalize_series(raw[stage][cue])
         normalized[stage] = staged
+    # Preserve explicit binary audio flags verbatim (never p5/p95-normalize).
+    normalized["contact"]["audio_transient"] = _normalize_audio_transient_cue(
+        _optional_series(track, "audio_transient_flag"),
+        _optional_series(track, "audio_transient_energy"),
+    )
 
     candidates: list[CompositeAnchorCandidate] = []
     for stage in COMPOSITE_ANCHOR_STAGES:
