@@ -10,9 +10,10 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any
 
-from serve_review.domain import SourceMetadata, SourceMetadataError
+from serve_review.domain import MediaRange, SourceMetadata, SourceMetadataError
 
 WORKFLOW_RECORD_SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 1
 SESSION_RECORD_SCHEMA_VERSION = 1
 COLLECTION_RECORD_SCHEMA_VERSION = 1
 _SOURCE_FINGERPRINT = re.compile(r"^sha256:([0-9a-fA-F]{64})$")
@@ -340,6 +341,171 @@ def _identity(name: str, value: Any) -> str:
         raise WorkflowRecordError(f"{name} must be a nonblank string.")
     return value
 
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredSource:
+    """A fingerprinted source found during planning, with stable path aliases."""
+
+    source_fingerprint: str
+    representative_path: str
+    known_paths: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        fingerprint = _fingerprint(self.source_fingerprint)
+        paths = tuple(_known_path(p) for p in self.known_paths)
+        if not paths or paths != tuple(sorted(set(paths))):
+            raise WorkflowRecordError("known_paths must be sorted, unique, and nonempty.")
+        if self.representative_path != paths[0]:
+            raise WorkflowRecordError(
+                "representative_path must be the first deterministic known path."
+            )
+        object.__setattr__(self, "source_fingerprint", fingerprint)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"known_paths": list(self.known_paths), "representative_path": self.representative_path,
+                "source_fingerprint": self.source_fingerprint}
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> "DiscoveredSource":
+        if not isinstance(values, dict):
+            raise WorkflowRecordError("discovered source must be an object.")
+        keys = {"source_fingerprint", "representative_path", "known_paths"}
+        if set(values) != keys:
+            raise WorkflowRecordError("discovered source keys are invalid.")
+        if not isinstance(values["known_paths"], list):
+            raise WorkflowRecordError("known_paths must be a list in JSON.")
+        return cls(values["source_fingerprint"], values["representative_path"], tuple(values["known_paths"]))
+
+
+@dataclass(frozen=True, slots=True)
+class StepPlan:
+    """A conservative plan state: exactly ``required``, ``reusable``, or ``unknown``."""
+    state: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state, str) or self.state not in {"required", "reusable", "unknown"}:
+            raise WorkflowRecordError("step state must be required, reusable, or unknown.")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"state": self.state}
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> "StepPlan":
+        if not isinstance(values, dict) or set(values) != {"state"}:
+            raise WorkflowRecordError("step plan keys are invalid.")
+        return cls(values["state"])
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePlan:
+    """Per-source read-only work states."""
+    source: DiscoveredSource
+    registered: SourceRecord | None
+    probe: StepPlan
+    detection: StepPlan
+    checkpoint_analysis: StepPlan
+    landing_page: StepPlan
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"checkpoint_analysis": self.checkpoint_analysis.to_dict(), "detection": self.detection.to_dict(),
+                "landing_page": self.landing_page.to_dict(), "probe": self.probe.to_dict(),
+                "registered": self.registered.to_dict() if self.registered else None, "source": self.source.to_dict()}
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, DiscoveredSource) or (self.registered is not None and not isinstance(self.registered, SourceRecord)):
+            raise WorkflowRecordError("source plan has invalid source record types")
+        if any(not isinstance(getattr(self, name), StepPlan) for name in ("probe", "detection", "checkpoint_analysis", "landing_page")):
+            raise WorkflowRecordError("source plan has invalid step types")
+        if (
+            self.registered is not None
+            and self.registered.source_fingerprint != self.source.source_fingerprint
+        ):
+            raise WorkflowRecordError(
+                "registered source fingerprint does not match discovered source."
+            )
+
+    @classmethod
+    def from_dict(cls, v: dict[str, Any]) -> "SourcePlan":
+        keys = {"checkpoint_analysis", "detection", "landing_page", "probe", "registered", "source"}
+        if not isinstance(v, dict) or set(v) != keys: raise WorkflowRecordError("source plan keys are invalid")
+        try:
+            reg = None if v["registered"] is None else SourceRecord.from_dict(v["registered"])
+            return cls(DiscoveredSource.from_dict(v["source"]), reg, StepPlan.from_dict(v["probe"]), StepPlan.from_dict(v["detection"]), StepPlan.from_dict(v["checkpoint_analysis"]), StepPlan.from_dict(v["landing_page"]))
+        except (WorkflowRecordError, TypeError, KeyError) as exc: raise WorkflowRecordError(f"invalid source plan: {exc}") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessPlan:
+    """Strict, versioned, deterministic description of work; it performs none."""
+    schema_version: int
+    mode: str
+    explicit_range: MediaRange | None
+    sources: tuple[SourcePlan, ...]
+    unsupported_entries: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int) or self.schema_version != PLAN_SCHEMA_VERSION: raise WorkflowRecordError("unsupported plan schema version")
+        if self.mode not in {"normal", "single-attempt", "explicit-range"}: raise WorkflowRecordError("invalid planning mode")
+        if self.mode == "explicit-range" and not isinstance(self.explicit_range, MediaRange): raise WorkflowRecordError("explicit-range mode requires a MediaRange")
+        if self.mode != "explicit-range" and self.explicit_range is not None: raise WorkflowRecordError("range is only valid in explicit-range mode")
+        if not isinstance(self.sources, tuple) or any(not isinstance(s, SourcePlan) for s in self.sources) or tuple(s.source.representative_path for s in self.sources) != tuple(sorted(s.source.representative_path for s in self.sources)): raise WorkflowRecordError("sources must be deterministically ordered")
+        fingerprints = tuple(source.source.source_fingerprint for source in self.sources)
+        if len(set(fingerprints)) != len(fingerprints):
+            raise WorkflowRecordError("sources must have unique fingerprints")
+        if self.mode != "normal" and len(self.sources) != 1:
+            raise WorkflowRecordError(
+                "single-attempt and explicit-range plans require exactly one source"
+            )
+        if not isinstance(self.unsupported_entries, tuple) or any(not isinstance(p, str) or not os.path.isabs(p) or os.path.normpath(p) != p for p in self.unsupported_entries) or self.unsupported_entries != tuple(sorted(set(self.unsupported_entries))): raise WorkflowRecordError("unsupported entries must be normalized absolute sorted unique paths")
+
+    @property
+    def discovered(self) -> tuple[DiscoveredSource, ...]: return tuple(s.source for s in self.sources)
+    @property
+    def discovered_sources(self) -> tuple[DiscoveredSource, ...]: return self.discovered
+    @property
+    def range_detection(self) -> tuple[StepPlan, ...]: return tuple(s.detection for s in self.sources)
+    @property
+    def registered(self) -> tuple[SourceRecord, ...]: return tuple(s.registered for s in self.sources if s.registered is not None)
+    @property
+    def new(self) -> tuple[DiscoveredSource, ...]: return tuple(s.source for s in self.sources if s.registered is None)
+
+    @property
+    def new_sources(self) -> tuple[DiscoveredSource, ...]: return self.new
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"explicit_range": self.explicit_range.to_dict() if self.explicit_range else None, "mode": self.mode, "schema_version": self.schema_version, "sources": [s.to_dict() for s in self.sources], "unsupported_entries": list(self.unsupported_entries)}
+    @classmethod
+    def from_dict(cls, v: dict[str, Any]) -> "ProcessPlan":
+        keys = {"explicit_range", "mode", "schema_version", "sources", "unsupported_entries"}
+        if not isinstance(v, dict) or set(v) != keys: raise WorkflowRecordError("process plan keys are invalid")
+        if not isinstance(v["sources"], list) or not isinstance(v["unsupported_entries"], list): raise WorkflowRecordError("process plan arrays are required")
+        try: return cls(v["schema_version"], v["mode"], None if v["explicit_range"] is None else MediaRange.from_dict(v["explicit_range"]), tuple(SourcePlan.from_dict(x) for x in v["sources"]), tuple(v["unsupported_entries"]))
+        except Exception as exc:
+            if isinstance(exc, WorkflowRecordError): raise
+            raise WorkflowRecordError(f"invalid process plan: {exc}") from exc
+    def to_json(self) -> str: return json.dumps(self.to_dict(), sort_keys=True, indent=2, allow_nan=False) + "\n"
+    @classmethod
+    def from_json(cls, data: str | bytes | bytearray) -> "ProcessPlan":
+        def pairs(items):
+            result = {}
+            for key, value in items:
+                if key in result: raise ValueError(f"duplicate object key {key!r}")
+                result[key] = value
+            return result
+        try:
+            if isinstance(data, (bytes, bytearray)): data = bytes(data).decode("utf8")
+            return cls.from_dict(json.loads(data, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)), object_pairs_hook=pairs))
+        except Exception as exc:
+            if isinstance(exc, WorkflowRecordError): raise
+            raise WorkflowRecordError(f"invalid process plan JSON: {exc}") from exc
+    def human(self) -> str:
+        lines = [f"Mode: {self.mode}", f"Sources: {len(self.sources)} discovered, {len(self.new)} new, {len(self.registered)} already registered"]
+        for label, attr in (("Probe", "probe"), ("Range detection", "detection"), ("Stage-checkpoint analysis", "checkpoint_analysis"), ("Review index", "landing_page")):
+            counts = {x: sum(getattr(s, attr).state == x for s in self.sources) for x in ("reusable", "required", "unknown")}
+            lines.append(f"{label}: {counts['reusable']} reusable, {counts['required']} required, {counts['unknown']} unknown")
+        if self.unsupported_entries: lines.append(f"Unsupported entries: {len(self.unsupported_entries)}")
+        return "\n".join(lines)
+    render_human = human
 
 def attempt_id_for(
     source_identity: str,
