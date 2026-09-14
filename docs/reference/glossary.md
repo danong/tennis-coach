@@ -28,7 +28,7 @@ Human-readable shorthand for an accepted attempt. In precise detector and schema
 
 ### Session
 
-An optional, ordered grouping of sources representing a real recording, practice, match, or acquisition context. A source does not require a session. A session is not a processing run or an output directory.
+An optional, ordered grouping of sources representing a real recording, practice, match, or acquisition context. A source belongs to zero or one session; use collections for non-exclusive or cross-session grouping. A session is not a processing run or an output directory.
 
 ### Collection
 

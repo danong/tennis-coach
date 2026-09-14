@@ -1,6 +1,6 @@
 # Domain model
 
-> **Status:** Proposed · **State:** Draft · **Work:** Next · **As of:** 2026-09-14
+> **Status:** Proposed · **State:** Accepted · **Work:** None · **As of:** 2026-09-14
 
 This document defines the proposed organizational model for the UX rework. See the normative [glossary](../reference/glossary.md) for terminology. Current schemas remain documented by their implemented compatibility names until separately versioned migrations are accepted.
 
@@ -14,7 +14,7 @@ erDiagram
     SOURCE ||--o{ ATTEMPT : yields
     SOURCE ||--o{ RUN : processed-by
     SOURCE ||--o{ CACHE : accelerates
-    SESSION }o--o{ SOURCE : orders
+    SESSION o|--o{ SOURCE : orders
     COLLECTION }o--o{ SOURCE : selects
     COLLECTION }o--o{ ATTEMPT : selects
     ATTEMPT ||--o{ CHECKPOINT : has
@@ -39,9 +39,7 @@ A source-time range with stable identity and classification. The proposed classi
 
 ### Session
 
-An optional ordered set of sources plus recording context such as date, event, drill, or notes. A source may stand alone. Session membership organizes material but does not own or duplicate source computation.
-
-Whether a source may belong to multiple sessions remains an open UX decision. Collections must be used when non-exclusive grouping is the primary requirement.
+An optional ordered set of sources plus recording context such as date, event, drill, or notes. A source belongs to zero or one session because a particular media asset has one recording context. Session membership organizes material but does not own or duplicate source computation. Collections provide non-exclusive, thematic, corpus, and cross-session grouping.
 
 ### Collection
 
@@ -67,7 +65,8 @@ A versioned presentation contract selecting sources, attempts, checkpoints, medi
 
 - Source fingerprint is the unit of media identity and reusable computation.
 - Filesystem paths are locators and may change without changing source identity.
-- Sessions and collections reference sources; they do not contain copied source media.
+- A source belongs to zero or one session; sessions reference sources and do not contain copied media.
+- Collections may reference sources from any session or standalone sources.
 - Attempts belong to exactly one source and use source PTS ranges.
 - Checkpoints belong to exactly one attempt and stage.
 - Runs own provenance for generated artifacts, not source media or user annotations.
@@ -86,12 +85,13 @@ The same processing and review system should support:
 
 A standalone source does not require a synthetic one-source session. The review application may still use the same manifest and components for every scope.
 
-## Open decisions
+## Deferred domain decisions
 
-- Stable attempt identity when detector boundaries change.
-- Whether sessions permit shared source membership or require one primary session.
+These decisions do not block the delivery-stage-2 compatibility workflow:
+
+- Attempt reconciliation when detector boundaries change.
 - Source metadata versus attempt-level metadata for multi-player footage.
-- Workspace location, source relocation, and missing-source recovery.
-- Explicit versus query-backed collection persistence.
-- Run retention and artifact garbage-collection policy.
-- Compatibility migration from `attempts.json` plus `shadows.json` to classified attempts.
+- Source relocation and missing-source recovery.
+- Query-backed collection persistence beyond explicit saved collections.
+- Run retention and destructive artifact garbage collection.
+- Migration from `attempts.json` plus `shadows.json` to classified attempts.

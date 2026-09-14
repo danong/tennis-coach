@@ -21,7 +21,8 @@ A local command-line tool for finding and reviewing tennis serve attempts in sou
 ## Documents
 
 - [Design](docs/architecture/offline-pipeline.md): offline behavior, media rules, architecture, detection, checkpoints, and evaluation.
-- [Roadmap](docs/plans/offline-roadmap.md): single-run leaves, dependencies, allowed scope, checks, and milestone gates.
+- [UX and workflow design](docs/plans/ux-workflow-design.md): proposed source, session, collection, workspace, command, resume, status, cleanup, and review-discovery contracts.
+- [Deferred roadmap](docs/plans/offline-roadmap.md): earlier single-run leaves, dependencies, allowed scope, checks, and milestone gates.
 - [Serve stage-checkpoint analysis](docs/reference/serve-phase-analysis.md): current native-PTS 3D checkpoint pipeline, cues, weights, filtering, artifacts, limitations, and code pointers.
 - [Archive](docs/archive/): superseded M4 remediation and iOS-first planning documents.
 - [M5 TCN proposal](docs/proposals/m5-tcn-phase-detection.md): deferred learned multi-view phase-detection experiment.
