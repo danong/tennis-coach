@@ -1,5 +1,7 @@
 # Proposed YouTube slow-motion corpus cookbook
 
+> **Status:** Proposed · **State:** Draft · **Work:** Backlog · **As of:** 2026-09-14
+
 This is a simple proposed workflow for adding publicly downloaded tennis videos
 to a local corpus. It keeps only segments that appear to be slow motion and
 leaves real-time and speed-ramp footage out of the first corpus version.

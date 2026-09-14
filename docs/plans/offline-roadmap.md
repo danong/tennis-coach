@@ -1,6 +1,8 @@
 # Serve Review offline roadmap
 
-Status: active plan, 2026-09-14. M1–M3 implementation is complete. The original sparse M4 development gate failed; its dense 3D kinematic-waveform replacement is implemented, frozen after development confirmation, and awaits one held-out evaluation. This replaces the archived iOS-first roadmap in `docs/archive/old-docs/`.
+> **Status:** Proposed · **State:** Deferred · **Work:** Deferred · **As of:** 2026-09-14
+
+> **Status note:** active plan, 2026-09-14. M1–M3 implementation is complete. The original sparse M4 development gate failed; its dense 3D kinematic-waveform replacement is implemented, frozen after development confirmation, and awaits one held-out evaluation. This replaces the archived iOS-first roadmap in `docs/archive/old-docs/`.
 
 ## Current state
 
@@ -12,7 +14,7 @@ Every numbered leaf below is scoped for one isolated Tau run. Use the approved f
 
 ## Tau execution contract
 
-Give Tau a concise task specification outside the repository that names the outcome, allowed files, forbidden scope, and focused/regression checks. Run it in a fresh JJ workspace, inspect the exact candidate diff and verifier result, then integrate only approved work and rerun `mise run check`. Record the run and outcome in this roadmap and `docs/tau-dogfood.md`; do not treat a worker's prose or a passing check as approval. Workers should not commit, move bookmarks, touch large local footage, or add dependencies without explicit authorization. Ask for rescue rather than inventing a contract or weakening a check.
+Give Tau a concise task specification outside the repository that names the outcome, allowed files, forbidden scope, and focused/regression checks. Run it in a fresh JJ workspace, inspect the exact candidate diff and verifier result, then integrate only approved work and rerun `mise run check`. Record the run and outcome in this roadmap and `docs/development/tau-dogfood.md`; do not treat a worker's prose or a passing check as approval. Workers should not commit, move bookmarks, touch large local footage, or add dependencies without explicit authorization. Ask for rescue rather than inventing a contract or weakening a check.
 
 ## Tracking
 
@@ -300,7 +302,7 @@ M3 improvement is out of scope for this M4 remediation. This remediation neither
 ### M4.7 — Native 3D kinematic track
 
 - **Objective:** For one explicit serve video/range, run the approved Heavy model once on every native frame and persist a reusable source-bound 3D kinematic track: `pose_world_landmarks`, quality, missingness, and exact presentation timestamps (PTS). Normalized 2D landmarks are optional review-overlay payload only, never phase evidence.
-- **Dependency:** archived 3D waveform implementation plan; see [`serve-phase-analysis.md`](serve-phase-analysis.md) for the current operational reference.
+- **Dependency:** archived 3D waveform implementation plan; see [`serve-phase-analysis.md`](../reference/serve-phase-analysis.md) for the current operational reference.
 - **Exit:** synthetic/cache tests prove identity, native support, missingness, cancellation, exact PTS, and optional 2D overlay alignment.
 
 ### M4.8 — Segment-safe Butterworth filtering

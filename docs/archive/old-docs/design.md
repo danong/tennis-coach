@@ -1,6 +1,8 @@
 # Serve Review design
 
-Status: proposed implementation specification, 2026-09-04. No app code exists yet.
+> **Status:** Historical · **State:** Superseded · **Work:** None · **As of:** 2026-09-14
+
+> **Status note:** proposed implementation specification, 2026-09-04. No app code exists yet.
 
 ## 1. Product contract
 

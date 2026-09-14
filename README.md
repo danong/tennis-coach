@@ -1,6 +1,6 @@
 # Serve Review
 
-A local command-line tool for aiding the analysis of videos, ideally slow-motion recordings, of tennis serves.
+A local command-line tool for finding and reviewing tennis serve attempts in source videos, ideally slow-motion recordings. See the [glossary](docs/reference/glossary.md) for canonical terminology.
 
 **Status:** Research and prototyping. 
 
@@ -8,9 +8,9 @@ A local command-line tool for aiding the analysis of videos, ideally slow-motion
 
 ### Complete
 
-**Serve cutting:** From a video with multiple serves, detect serve attempts, cut out the intermediate footage, and produce either one gap-free serve compilation, one clip per serve, or both. Proven to work on 120 fps videos of my own serve filmed from the rear on a tripod.
+**Serve cutting:** From a source containing multiple serve attempts, detect accepted attempts, remove the intermediate footage, and produce either one gap-free compilation, one clip per attempt, or both. Proven to work on 120 fps sources of my own serve filmed from the rear on a tripod.
 
-**Checkpoint analysis:** From a video of a single serve, automatically detect the following checkpoints (8): start, release, loading, cocking, acceleration, contact, deceleration, finish. Note that while these stage names are taken from [An 8-Stage Model for Evaluating the Tennis Serve](https://pmc.ncbi.nlm.nih.gov/articles/PMC3445225/), the implemented definition and heuristics differ slightly. On my manually labeled serves, we achieved a MAE of ~70ms, which is generally good enough to be useful for analysis.
+**Stage-checkpoint analysis:** From a source containing one attempt, automatically estimate checkpoints for eight stages: start, release, loading, cocking, acceleration, contact, deceleration, and finish. While these stage names are taken from [An 8-Stage Model for Evaluating the Tennis Serve](https://pmc.ncbi.nlm.nih.gov/articles/PMC3445225/), the implemented definitions and heuristics differ slightly. On my manually labeled attempts, we achieved a mean absolute error (MAE) of about 70 ms, which is generally useful for review.
 
 ### Future Work
 
@@ -20,13 +20,13 @@ A local command-line tool for aiding the analysis of videos, ideally slow-motion
 
 ## Documents
 
-- [Design](docs/design.md): offline behavior, media rules, architecture, detection, checkpoints, and evaluation.
-- [Roadmap](docs/roadmap.md): single-run leaves, dependencies, allowed scope, checks, and milestone gates.
-- [Serve phase analysis](docs/serve-phase-analysis.md): current native-PTS 3D phase pipeline, cues, weights, filtering, outputs, limitations, and code pointers.
+- [Design](docs/architecture/offline-pipeline.md): offline behavior, media rules, architecture, detection, checkpoints, and evaluation.
+- [Roadmap](docs/plans/offline-roadmap.md): single-run leaves, dependencies, allowed scope, checks, and milestone gates.
+- [Serve stage-checkpoint analysis](docs/reference/serve-phase-analysis.md): current native-PTS 3D checkpoint pipeline, cues, weights, filtering, artifacts, limitations, and code pointers.
 - [Archive](docs/archive/): superseded M4 remediation and iOS-first planning documents.
-- [M5 TCN proposal](docs/m5-tcn-phase-detection.md): deferred learned multi-view phase-detection experiment.
+- [M5 TCN proposal](docs/proposals/m5-tcn-phase-detection.md): deferred learned multi-view phase-detection experiment.
 
-The design is the general behavioral source of truth. [Serve phase analysis](docs/serve-phase-analysis.md) is the operational source of truth for the current native-3D phase path; the roadmap defines delivery order and gates. If they conflict, resolve and update them before implementation.
+The design is the general behavioral source of truth. [Serve stage-checkpoint analysis](docs/reference/serve-phase-analysis.md) is the operational source of truth for the current native-3D checkpoint path; the deferred roadmap records its earlier delivery order and gates. If maintained documents conflict, resolve and update them before implementation.
 
 ## Offline development setup
 
@@ -47,17 +47,17 @@ Current commands:
 | `mise run doctor` | Verify Python, FFmpeg, and ffprobe. |
 | `mise run test` | Run offline pipeline tests. |
 | `mise run check` | Run diagnostics and tests. |
-| `mise run cut -- <video> --padding 1 --output <compilation\|clips\|both>` | Detect accepted serves and export a compilation, clips, or both. |
+| `mise run cut -- <video> --padding 1 --output <compilation\|clips\|both>` | Detect accepted attempts and export a compilation, clips, or both. |
 | `mise run analyze -- <video>` | Legacy attempt-based analysis; requires prior `cut` output or `--attempts`. |
-| `uv run --locked serve-review analyze-serve <video> [--start-seconds S --end-seconds E]` | Current one-serve native-PTS 3D phase analysis; writes checkpoints, diagnostics, review, and reusable world cache. |
-| `mise run review-phases -- <video>` | Render labeled pose-overlay keyframes for manual phase review. |
+| `uv run --locked serve-review analyze-serve <video> [--start-seconds S --end-seconds E]` | Current one-attempt native-PTS 3D stage-checkpoint analysis; writes checkpoints, diagnostics, a review page, and a reusable world cache. |
+| `mise run review-phases -- <video>` | Render labeled pose-overlay keyframes for manual checkpoint review. |
 | `mise run phase-annotate -- <video> --attempts <attempts.json> --labels <labels.json> --output <annotations.json>` | Convert zero-based decoded-frame labels to exact-PTS private annotations. |
-| `mise run phase-evaluate -- --checkpoints <checkpoints.json> --annotations <annotations.json> --output <report.json>` | Write the deterministic local phase-gate report. |
+| `mise run phase-evaluate -- --checkpoints <checkpoints.json> --annotations <annotations.json> --output <report.json>` | Write the deterministic local checkpoint-evaluation report. |
 | `uv run python tools/export_segments.py <video> <segments.json> --output-dir <dir>` | Export manually selected corpus segments. |
 
-Use `uv run python` for ad-hoc Python commands rather than an unversioned system `python`. Keep user labels and generated annotation manifests under local `refs/annotations/`; use decoded source timestamps, never `frame / assumed_fps`. Large source videos, downloaded models, caches, and generated outputs are kept out of normal source changes.
+Use `uv run python` for ad-hoc Python commands rather than an unversioned system `python`. Keep user labels and generated annotation manifests under local `refs/annotations/`; use decoded source timestamps, never `frame / assumed_fps`. Large source videos, downloaded models, caches, and generated artifacts are kept out of normal source changes.
 
-Historical iOS-first and superseded remediation plans are retained in [`docs/archive/`](docs/archive/) for reference only; they are not active implementation specifications. For current phase-analysis behavior, use [Serve phase analysis](docs/serve-phase-analysis.md).
+Historical iOS-first and superseded remediation plans are retained in [`docs/archive/`](docs/archive/) for reference only; they are not active implementation specifications. For current stage-checkpoint behavior, use [Serve stage-checkpoint analysis](docs/reference/serve-phase-analysis.md).
 
 ## Footage and local storage
 
@@ -67,4 +67,4 @@ Development footage and downloaded reference videos live in local `refs/` storag
 
 Roadmap leaves are designed as single isolated Tau runs using the explicitly authorized free model `opencode/muse-spark-1.3-contributor-free`. Run one leaf at a time. The orchestrator reviews and integrates exact candidate diffs and owns architecture, model selection, local-footage evaluation, and milestone gates.
 
-See the [Tau execution contract](docs/roadmap.md#tau-execution-contract). A ticket is complete only when its verifier, exact-diff review, integrated checks, dogfood record, and cleanup evidence are complete.
+For work performed under the deferred roadmap, follow its [Tau execution contract](docs/plans/offline-roadmap.md#tau-execution-contract); its tickets require a verifier, exact-diff review, integrated checks, dogfood record, and cleanup evidence.

@@ -1,6 +1,8 @@
 # Tau dogfood journal
 
-Append one entry per attempt to the **app's** `docs/tau-dogfood.md` (or its existing
+> **Status:** Current · **State:** Maintained · **Work:** None · **As of:** 2026-09-14
+
+Append one entry per attempt to the **app's** `docs/development/tau-dogfood.md` (or its existing
 dogfood journal), before calling the task complete. Preserve failures, pauses,
 no-edit outcomes, repairs and unavailable measurements. Archive the exact task
 under the app's `dogfood/tasks/` only after checking it for private material.
@@ -14,7 +16,7 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 - **Allocation/result:** 75 turns / 20 minutes allowed; observed 12 turns; verified.
 - **Evidence:** worker changed only `src/serve_review/domain.py` and `tests/test_domain.py`; exact diff review found no dependency or private-media changes; verifier `uv run pytest tests/test_domain.py && mise run check` passed; stored candidate binding valid with empty successor.
 - **Review/integration:** approved by orchestrator; candidate duplicated into an independent adopted revision; integrated `mise run check` passed with 65 tests. Human acceptance unavailable.
-- **Cleanup:** initial `tau release` returned `blocked-active-work` with `topology-violation`. The empty workspace successor was reparented to Tau's recorded captured candidate, then `tau release` succeeded. The detached rewritten candidate left by the earlier integration mistake had no descendants and was abandoned after release. `jj workspace list` now contains only the default workspace. See `docs/tau-feedback/m1.1-cleanup-blocked.md`.
+- **Cleanup:** initial `tau release` returned `blocked-active-work` with `topology-violation`. The empty workspace successor was reparented to Tau's recorded captured candidate, then `tau release` succeeded. The detached rewritten candidate left by the earlier integration mistake had no descendants and was abandoned after release. `jj workspace list` now contains only the default workspace. See `docs/development/tau-feedback/m1.1-cleanup-blocked.md`.
 - **Cost/attention:** measured inference cost unavailable; one integration-command targeting error was caught because the first integrated check collected only four tests, then corrected before acceptance.
 - **Finding:** JJ duplicate creates a sibling revision; target the emitted duplicate revision, not `@-`, when describing/moving a bookmark. Its descendant rewrite also blocked Tau cleanup; restoring the workspace successor to Tau's recorded candidate enabled safe release. Next action: dispatch M1.2 from the current `main` and use a topology-preserving adoption flow.
 
@@ -68,7 +70,7 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 
 - **Smoke evidence:** ignored anchor `refs/anchors/single-serve-01.mov`, using a matching existing 145-frame pose cache, built a 145-sample 30 Hz grid. Raw audio peak was 3.655 s, 14 ms before the known ~3.669 s contact; the candidate grid time was 3.667 s. This validates source-time/audio alignment.
 - **Finding:** only 4 grid samples were marked observed and 141 interpolated. The pose cadence measured 29.979 Hz while the configured grid is 30 Hz; strict exact-time matching accumulated small drift and misclassified genuine observations. This is an M4.2 repair requirement before M4.3 evidence gating—not an inference-quality conclusion.
-- **Tau operational outcomes:** `ce3fe3cd-3e8d-49fc-948b-ab674c099151` failed before worker start because the dispatch base hash was mistyped; `c0eba7a4-56c5-40f4-85f0-288175a20fcb` exhausted 45 turns without candidate/readiness. Session JSONL inspection shows `1bc50aa4-e99d-4fa3-bda0-bd078623ceb2` and `e1266c98-01b7-4e84-b5dd-459c7fb9bcb2` were provider `429 FreeUsageLimitError` failures, misreported by Tau as missing handoff; see `docs/tau-feedback/2026-09-11-free-model-429-misclassified.md`. No candidate was captured, reviewed, or integrated; unsafe resumes were not attempted.
+- **Tau operational outcomes:** `ce3fe3cd-3e8d-49fc-948b-ab674c099151` failed before worker start because the dispatch base hash was mistyped; `c0eba7a4-56c5-40f4-85f0-288175a20fcb` exhausted 45 turns without candidate/readiness. Session JSONL inspection shows `1bc50aa4-e99d-4fa3-bda0-bd078623ceb2` and `e1266c98-01b7-4e84-b5dd-459c7fb9bcb2` were provider `429 FreeUsageLimitError` failures, misreported by Tau as missing handoff; see `docs/development/tau-feedback/2026-09-11-free-model-429-misclassified.md`. No candidate was captured, reviewed, or integrated; unsafe resumes were not attempted.
 - **Next action:** make a fresh, bounded M4.2 alignment repair candidate with a direct-observation snap tolerance and explicit support-offset/uncertainty semantics; do not proceed to M4.3 until it is verified and reviewed.
 
 ### 2026-09-11 — M4.2 alignment and physical-angle repairs

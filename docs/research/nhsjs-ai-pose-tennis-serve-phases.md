@@ -1,9 +1,11 @@
 # Research: NHSJS AI pose-estimation tennis-serve phases and serve-speed prediction
 
+> **Status:** Historical · **State:** Complete · **Work:** None · **As of:** 2026-09-14
+
 - Source URL: https://nhsjs.com/2026/using-ai-pose-estimation-to-characterize-tennis-serve-phases-and-explore-serve-speed-prediction/
 - Retrieval date (UTC): 2026-09-13 (retrieved live via `curl`; HTML parsed to text, ~47 kB extracted text).
 - Source identity: Maya Cukras, NHSJS Reports, published 2026-09-09. PDF download link is offered on the page; this report is based on the HTML article body including Abstract / Introduction / Methods / Results / Discussion / References. No private footage, annotations, or local paths are used here.
-- Project context read: `README.md`, `docs/design.md`, `docs/roadmap.md` (M4/M5 leaves), `docs/archive/m4-remediation-plan.md`, plus skim of `docs/m5-tcn-phase-detection.md` §1–3 for M4/M5 boundary.
+- Project context read: `README.md`, `docs/architecture/offline-pipeline.md`, `docs/plans/offline-roadmap.md` (M4/M5 leaves), `docs/archive/m4-remediation-plan.md`, plus skim of `docs/proposals/m5-tcn-phase-detection.md` §1–3 for M4/M5 boundary.
 
 > Convention used below: **"Paper claims"** are statements directly supported by the article text/tables/figures. **"Project inference"** is our interpretation for Serve Review and is explicitly labeled as such. Uncertainties are called out; nothing here is a claim of local-footage validation.
 
@@ -90,7 +92,7 @@ All six are evidence/scoring/diagnostic refinements inside the frozen M4 documen
 
 ## 6. What belongs in deferred M5 (and why)
 
-Per `docs/m5-tcn-phase-detection.md` (proposal, not active plan) and remediation §8:
+Per `docs/proposals/m5-tcn-phase-detection.md` (proposal, not active plan) and remediation §8:
 
 - **Continuous-sequence temporal modeling (TCN/heatmap + DP decoder, M5 §3).** *Why M5:* the paper's core forward-looking lesson is that frame pairs under-model dynamics ("full temporal sequences rather than discrete frame pairs may allow modeling of coordination patterns and energy transfer"). Our M4 solver is fixed-form DP over hand-built evidence; learned spatiotemporal dynamics, modality dropout, and learned duration priors are explicitly deferred.
 - **Ball and racket detection/tracking and visual contact claims.** *Why M5-or-later:* the paper has no ball/racket evidence and our M4 contract forbids such claims; M5 is the first place ball channels appear (M5 §3 pipeline), still gated separately.

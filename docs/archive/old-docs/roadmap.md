@@ -1,6 +1,8 @@
 # Serve Review roadmap: MVP1–MVP2
 
-Status: implementation-ready plan, 2026-09-04. This roadmap assumes no application code exists.
+> **Status:** Historical · **State:** Superseded · **Work:** None · **As of:** 2026-09-14
+
+> **Status note:** implementation-ready plan, 2026-09-04. This roadmap assumes no application code exists.
 
 ## How to use this roadmap
 

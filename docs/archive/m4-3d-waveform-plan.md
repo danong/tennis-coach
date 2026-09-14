@@ -1,6 +1,8 @@
 # M4 3D Kinematic Waveform Remediation
 
-> **Status:** implemented 3D production path; development configuration frozen and second-exemplar confirmation accepted. This supersedes the 2D sparse-feature repair sequence in `m4-remediation-plan.md`. M3 improvement, including use of phase coherence to reduce false positives, is explicitly out of scope here; frozen development annotations remain the only tuning evidence; held-out footage remains unread pending its one permitted evaluation run.
+> **Status:** Historical · **State:** Complete · **Work:** None · **As of:** 2026-09-14
+
+> **Status note:** implemented 3D production path; development configuration frozen and second-exemplar confirmation accepted. This supersedes the 2D sparse-feature repair sequence in `m4-remediation-plan.md`. M3 improvement, including use of phase coherence to reduce false positives, is explicitly out of scope here; frozen development annotations remain the only tuning evidence; held-out footage remains unread pending its one permitted evaluation run.
 
 ## Goal
 

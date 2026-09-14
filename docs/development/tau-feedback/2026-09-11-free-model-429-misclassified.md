@@ -1,5 +1,7 @@
 # P2 — Free-model 429 is misclassified as missing Tau handoff
 
+> **Status:** Historical · **State:** Complete · **Work:** None · **As of:** 2026-09-14
+
 ## Environment
 
 - Tau JJ isolated runs, macOS

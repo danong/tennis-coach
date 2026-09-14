@@ -1,7 +1,12 @@
 # Anchor-video cookbook
 
+> **Status:** Current · **State:** Legacy · **Work:** Backlog · **As of:** 2026-09-14
+
+> **Legacy note:** This procedure uses the legacy `analyze` and `review-phases` path and needs to be updated for the current `analyze-serve` stage-checkpoint workflow.
+
 Use this workflow to create a new local anchor clip and, optionally, compare
-its automatic phases with hand annotations. Anchor footage is private and
+its automatic stage checkpoints with hand annotations. Terminology follows the
+[glossary](../../reference/glossary.md). Anchor footage is private and
 ignored; do not commit the video, generated output, caches, or annotations.
 
 ## 1. Identify the exact source
@@ -41,7 +46,7 @@ cp output/anchor-single-serve-02/2026-09-08-08/clips/serve-001.mov \
 ```
 
 Use `--output both` instead when you also want the compilation. The cutter
-may detect more than one serve; choose the clip to promote to an anchor rather
+may detect more than one accepted attempt; choose the clip to promote to an anchor rather
 than copying the full compilation.
 
 If the source is already manually segmented by source-time intervals, use the
@@ -52,7 +57,7 @@ uv run python tools/export_segments.py SOURCE.mp4 SEGMENTS.json \
   --output-dir refs/corpus/segments/VIDEO
 ```
 
-## 3. Analyze automatic phases
+## 3. Analyze automatic stage checkpoints
 
 Pass the attempts file explicitly when the cut used a custom output directory:
 
@@ -62,7 +67,7 @@ mise run analyze -- refs/sessions/dev/2026-09-08-08.mov \
   --output-dir output/anchor-single-serve-02
 ```
 
-This writes `checkpoints.json`. Render the automatic overlay review:
+This writes `checkpoints.json`. Render the checkpoint review page with pose-overlay keyframes:
 
 ```sh
 mise run review-phases -- refs/sessions/dev/2026-09-08-08.mov \
@@ -106,8 +111,8 @@ stage keys:
 }
 ```
 
-The frame numbers must be **zero-based decoded frame indices in the original
-source video**. If labels were made while watching the exported clip, they are
+The frame numbers must be **zero-based decoded frame indices in the
+source**. If labels were made while watching the exported clip, they are
 clip-relative and must be mapped back to source frame indices first; do not
 simply pass those numbers to `phase-annotate`. In particular, a one-second
 padded clip starts before the detector's unpadded range, so a label that looks
@@ -129,9 +134,9 @@ The converter validates the source fingerprint, duration, frame bounds, and
 that every label lies inside the detector's unpadded attempt range. If a
 manually selected start precedes that range, either correct the source attempt
 range through a reviewed manual-range workflow or re-check the label; do not
-silently discard the early phase.
+silently discard the early checkpoint.
 
-## 5. Evaluate automatic vs. hand phases
+## 5. Evaluate automatic versus hand-labeled checkpoints
 
 ```sh
 mise run phase-evaluate -- \
@@ -145,12 +150,13 @@ and ordering information. It does not render images.
 
 ## Notes
 
-- Never mutate the original source video.
+- Never mutate the source.
 - Use exact source timestamps, not `frame / assumed_fps`, as canonical times.
 - A downloaded/transcoded video may report 60 fps even when its description
   says it was shot at 120 fps. Record delivered FPS separately from any capture
   FPS assumption; do not duplicate frames to manufacture 120-fps media.
-- `review-phases` currently renders automatic checkpoints only; hand-annotation
-  frame galleries require a separate renderer or manual frame extraction.
+- `review-phases` currently renders automatic checkpoint keyframes only;
+  hand-annotation keyframe galleries require a separate renderer or manual
+  frame extraction.
 - Use `--overwrite` only when intentionally replacing an existing generated
   artifact.

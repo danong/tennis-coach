@@ -1,6 +1,10 @@
 # Serve Review offline pipeline design
 
-Status: implementation specification. M1–M3 are complete. The dense MediaPipe 3D kinematic-waveform M4 replacement is implemented and frozen after accepted development confirmation; one held-out phase evaluation remains. See [`serve-phase-analysis.md`](serve-phase-analysis.md).
+> **Status:** Current · **State:** Maintained · **Work:** None · **As of:** 2026-09-14
+
+> **Status note:** implementation specification. M1–M3 are complete. The dense MediaPipe 3D kinematic-waveform M4 replacement is implemented and frozen after accepted development confirmation; one held-out checkpoint evaluation remains. See [`serve-phase-analysis.md`](../reference/serve-phase-analysis.md).
+
+Terminology follows the [glossary](../reference/glossary.md). Literal command, schema, and type names retain their current compatibility spelling.
 
 ## 1. Product contract
 
@@ -16,7 +20,7 @@ The user controls symmetric context padding in seconds. The intended command is:
 mise run cut -- refs/sessions/dev/2026-09-08-00.mov --padding 1 --output both
 ```
 
-A later analysis command adds review checkpoints within each detected serve. Everything runs locally on an Apple-silicon Mac.
+A later analysis command adds stage checkpoints within each accepted attempt. Everything runs locally on an Apple-silicon Mac.
 
 ## 2. Scope and success
 
@@ -30,12 +34,12 @@ The first useful release must:
 2. preserve the source file unchanged;
 3. emit versioned JSON with unpadded and padded source-time ranges;
 4. create the requested clips/compilation from original source samples;
-5. make a session materially faster to review than raw scrubbing; and
+5. make a source materially faster to review than raw scrubbing; and
 6. expose uncertain detections rather than silently substituting the full video.
 
 ### Checkpoints
 
-Checkpoint analysis runs only inside accepted serve ranges. The active M4 path uses dense native-frame MediaPipe world-landmark tracks, segment-safe low-pass filtering, timestamped 3D kinematic waveforms, and optional aligned raw-source audio for contact. It detects composite candidates for `start`, `release`, `loading`, `cocking`, `contact`, and `finish` with dynamic-programming chronology selection; `acceleration` and `deceleration` are exact temporal midpoints between selected bounding anchors. Normalized 2D landmarks from the same inference are review-overlay data only and never phase features, candidate evidence, or DP input. A compatible source-bound kinematic cache avoids reinference; backend initialization may still occur to validate cache identity. The detailed contract, current identities, and deferred work are in [`serve-phase-analysis.md`](serve-phase-analysis.md).
+Stage-checkpoint analysis runs only inside accepted attempt ranges. The active M4 path uses dense native-frame MediaPipe world-landmark tracks, segment-safe low-pass filtering, timestamped 3D kinematic waveforms, and optional aligned raw-source audio for contact. It detects composite candidates for `start`, `release`, `loading`, `cocking`, `contact`, and `finish` with dynamic-programming chronology selection; `acceleration` and `deceleration` are exact temporal midpoints between selected bounding anchors. Normalized 2D landmarks from the same inference are review-overlay data only and never stage-checkpoint features, candidate evidence, or DP input. A compatible source-bound kinematic cache avoids reinference; backend initialization may still occur to validate cache identity. The detailed contract, current identities, and deferred work are in [`serve-phase-analysis.md`](../reference/serve-phase-analysis.md).
 
 Every emitted checkpoint has a timestamp or uncertainty interval, confidence, provenance (`body-kinematic`, `racket-visual`, `ball-racket-visual`, or `manual`), and availability. Missing output is valid.
 
@@ -50,7 +54,7 @@ The supplied originals are 1080p HEVC MOV files containing 120 or 240 fps video 
 - Source times are decimal seconds derived from integer media timestamps; never use a frame index divided by an assumed FPS as canonical time.
 - Analysis may sample frames sparsely, but export always reads the original source.
 - Ranges are half-open `[start, end)` and clamped to source duration.
-- Exact non-keyframe cuts may require re-encoding. A stream-copy mode must never masquerade as frame-accurate output.
+- Exact cuts that do not start on a codec keyframe may require re-encoding. A stream-copy mode must never masquerade as frame-accurate output.
 - Output preserves dimensions, orientation, normal source-timeline playback, and high-rate frame detail where FFmpeg/VideoToolbox supports it.
 - Temporary output is written beside the final result and atomically renamed after success.
 
@@ -108,8 +112,8 @@ Keep modules narrow and inference backends replaceable:
 | `pose.cache` | Fingerprinted, versioned observations and resumable writes | Treat stale results as valid |
 | `detection.features` | Pose sequence to normalized temporal features | Media/export operations |
 | `detection.ranges` | Deterministic state machine producing candidates | Hidden threshold changes |
-| `checkpoints` | Analyze accepted ranges using cached 3D kinematic waveforms and DP-selected phase anchors | Biomechanical diagnosis |
-| `evaluation` | Session-disjoint labels, matching, and reports | Tune against held-out labels |
+| `checkpoints` | Analyze accepted ranges using cached 3D kinematic waveforms and DP-selected stage anchors | Biomechanical diagnosis |
+| `evaluation` | Recording-session-disjoint labels, matching, and reports | Tune against held-out labels |
 
 All external process calls use argument arrays, not shell interpolation. JSON schemas include `schema_version`, source fingerprint, method/model version, and configuration ID.
 
@@ -131,7 +135,7 @@ MMPose, MMCV, and OpenMIM are not runtime dependencies. Model files live in loca
 
 Use two passes:
 
-1. **Coarse pass:** sample approximately 15–30 fps across the session, track the player, extract body keypoints, and find activity windows.
+1. **Coarse pass:** sample approximately 15–30 fps across the source, track the player, extract body keypoints, and find activity windows.
 2. **Focused pass:** inspect only candidate windows more densely for boundaries and checkpoints.
 
 Initial range detection is deterministic over pose-derived features: joint visibility, torso scale, wrist/elbow velocity, overhead evidence, whole-body motion, and return-to-rest evidence. Features normalize for translation and player scale and propagate missing observations explicitly. A versioned configuration owns smoothing, thresholds, hysteresis, duration bounds, merge gaps, and detector padding.
@@ -142,7 +146,7 @@ Model inference and range extraction are separate so detection can be tested wit
 
 Annotations use source-time ranges and are split by recording session. Report one-to-one interval matching at IoU 0.5, precision, recall, onset/end error, retained-duration ratio, and extra seconds per attempt. Report processing seconds per source minute and peak memory.
 
-Development begins with the local supplied sessions. Before calling automatic cutting reliable, reserve at least one entire session from threshold tuning and manually inspect every miss and false positive. Provisional personal-use targets are 95% recall and 90% precision; boundary padding must not hide poor localization.
+Development begins with the supplied local recording sessions. Before calling automatic cutting reliable, reserve at least one entire recording session from threshold tuning and manually inspect every miss and false positive. Provisional personal-use targets are 95% recall and 90% precision; boundary padding must not hide poor localization.
 
 Checkpoint evaluation reports each checkpoint separately against manually reviewed uncertainty intervals. Manual labels are kept locally under ignored `refs/annotations/<split>/`: label zero-based decoded source frames, then convert them through `mise run phase-annotate`, which resolves actual FFprobe timestamps and validates source fingerprint/duration against `attempts.json`. Never make canonical times from `frame_index / nominal_fps`. `mise run phase-evaluate` writes the deterministic report without mutating checkpoints or annotations. A useful-body-checkpoint gate may pass while racket/contact checkpoints remain unavailable.
 

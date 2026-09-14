@@ -1,12 +1,14 @@
-# Serve phase analysis
+# Serve stage-checkpoint analysis
 
-This document describes what `analyze-serve` actually does today. Historical M4 plans are in [archive/](archive/).
+> **Status:** Current · **State:** Maintained · **Work:** None · **As of:** 2026-09-14
+
+This document describes what `analyze-serve` actually does today. Its filename and several implemented command/type names retain the older “phase” terminology pending the migration recorded in the [glossary](glossary.md). The analyzer estimates point checkpoints for named serve stages; it does not segment continuous biomechanical phases. Historical M4 plans are in [archive/](../archive/).
 
 Throughout this document, **presentation timestamps (PTS)** are the source-video display times used for analysis; **frames per second (FPS)** is only a cadence description, not the canonical time base; **three-dimensional (3D)** refers to MediaPipe world-landmark coordinates; **second-order sections (SOS)** are the numerically stable filter representation; and **root mean square (RMS)** is the audio-energy summary.
 
 ## Usage
 
-`analyze-serve` accepts one video containing one serve, or one explicit range containing one serve. It does not require `cut`, `attempts.json`, or legacy sparse pose caches.
+`analyze-serve` accepts one source containing one attempt, or one explicit source range containing one attempt. It does not require `cut`, `attempts.json`, or legacy sparse pose caches.
 
 ```sh
 uv run --locked serve-review analyze-serve VIDEO
@@ -16,14 +18,14 @@ uv run --locked serve-review analyze-serve VIDEO \
   --cache output/my-cache/kinematic-track-v1.jsonl
 ```
 
-`mise.toml` does not currently expose an `analyze-serve` task; use the `uv run` command above. For a multi-serve session, first use `cut` to make/select one serve range or clip, then run `analyze-serve` on that range/clip.
+`mise.toml` does not currently expose an `analyze-serve` task; use the `uv run` command above. For a source containing multiple attempts, first use `cut` to make or select one attempt range or clip, then run `analyze-serve` on that range or clip.
 
 Optional `--anchor2comparison` is deliberately narrow: it compares only the fixed local development anchor-2 video with its fixed manual labels. It is not a general annotation interface.
 
 Outputs are written atomically beneath `<output-dir>/<video-stem>/`:
 
 ```text
-checkpoints.json                 selected eight checkpoints
+checkpoints.json                 selected checkpoints for eight stages
 serve-3d-diagnostics.json        versions, PTS, candidate counts, selected cues
 review-serve-3d/index.html       source-frame review page
 review-serve-3d/review.json      deterministic review manifest
@@ -37,7 +39,7 @@ A compatible cache avoids native-frame inference. The backend is still initializ
 
 ```mermaid
 flowchart LR
-    source["One source video or explicit serve range"]
+    source["One source or explicit attempt range"]
     pts["Decode every native frame<br/>preserve exact presentation timestamps (PTS)"]
     pose["MediaPipe Heavy inference<br/>world 3D landmarks + optional 2D overlay landmarks"]
     cache["Source/model-bound reusable<br/>kinematic-track cache"]
@@ -56,19 +58,19 @@ flowchart LR
 
 ### Time and coordinates
 
-- Source PTS is canonical. Frame number divided by nominal FPS is never used as phase time.
+- Source PTS is canonical. Frame number divided by nominal FPS is never used as checkpoint time.
 - Ranges are half-open: `[start_seconds, end_seconds)`.
-- Phase geometry uses [MediaPipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker) **world landmarks only**. Normalized 2D landmarks from the same inference may be rendered in review overlays but are never waveform values, candidate evidence, or DP inputs.
+- Stage-checkpoint geometry uses [MediaPipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker) **world landmarks only**. Normalized 2D landmarks from the same inference may be rendered in review overlays but are never waveform values, candidate evidence, or DP inputs.
 - In the current world convention, `+y` points down. Upward elevation is therefore `reference_y - joint_y`.
 - World landmarks are hip-centered per frame. They cannot measure absolute court height, jump height, or foot contact.
 
-Primary orchestration: [`src/serve_review/analyze_serve.py`](../src/serve_review/analyze_serve.py), `run_analyze_serve`.
+Primary orchestration: [`src/serve_review/analyze_serve.py`](../../src/serve_review/analyze_serve.py), `run_analyze_serve`.
 
 ## Cache and filtering
 
-The cache stores native-PTS 3D world observations, missingness, source/model identity, and optional normalized 2D overlay data. Stale/corrupt/incompatible caches are rejected or quarantined rather than silently reused. See [`src/serve_review/pose/world.py`](../src/serve_review/pose/world.py).
+The cache stores native-PTS 3D world observations, missingness, source/model identity, and optional normalized 2D overlay data. Stale/corrupt/incompatible caches are rejected or quarantined rather than silently reused. See [`src/serve_review/pose/world.py`](../../src/serve_review/pose/world.py).
 
-[`world_filter.py`](../src/serve_review/checkpoints/world_filter.py) applies a [Butterworth filter](https://en.wikipedia.org/wiki/Butterworth_filter) independently to every world `x/y/z` coordinate:
+[`world_filter.py`](../../src/serve_review/checkpoints/world_filter.py) applies a [Butterworth filter](https://en.wikipedia.org/wiki/Butterworth_filter) independently to every world `x/y/z` coordinate:
 
 ```text
 Butterworth low-pass: order 4, cutoff 12 Hz
@@ -100,7 +102,7 @@ Consequently, an edge motion value can differ materially from a visually similar
 
 ## Waveforms
 
-[`kinematic_waveforms.py`](../src/serve_review/checkpoints/kinematic_waveforms.py) defines the exact channel inventory in `CHANNEL_NAMES`, units in `CHANNEL_UNITS`, and construction in `build_kinematic_waveform_track`.
+[`kinematic_waveforms.py`](../../src/serve_review/checkpoints/kinematic_waveforms.py) defines the exact channel inventory in `CHANNEL_NAMES`, units in `CHANNEL_UNITS`, and construction in `build_kinematic_waveform_track`.
 
 Current channel families are:
 
@@ -122,24 +124,24 @@ Audio is decoded from the raw source once, band-limited to 1.0--3.5 kHz, RMS sam
 threshold = max(audio_transient_floor, median energy * audio_transient_ratio)
 ```
 
-A qualified binary flag remains `0`/`1`; it is not quantile-normalized away. See [`media/audio.py`](../src/serve_review/media/audio.py), `qualify_audio_transients`.
+A qualified binary flag remains `0`/`1`; it is not quantile-normalized away. See [`media/audio.py`](../../src/serve_review/media/audio.py), `qualify_audio_transients`.
 
-## Six searched phases
+## Six searched stage checkpoints
 
-The DP searches `start`, `release`, `loading`, `cocking`, `contact`, and `finish`. `acceleration` and `deceleration` are not independently searched:
+The DP directly searches checkpoints for `start`, `release`, `loading`, `cocking`, `contact`, and `finish`. `acceleration` and `deceleration` are not independently searched:
 
 ```text
 acceleration = midpoint(cocking, contact)
 deceleration = midpoint(contact, finish)
 ```
 
-The implementation currently submits a candidate at every native waveform sample for every searched phase. Candidate scores are weighted means over available cues. Continuous cues are normalized within the attempt using 5th/95th percentiles; missing cues are omitted from the available-weight denominator and reduce coverage. This dense-candidate policy is intentional current behavior, but sparse stage-event eligibility is deferred.
+The implementation currently submits a checkpoint candidate at every native waveform sample for every directly searched stage. Candidate scores are weighted means over available cues. Continuous cues are normalized within the attempt using 5th/95th percentiles; missing cues are omitted from the available-weight denominator and reduce coverage. This dense-candidate policy is intentional current behavior, but sparse stage-event eligibility is deferred.
 
-The authoritative cue names, weights, score normalization, and candidate codec are in [`composite_anchors.py`](../src/serve_review/checkpoints/composite_anchors.py): `COMPOSITE_CUE_NAMES`, `COMPOSITE_DEFAULT_WEIGHTS`, `_extract_raw_cues`, and `build_composite_anchor_set`.
+The authoritative cue names, weights, score normalization, and candidate codec are in [`composite_anchors.py`](../../src/serve_review/checkpoints/composite_anchors.py): `COMPOSITE_CUE_NAMES`, `COMPOSITE_DEFAULT_WEIGHTS`, `_extract_raw_cues`, and `build_composite_anchor_set`.
 
 ### Latest development cue weights
 
-| Phase | Cues and weights | Operational interpretation |
+| Stage | Cues and weights | Operational interpretation |
 | --- | --- | --- |
 | Start | arm low `.45`; stillness `.35`; arm-elevation rise `.15`; left-elbow extension `.05` | low/still toss setup is favored over the instantaneous rise peak. It is still a dense static score, not yet a low-before-sustained-rise event rule. |
 | Release | left-arm elevation `.30`; elevation rise `.30`; extension `.25`; preparation `.15` | toss-arm elevation/rise/extension estimate; no ball tracking claim. |
@@ -152,13 +154,13 @@ For contact, arm extension contributes only while the right wrist is above the s
 
 ## Chronology and finish bound
 
-[`six_anchor_solver.py`](../src/serve_review/checkpoints/six_anchor_solver.py) retains the existing DP recurrence, chronology, transition bonus, and skip behavior. The M4 `analyze-serve` configuration adds one development-specific transition guard:
+[`six_anchor_solver.py`](../../src/serve_review/checkpoints/six_anchor_solver.py) retains the existing DP recurrence, chronology, transition bonus, and skip behavior. The M4 `analyze-serve` configuration adds one development-specific transition guard:
 
 ```text
 selected_finish - selected_contact <= 0.80 s
 ```
 
-It applies only to the direct six-anchor `contact -> finish` pair. It does not alter the shared legacy solver's default behavior or other phase transitions. See `transition_feasible`; the M4 configuration is created in `analyze_serve.py` as `phase-solver-serve-default-v2`.
+It applies only to the direct six-anchor `contact -> finish` pair. It does not alter the shared legacy solver's default behavior or other stage transitions. See `transition_feasible`; the M4 configuration is created in `analyze_serve.py` as `phase-solver-serve-default-v2`.
 
 ## Version provenance
 
@@ -175,15 +177,15 @@ These IDs distinguish current outputs from earlier coordinate, cue, and configur
 
 ## Review and interpretation
 
-`review-serve-3d/index.html` is the primary human artifact. It renders selected source frames and, for the narrow anchor-2 comparison mode, manual frames and signed selected-minus-manual deltas. `serve-3d-diagnostics.json` records selected cue values, total scores, PTS, candidate counts, and identities.
+`review-serve-3d/index.html` is the primary review page. It renders checkpoint keyframes and, for the narrow anchor-2 comparison mode, manual keyframes and signed selected-minus-manual deltas. `serve-3d-diagnostics.json` records selected cue values, total scores, PTS, candidate counts, and identities.
 
-A high score means that the current waveform heuristic prefers the frame. It is useful alongside the review video and diagnostics, rather than as an authoritative biomechanical measurement. In particular:
+A high score means that the current waveform heuristic prefers the frame. It is useful alongside source playback, the review page, and diagnostics rather than as an authoritative biomechanical measurement. In particular:
 
 - no ball, racket, foot-contact, court-height, or jump-height claim is made;
 - 3D depth/angle estimates can be unreliable even when image appearance looks plausible;
 - filter-edge derivative channels have reduced recorded quality that is not yet score-weighted;
 - finish is currently bounded after contact but is not yet a robust “first meaningful trough” event;
-- all stage candidate sets remain dense.
+- all stage-checkpoint candidate sets remain dense.
 
 ## Deferred work
 
@@ -193,9 +195,9 @@ The latest configuration deliberately leaves these out of the current production
 2. 3D limb-length/depth consistency, angle-quality gating, and propagation of edge/quality metadata into scoring;
 3. arbitrary-time diagnostic inspection output;
 4. sparse, stage-specific event eligibility, including low-before-rise start and first meaningful post-contact-trough finish rules;
-5. configurable native-FPS processing/performance work for longer or multi-serve video. The current one-serve path already processes every native frame;
+5. configurable native-FPS processing/performance work for longer sources containing multiple attempts. The current one-attempt path already processes every native frame;
 6. ball and racket tracking, including explicit toss/release and racket-contact evidence;
 7. ground-plane or tennis-court grounding for foot contact, landing, and absolute body-height claims;
 8. a formally designed 3D--2D hybrid/observation-quality contract. At present, 2D remains overlay-only and cannot affect filtering, features, candidates, or DP;
 9. camera calibration, multi-view processing, and stronger viewpoint/handedness handling; and
-10. learned or corpus-trained phase models, including the separately proposed M5 experiment.
+10. learned or corpus-trained stage-checkpoint models, including the separately proposed M5 experiment.

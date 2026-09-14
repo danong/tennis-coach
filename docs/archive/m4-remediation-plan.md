@@ -1,6 +1,8 @@
 # M4 Remediation: Dense Body-Pose and Audio Checkpoints
 
-> **Status:** superseded on 2026-09-13 by [`m4-3d-waveform-plan.md`](m4-3d-waveform-plan.md). Retained as the frozen sparse-2D baseline and diagnostic history. The replacement still excludes ball/racket tracking, learned scoring, TCN training, multi-view support, and cross-player generalization claims.
+> **Status:** Historical · **State:** Superseded · **Work:** None · **As of:** 2026-09-14
+
+> **Status note:** superseded on 2026-09-13 by [`m4-3d-waveform-plan.md`](m4-3d-waveform-plan.md). Retained as the frozen sparse-2D baseline and diagnostic history. The replacement still excludes ball/racket tracking, learned scoring, TCN training, multi-view support, and cross-player generalization claims.
 
 ## 1. Narrow operating contract
 

@@ -1,6 +1,8 @@
 # M5 Proposal: Learned Tennis Serve Phase Detection
 
-> **Status:** proposed post-M4 experiment; not the current implementation plan. M4 remediation is deliberately limited to native 120 fps, right-handed, rear-view footage with existing body pose and audio. This document covers the later, separately gated learned-model path.
+> **Status:** Proposed · **State:** Deferred · **Work:** Deferred · **As of:** 2026-09-14
+
+> **Status note:** proposed post-M4 experiment; not the current implementation plan. M4 remediation is deliberately limited to native 120 fps, right-handed, rear-view footage with existing body pose and audio. This document covers the later, separately gated learned-model path.
 
 ## 1. System Overview & Scope
 

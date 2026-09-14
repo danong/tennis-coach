@@ -1,9 +1,11 @@
 # Research: Pose2Trajectory — Transformers on body pose to predict tennis-player trajectory (arXiv 2411.04501v1)
 
+> **Status:** Historical · **State:** Complete · **Work:** None · **As of:** 2026-09-14
+
 - Source URL: https://arxiv.org/html/2411.04501v1
 - Retrieval date (UTC): 2026-09-13 (retrieved live via `curl`; HTML parsed to text, ~167 kB HTML).
 - Source identity: Ali K. AlShami, Terrance Boult, Jugal Kalita (Computer Science Department, University of Colorado, Colorado Springs). arXiv:2411.04501v1 [cs.CV], 07 Nov 2024. Code link in paper: https://github.com/alshami52/Pose2Trajectory.git (not cloned or evaluated here).
-- Project context read: `README.md`, `docs/design.md`, `docs/roadmap.md` (M4/M5 leaves, gate handoff), `docs/archive/m4-remediation-plan.md`, plus `docs/m5-tcn-phase-detection.md` §§1–3 for the M4/M5 boundary.
+- Project context read: `README.md`, `docs/architecture/offline-pipeline.md`, `docs/plans/offline-roadmap.md` (M4/M5 leaves, gate handoff), `docs/archive/m4-remediation-plan.md`, plus `docs/proposals/m5-tcn-phase-detection.md` §§1–3 for the M4/M5 boundary.
 - PDF status: not consulted; this report is HTML-only (see §8 for limitation).
 
 > Convention used below: **"Paper claims"** are statements directly supported by the article text/equations/tables/figures. **"Project inference"** is our interpretation for Serve Review and is explicitly labeled as such. Nothing here is a claim of local-footage validation.
@@ -91,7 +93,7 @@ All items below fit the M4.1–M4.6 + remediation allowed files (feature/evidenc
 
 ## 6. What belongs in deferred M5 (and why)
 
-Per `docs/m5-tcn-phase-detection.md` (proposal) and remediation §8:
+Per `docs/proposals/m5-tcn-phase-detection.md` (proposal) and remediation §8:
 
 - **Learned temporal dynamics over dense native features (M5 §3 TCN + DP decoder).** *Why M5:* the paper's core forward lesson is that raw sequence context + coupling signals beat hand-extrema at longer horizons (Families 2→4, Table 1). Our M4 solver is fixed-form DP over hand-built evidence; any learned scorer (TCN *or* Transformer), learned duration priors, or modality dropout belongs in the separately gated M5 experiment with its data/labeling/eval apparatus — not in the narrow M4 repair. Note the architecture mismatch: M5 proposes heatmap-event TCN outputs; this paper predicts dense centroid tracks, so it motivates *sequence modeling in general*, not the M5 target formulation.
 - **Ball (and racket) channels.** *Why M5-or-later:* Family 4's long-horizon gain is the paper's best evidence that ball context helps; M5 §3 is the first place ball position/velocity/confidence channels appear. Still gated separately and never automatic ground truth.
