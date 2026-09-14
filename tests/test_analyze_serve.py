@@ -649,6 +649,8 @@ SYNTH_ANCHOR2 = {
 
 def test_anchor2_file_content_and_midpoints() -> None:
     path = REPO_ROOT / ANCHOR2_RELPATH
+    if not path.is_file():
+        pytest.skip("the deliberately ignored local anchor2 labels are unavailable")
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload == ANCHOR2_EXPECTED
     assert set(payload.keys()) == set(STAGE_ORDER)
