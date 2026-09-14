@@ -41,7 +41,9 @@ All metrics are timestamped, quality-qualified waveform channels, not one-frame 
 - bilateral elbow flexion/extension;
 - shoulder-line and hip-line tilt;
 - shoulder--hip transverse-plane separation;
-- torso and hip rise;
+- ``torso_verticality`` and ``hip_ankle_vertical_extent`` (upward-positive
+  body-relative vertical extents; MediaPipe world landmarks are hip-centered,
+  so neither measures absolute court height or global body translation);
 - left-arm elevation and extension;
 - right-wrist position relative to shoulder, elbow, torso, and pelvis;
 - wrist/forearm velocity, acceleration, and inflection signals;

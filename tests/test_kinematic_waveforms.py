@@ -154,9 +154,11 @@ def test_tilt_and_separation_on_level_geometry() -> None:
         )
         # +y down, upward-positive: torso = (hip - shoulder)/body = -1.0,
         # hip = (ankle - hip)/body = -1.0 for the canonical numbers.
-        assert _value(track, row, "torso_rise") == pytest.approx(-1.0, abs=0.02)
-        # Hip mid y=0, ankle mid y=-1 -> hip_rise = -1.0 body lengths.
-        assert _value(track, row, "hip_rise") == pytest.approx(-1.0, abs=0.02)
+        # MediaPipe world landmarks are hip-centered: neither channel measures
+        # absolute court/body translation.
+        assert _value(track, row, "torso_verticality") == pytest.approx(-1.0, abs=0.02)
+        # Hip mid y=0, ankle mid y=-1 -> hip_ankle_vertical_extent = -1.0 body lengths.
+        assert _value(track, row, "hip_ankle_vertical_extent") == pytest.approx(-1.0, abs=0.02)
 
 
 def test_left_arm_elevation_and_extension() -> None:
@@ -333,7 +335,7 @@ def test_degenerate_body_length_kills_normalized_only() -> None:
     track = kw.build_kinematic_waveform_track(filtered)
     pad = _padlen(filtered)
     row = (pad + (40 - pad)) // 2
-    assert _value(track, row, "torso_rise") is None
+    assert _value(track, row, "torso_verticality") is None
     assert _value(track, row, "right_wrist_rel_shoulder_distance") is None
     assert _value(track, row, "right_wrist_speed") is None
     # Knee flexion needs no body reference: still available.
@@ -405,8 +407,8 @@ def test_quality_reflects_edge_and_interpolated_support() -> None:
 
 
 def test_channel_inventory_and_units_are_versioned() -> None:
-    assert kw.KINEMATIC_WAVEFORMS_SCHEMA_VERSION == 2
-    assert kw.KINEMATIC_WAVEFORMS_METHOD_VERSION == "kinematic-waveforms-v2"
+    assert kw.KINEMATIC_WAVEFORMS_SCHEMA_VERSION == 3
+    assert kw.KINEMATIC_WAVEFORMS_METHOD_VERSION == "kinematic-waveforms-v3"
     assert kw.COORDINATE_CONVENTION_VERSION == "mediapipe-world-hip-centered-v2"
     assert kw.NORMALIZATION_VERSION == "torso-length-normalization-v1"
     assert kw.DERIVATIVE_METHOD_VERSION == "centered-nonuniform-pts-v1"
@@ -422,8 +424,8 @@ def test_channel_inventory_and_units_are_versioned() -> None:
         "shoulder_tilt_deg",
         "hip_tilt_deg",
         "shoulder_hip_separation_transverse_deg",
-        "torso_rise",
-        "hip_rise",
+        "torso_verticality",
+        "hip_ankle_vertical_extent",
         "left_arm_elevation",
         "left_arm_extension",
         "right_wrist_speed",

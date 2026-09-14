@@ -614,9 +614,9 @@ def _direct_candidate(
         cue_values=cues,
         provenance="kinematic_waveform",
         temporal_uncertainty_seconds=0.002,
-        method_version="composite-anchors-v2",
-        config_id="composite-anchors-default-v2",
-        schema_version=2,
+        method_version="composite-anchors-v3",
+        config_id="composite-anchors-default-v3",
+        schema_version=3,
     )
 
 

@@ -101,12 +101,13 @@ Channel inventory (see :data:`CHANNEL_NAMES`, 40 channels):
 - Bilateral knee/elbow flexion angles (deg) plus timestamp-aware first
   derivatives (deg/s).
 - Shoulder-line and hip-line tilt (deg); transverse shoulder-hip
-  separation (deg); torso and hip rise (body lengths, explicitly
-  upward-positive body-relative vertical extents
-  ``torso_rise = (hip_mid_y - shoulder_mid_y) / body_length`` and
-  ``hip_rise = (ankle_mid_y - hip_mid_y) / body_length`` with ``+y``
-  down, not absolute court height, because MediaPipe world is
-  hip-centered per frame and global translation is unsolved).
+  separation (deg); ``torso_verticality`` and
+  ``hip_ankle_vertical_extent`` (body lengths, explicitly upward-positive
+  body-relative vertical extents: ``torso_verticality = (hip_mid_y -
+  shoulder_mid_y) / body_length`` and ``hip_ankle_vertical_extent =
+  (ankle_mid_y - hip_mid_y) / body_length``). MediaPipe world landmarks are
+  hip-centered, so neither channel measures absolute court height or global
+  body translation.
 - Left-arm elevation (body lengths, shoulder-minus-wrist vertical,
   ``(shoulder_y - wrist_y) / body_length``, upward-positive with ``+y``
   down) and extension (body lengths, shoulder-wrist reach).
@@ -159,9 +160,9 @@ __all__ = [
 ]
 
 #: Version of every kinematic-waveform schema in this module.
-KINEMATIC_WAVEFORMS_SCHEMA_VERSION = 2
+KINEMATIC_WAVEFORMS_SCHEMA_VERSION = 3
 #: Method identity recorded on every waveform track.
-KINEMATIC_WAVEFORMS_METHOD_VERSION = "kinematic-waveforms-v2"
+KINEMATIC_WAVEFORMS_METHOD_VERSION = "kinematic-waveforms-v3"
 #: Versioned coordinate-frame convention (axes preserved verbatim).
 COORDINATE_CONVENTION_VERSION = "mediapipe-world-hip-centered-v2"
 #: Versioned body-length normalization policy.
@@ -190,8 +191,8 @@ CHANNEL_NAMES: tuple[str, ...] = (
     "shoulder_tilt_deg",
     "hip_tilt_deg",
     "shoulder_hip_separation_transverse_deg",
-    "torso_rise",
-    "hip_rise",
+    "torso_verticality",
+    "hip_ankle_vertical_extent",
     "left_arm_elevation",
     "left_arm_extension",
     "right_wrist_rel_shoulder_dx",
@@ -247,8 +248,8 @@ _DEG_PER_SEC_CHANNELS = frozenset(
 )
 _BODY_LENGTH_CHANNELS = frozenset(
     {
-        "torso_rise",
-        "hip_rise",
+        "torso_verticality",
+        "hip_ankle_vertical_extent",
         "left_arm_elevation",
         "left_arm_extension",
         "right_wrist_rel_shoulder_dx",
@@ -408,7 +409,7 @@ class KinematicWaveformsConfig:
     torso-length reference against degenerate geometry.
     """
 
-    config_id: str = "kinematic-waveforms-default-v2"
+    config_id: str = "kinematic-waveforms-default-v3"
     coordinate_convention: str = COORDINATE_CONVENTION_VERSION
     normalization: str = NORMALIZATION_VERSION
     derivative_method: str = DERIVATIVE_METHOD_VERSION
@@ -1622,29 +1623,29 @@ def build_kinematic_waveform_track(
             (_LEFT_SHOULDER, _RIGHT_SHOULDER, _LEFT_HIP, _RIGHT_HIP),
         )
 
-        # Torso / hip rise (body-relative vertical extents).
+        # Torso verticality / hip-to-ankle vertical extent (body-relative).
         shoulder_mid = _midpoint(_get(row, _LEFT_SHOULDER), _get(row, _RIGHT_SHOULDER))
         hip_mid = _midpoint(_get(row, _LEFT_HIP), _get(row, _RIGHT_HIP))
         ankle_mid = _midpoint(_get(row, _LEFT_ANKLE), _get(row, _RIGHT_ANKLE))
-        torso_rise: float | None = None
+        torso_verticality: float | None = None
         if shoulder_mid is not None and hip_mid is not None and length is not None:
             # Upward-positive with +y down: hip_above_shoulder reads positive.
-            torso_rise = (hip_mid[1] - shoulder_mid[1]) / scale
+            torso_verticality = (hip_mid[1] - shoulder_mid[1]) / scale
         _set_base(
-            "torso_rise",
+            "torso_verticality",
             row,
-            torso_rise,
+            torso_verticality,
             (_LEFT_SHOULDER, _RIGHT_SHOULDER, _LEFT_HIP, _RIGHT_HIP),
             needs_body=True,
         )
-        hip_rise: float | None = None
+        hip_ankle_vertical_extent: float | None = None
         if hip_mid is not None and ankle_mid is not None and length is not None:
             # Upward-positive with +y down: hip_above_ankle reads positive.
-            hip_rise = (ankle_mid[1] - hip_mid[1]) / scale
+            hip_ankle_vertical_extent = (ankle_mid[1] - hip_mid[1]) / scale
         _set_base(
-            "hip_rise",
+            "hip_ankle_vertical_extent",
             row,
-            hip_rise,
+            hip_ankle_vertical_extent,
             (_LEFT_HIP, _RIGHT_HIP, _LEFT_ANKLE, _RIGHT_ANKLE),
             needs_body=True,
         )

@@ -66,14 +66,16 @@ evidence after the documented orientation):
   (``elbow_flexion_right``), ``stillness``.
 - cocking: ``right_wrist_elevation_trough``
   (``-right_wrist_rel_shoulder_dy`` with ``+y``-down upward-positive dy), ``right_wrist_acceleration``,
-  ``torso_rise``, ``knee_unload`` (``-mean knee flexion``),
+  ``torso_verticality`` (the upward-positive body-relative torso verticality
+  channel; MediaPipe world landmarks are hip-centered, so this is not global
+  court/body translation), ``knee_unload`` (``-mean knee flexion``),
   ``loading_unwind`` (``-shoulder_hip_separation_transverse_deg``).
 - contact: ``right_wrist_elevation_apex``
   (``right_wrist_rel_shoulder_dy``, upward-positive with ``+y`` down),
   ``right_wrist_speed_peak`` (``right_wrist_speed_peak`` flag: strict local
   speed maximum only; trough valleys never score), ``right_wrist_acceleration_peak``
   (``right_wrist_accel_peak`` flag: strict local acceleration maximum only),
-  ``torso_rise``, ``right_arm_extension`` (directional
+  ``torso_verticality``, ``right_arm_extension`` (directional
   ``right_wrist_rel_shoulder_distance`` gated by positive
   ``right_wrist_rel_shoulder_dy``: raw is ``distance`` when the wrist is
   above the shoulder and ``0.0`` when at/below, so a straight arm hanging
@@ -130,11 +132,11 @@ __all__ = [
 ]
 
 #: Version of the composite-anchor schemas in this module.
-COMPOSITE_ANCHORS_SCHEMA_VERSION = 2
+COMPOSITE_ANCHORS_SCHEMA_VERSION = 3
 #: Method identity recorded on every candidate and set.
-COMPOSITE_ANCHORS_METHOD_VERSION = "composite-anchors-v2"
+COMPOSITE_ANCHORS_METHOD_VERSION = "composite-anchors-v3"
 #: Default configuration identity (untuned generic weights).
-COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v2"
+COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v3"
 #: Provenance recorded on every candidate (pure waveform evidence only).
 COMPOSITE_ANCHOR_PROVENANCE = "kinematic_waveform"
 
@@ -174,7 +176,7 @@ COMPOSITE_CUE_NAMES: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "cocking": (
             "right_wrist_elevation_trough",
             "right_wrist_acceleration",
-            "torso_rise",
+            "torso_verticality",
             "knee_unload",
             "loading_unwind",
         ),
@@ -182,7 +184,7 @@ COMPOSITE_CUE_NAMES: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "right_wrist_elevation_apex",
             "right_wrist_speed_peak",
             "right_wrist_acceleration_peak",
-            "torso_rise",
+            "torso_verticality",
             "right_arm_extension",
             "audio_transient",
         ),
@@ -227,7 +229,7 @@ COMPOSITE_DEFAULT_WEIGHTS: Mapping[str, Mapping[str, float]] = MappingProxyType(
             {
                 "right_wrist_elevation_trough": 0.25,
                 "right_wrist_acceleration": 0.20,
-                "torso_rise": 0.15,
+                "torso_verticality": 0.15,
                 "knee_unload": 0.15,
                 "loading_unwind": 0.25,
             }
@@ -237,7 +239,7 @@ COMPOSITE_DEFAULT_WEIGHTS: Mapping[str, Mapping[str, float]] = MappingProxyType(
                 "right_wrist_elevation_apex": 0.25,
                 "right_wrist_speed_peak": 0.20,
                 "right_wrist_acceleration_peak": 0.15,
-                "torso_rise": 0.10,
+                "torso_verticality": 0.10,
                 "right_arm_extension": 0.10,
                 "audio_transient": 0.20,
             }
@@ -805,7 +807,7 @@ def _extract_raw_cues(
     separation = list(_series(track, "shoulder_hip_separation_transverse_deg"))
     shoulder_tilt = list(_series(track, "shoulder_tilt_deg"))
     hip_tilt = list(_series(track, "hip_tilt_deg"))
-    torso = list(_series(track, "torso_rise"))
+    torso = list(_series(track, "torso_verticality"))
     wrist_dy = list(_series(track, "right_wrist_rel_shoulder_dy"))
     wrist_dist = list(_series(track, "right_wrist_rel_shoulder_distance"))
     wrist_acc = list(_series(track, "right_wrist_acceleration"))
@@ -853,7 +855,7 @@ def _extract_raw_cues(
         "cocking": {
             "right_wrist_elevation_trough": list(trough),
             "right_wrist_acceleration": list(wrist_acc),
-            "torso_rise": list(torso),
+            "torso_verticality": list(torso),
             "knee_unload": list(knee_unload),
             "loading_unwind": list(unwind),
         },
@@ -861,7 +863,7 @@ def _extract_raw_cues(
             "right_wrist_elevation_apex": list(wrist_dy),
             "right_wrist_speed_peak": list(speed_peak),
             "right_wrist_acceleration_peak": list(accel_peak),
-            "torso_rise": list(torso),
+            "torso_verticality": list(torso),
             "right_arm_extension": _directional_arm_extension(wrist_dy, wrist_dist),
             "audio_transient": list(audio_cue),
         },
@@ -1307,7 +1309,7 @@ def _validate_track(name: str, track: Any) -> KinematicWaveformTrack:
         "shoulder_hip_separation_transverse_deg",
         "shoulder_tilt_deg",
         "hip_tilt_deg",
-        "torso_rise",
+        "torso_verticality",
         "right_wrist_rel_shoulder_dy",
         "right_wrist_rel_shoulder_distance",
         "right_wrist_speed",
