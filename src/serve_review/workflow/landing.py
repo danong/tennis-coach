@@ -53,6 +53,60 @@ def _artifact_html(artifact: ArtifactRecord, destination: Path) -> str:
     return f"<li>{anchor} ({detail})</li>"
 
 
+def render_batch_index(entries: object, destination: object) -> Path:
+    """Publish an explicit, deterministic index for multiple source pages."""
+
+    temporary: Path | None = None
+    try:
+        target = Path(destination).expanduser()
+        values = sorted(
+            ((str(label), str(path)) for label, path in entries),
+            key=lambda value: (value[0], value[1]),
+        )
+        links = [
+            f'<li><a href="{quote(os.path.relpath(path, target.parent), safe="/")}">'
+            f"{html.escape(label, quote=True)}</a></li>"
+            for label, path in values
+        ]
+        body = "\n".join(
+            [
+                "<!doctype html>",
+                '<html lang="en"><head><meta charset="utf-8">'
+                "<title>Serve Review</title></head><body>",
+                "<h1>Serve Review</h1>",
+                "<ul>",
+                *links,
+                "</ul>",
+                "</body></html>",
+                "",
+            ]
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            dir=str(target.parent),
+            prefix=target.name + ".tmp-",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        return target
+    except Exception as exc:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise LandingRenderError(
+            f"could not publish batch landing page: {exc}"
+        ) from exc
+
+
 def render_landing_page(page: LandingPage, destination: object) -> Path:
     """Render explicit records without inspecting any source or artifact path."""
 

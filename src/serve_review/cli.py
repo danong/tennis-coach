@@ -1324,6 +1324,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="ffprobe executable (default: ffprobe)",
     )
     world_parser.set_defaults(handler=extract_world_cmd)
+
+    # Keep workflow commands isolated from this long-standing parser.
+    from serve_review.workflow.cli import add_workflow_parsers
+    add_workflow_parsers(subparsers)
     return parser
 
 

@@ -5,6 +5,7 @@ injected (or existing) Python services and every output is source/attempt scoped
 """
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from typing import Callable, Any
@@ -62,6 +63,7 @@ def process_registered_source(
     producer_method: str,
     producer_config: str,
     explicit_range: MediaRange | None = None,
+    padding_seconds: float | None = None,
     run_cut_fn: Callable[..., Any] = _default_cut,
     run_analyze_fn: Callable[..., Any] = _default_analyze,
 ) -> WorkflowRunRecord:
@@ -78,6 +80,13 @@ def process_registered_source(
         raise ValueError("explicit-range mode requires explicit_range")
     if mode != "explicit-range" and explicit_range is not None:
         raise ValueError("explicit_range is only valid in explicit-range mode")
+    if padding_seconds is not None and (
+        isinstance(padding_seconds, bool)
+        or not isinstance(padding_seconds, (int, float))
+        or not math.isfinite(padding_seconds)
+        or padding_seconds < 0
+    ):
+        raise ValueError("padding_seconds must be finite and nonnegative")
 
     try:
         run_id = run_id_factory()
@@ -107,7 +116,10 @@ def process_registered_source(
     ranges: list[MediaRange] = []
     try:
         if mode == "normal":
-            cut = run_cut_fn(video, output_dir=compatibility_dir, mode="both", overwrite=False)
+            cut_kwargs = {"output_dir": compatibility_dir, "mode": "both", "overwrite": False}
+            if padding_seconds is not None:
+                cut_kwargs["padding_seconds"] = padding_seconds
+            cut = run_cut_fn(video, **cut_kwargs)
             metadata = getattr(cut, "source_metadata", None)
             document = getattr(cut, "attempts_document", None)
             if metadata is None or getattr(metadata, "fingerprint", None) != source.source_fingerprint:
