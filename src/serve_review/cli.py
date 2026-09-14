@@ -1029,8 +1029,7 @@ def build_parser() -> argparse.ArgumentParser:
             "availability, anomalies), and write a deterministic review "
             "index (review.json, index.html, MANIFEST.txt). Unavailable or "
             "unsupported phases produce no image but appear in the index. "
-            "Contact is labelled with provenance and source time and is "
-            "never claimed as exact visual observation. Never modifies "
+            "Contact is labelled with provenance and source time. Never modifies "
             "checkpoints.json, attempts.json, clips, or the compilation."
         ),
     )
