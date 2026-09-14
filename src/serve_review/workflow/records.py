@@ -706,3 +706,210 @@ class WorkflowRunRecord:
         except (TypeError, UnicodeError, ValueError, WorkflowRecordError) as exc:
             if isinstance(exc, WorkflowRecordError): raise
             raise WorkflowRecordError(f"invalid workflow run JSON: {exc}.") from exc
+
+
+_LANDING_KINDS = {"clip", "compilation", "checkpoint", "review", "json", "diagnostic", "other"}
+_LANDING_STATUSES = {"available", "missing", "stale", "failed"}
+def _landing_path(value: Any) -> str:
+    if not isinstance(value, str) or not value or not os.path.isabs(value):
+        raise WorkflowRecordError("landing artifact path must be an absolute string.")
+    normalized = os.path.normpath(value)
+    if value != normalized:
+        raise WorkflowRecordError("landing artifact path must be normalized.")
+    return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactRecord:
+    """Explicit metadata for one artifact linked by a landing page."""
+
+    label: str
+    path: str
+    kind: str
+    status: str
+    remediation: str | None = None
+    stage: str | None = None
+    time_seconds: float | None = None
+    attempt_label: str | None = None
+
+    def __post_init__(self) -> None:
+        _strict_string("artifact label", self.label)
+        object.__setattr__(self, "path", _landing_path(self.path))
+        if self.kind not in _LANDING_KINDS:
+            raise WorkflowRecordError("artifact kind is unsupported.")
+        if self.status not in _LANDING_STATUSES:
+            raise WorkflowRecordError("artifact status is unsupported.")
+        if self.remediation is not None:
+            _strict_string("artifact remediation", self.remediation)
+        checkpoint_values = (self.stage, self.time_seconds, self.attempt_label)
+        if self.kind == "checkpoint":
+            _strict_string("checkpoint stage", self.stage)
+            if isinstance(self.time_seconds, bool) or not isinstance(self.time_seconds, (int, float)) or not math.isfinite(self.time_seconds) or self.time_seconds < 0:
+                raise WorkflowRecordError("checkpoint time_seconds must be finite and nonnegative.")
+            _strict_string("checkpoint attempt_label", self.attempt_label)
+        elif any(value is not None for value in checkpoint_values):
+            raise WorkflowRecordError("checkpoint fields are only valid for checkpoint artifacts.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "attempt_label": self.attempt_label,
+            "kind": self.kind,
+            "label": self.label,
+            "path": self.path,
+            "remediation": self.remediation,
+            "stage": self.stage,
+            "status": self.status,
+            "time_seconds": self.time_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> ArtifactRecord:
+        keys = {
+            "attempt_label", "kind", "label", "path", "remediation",
+            "stage", "status", "time_seconds",
+        }
+        if not isinstance(values, dict) or set(values) != keys:
+            raise WorkflowRecordError("landing artifact keys are invalid.")
+        return cls(
+            label=values["label"], path=values["path"], kind=values["kind"],
+            status=values["status"], remediation=values["remediation"],
+            stage=values["stage"], time_seconds=values["time_seconds"],
+            attempt_label=values["attempt_label"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptRecord:
+    """Explicit attempt presentation data and its artifacts."""
+
+    attempt_id: str
+    display_label: str
+    status: str
+    remediation: str | None
+    artifacts: tuple[ArtifactRecord, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.attempt_id, str) or _ATTEMPT_ID.fullmatch(self.attempt_id) is None:
+            raise WorkflowRecordError("attempt_id is invalid.")
+        _strict_string("attempt display_label", self.display_label)
+        if self.status not in _LANDING_STATUSES:
+            raise WorkflowRecordError("attempt status is unsupported.")
+        if self.remediation is not None:
+            _strict_string("attempt remediation", self.remediation)
+        if not isinstance(self.artifacts, tuple) or any(not isinstance(a, ArtifactRecord) for a in self.artifacts):
+            raise WorkflowRecordError("attempt artifacts must be an explicit tuple of ArtifactRecord.")
+        paths = tuple(a.path for a in self.artifacts)
+        if len(paths) != len(set(paths)):
+            raise WorkflowRecordError("attempt artifacts must have unique paths.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+            "attempt_id": self.attempt_id,
+            "display_label": self.display_label,
+            "remediation": self.remediation,
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> AttemptRecord:
+        keys = {"artifacts", "attempt_id", "display_label", "remediation", "status"}
+        if (
+            not isinstance(values, dict)
+            or set(values) != keys
+            or not isinstance(values["artifacts"], list)
+        ):
+            raise WorkflowRecordError("landing attempt keys are invalid.")
+        return cls(
+            attempt_id=values["attempt_id"],
+            display_label=values["display_label"],
+            status=values["status"],
+            remediation=values["remediation"],
+            artifacts=tuple(
+                ArtifactRecord.from_dict(item) for item in values["artifacts"]
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LandingPage:
+    """Complete explicit input for a deterministic source landing page."""
+
+    source: SourceRecord
+    source_artifacts: tuple[ArtifactRecord, ...]
+    attempts: tuple[AttemptRecord, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, SourceRecord):
+            raise WorkflowRecordError("landing source must be a SourceRecord.")
+        if not isinstance(self.source_artifacts, tuple) or any(not isinstance(a, ArtifactRecord) for a in self.source_artifacts):
+            raise WorkflowRecordError("landing source_artifacts must be an explicit tuple.")
+        if not isinstance(self.attempts, tuple) or any(not isinstance(a, AttemptRecord) for a in self.attempts):
+            raise WorkflowRecordError("landing attempts must be an explicit tuple.")
+        source_paths = tuple(artifact.path for artifact in self.source_artifacts)
+        if len(source_paths) != len(set(source_paths)):
+            raise WorkflowRecordError(
+                "landing source artifacts must have unique paths."
+            )
+        ids = tuple(a.attempt_id for a in self.attempts)
+        if len(ids) != len(set(ids)):
+            raise WorkflowRecordError("landing attempts must have unique IDs.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "attempts": [attempt.to_dict() for attempt in self.attempts],
+            "source": self.source.to_dict(),
+            "source_artifacts": [
+                artifact.to_dict() for artifact in self.source_artifacts
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> LandingPage:
+        keys = {"attempts", "source", "source_artifacts"}
+        if (
+            not isinstance(values, dict)
+            or set(values) != keys
+            or not isinstance(values["attempts"], list)
+            or not isinstance(values["source_artifacts"], list)
+        ):
+            raise WorkflowRecordError("landing page keys are invalid.")
+        return cls(
+            source=SourceRecord.from_dict(values["source"]),
+            source_artifacts=tuple(
+                ArtifactRecord.from_dict(item)
+                for item in values["source_artifacts"]
+            ),
+            attempts=tuple(
+                AttemptRecord.from_dict(item) for item in values["attempts"]
+            ),
+        )
+
+    def to_json(self) -> str:
+        return json.dumps(
+            self.to_dict(), ensure_ascii=False, sort_keys=True, indent=2,
+            allow_nan=False,
+        ) + "\n"
+
+    @classmethod
+    def from_json(cls, data: str | bytes | bytearray) -> LandingPage:
+        def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError(f"duplicate object key {key!r}")
+                result[key] = value
+            return result
+
+        def constant(value: str) -> None:
+            raise ValueError(f"non-standard JSON constant {value!r}")
+
+        try:
+            if isinstance(data, (bytes, bytearray)):
+                data = bytes(data).decode("utf-8")
+            value = json.loads(
+                data, parse_constant=constant, object_pairs_hook=pairs
+            )
+        except (TypeError, UnicodeError, ValueError) as exc:
+            raise WorkflowRecordError(f"invalid landing page JSON: {exc}.") from exc
+        return cls.from_dict(value)
