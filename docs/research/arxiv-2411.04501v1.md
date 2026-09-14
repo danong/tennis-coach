@@ -3,7 +3,7 @@
 - Source URL: https://arxiv.org/html/2411.04501v1
 - Retrieval date (UTC): 2026-09-13 (retrieved live via `curl`; HTML parsed to text, ~167 kB HTML).
 - Source identity: Ali K. AlShami, Terrance Boult, Jugal Kalita (Computer Science Department, University of Colorado, Colorado Springs). arXiv:2411.04501v1 [cs.CV], 07 Nov 2024. Code link in paper: https://github.com/alshami52/Pose2Trajectory.git (not cloned or evaluated here).
-- Project context read: `README.md`, `docs/design.md`, `docs/roadmap.md` (M4/M5 leaves, gate handoff), `docs/m4-remediation-plan.md`, plus `docs/m5-tcn-phase-detection.md` §§1–3 for the M4/M5 boundary.
+- Project context read: `README.md`, `docs/design.md`, `docs/roadmap.md` (M4/M5 leaves, gate handoff), `docs/archive/m4-remediation-plan.md`, plus `docs/m5-tcn-phase-detection.md` §§1–3 for the M4/M5 boundary.
 - PDF status: not consulted; this report is HTML-only (see §8 for limitation).
 
 > Convention used below: **"Paper claims"** are statements directly supported by the article text/equations/tables/figures. **"Project inference"** is our interpretation for Serve Review and is explicitly labeled as such. Nothing here is a claim of local-footage validation.

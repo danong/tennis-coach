@@ -1,6 +1,6 @@
 # Serve Review offline pipeline design
 
-Status: implementation specification. M1–M3 are complete. The dense MediaPipe 3D kinematic-waveform M4 replacement is implemented and undergoing development-only calibration; held-out phase evaluation remains blocked until that configuration is frozen. See [`m4-3d-waveform-plan.md`](m4-3d-waveform-plan.md).
+Status: implementation specification. M1–M3 are complete. The dense MediaPipe 3D kinematic-waveform M4 replacement is implemented and frozen after accepted development confirmation; one held-out phase evaluation remains. See [`serve-phase-analysis.md`](serve-phase-analysis.md).
 
 ## 1. Product contract
 
@@ -35,7 +35,7 @@ The first useful release must:
 
 ### Checkpoints
 
-Checkpoint analysis runs only inside accepted serve ranges. The active M4 path uses dense native-frame MediaPipe world-landmark tracks, segment-safe low-pass filtering, timestamped 3D kinematic waveforms, and optional aligned raw-source audio for contact. It detects composite candidates for `start`, `release`, `loading`, `cocking`, `contact`, and `finish` with dynamic-programming chronology selection; `acceleration` and `deceleration` are exact temporal midpoints between selected bounding anchors. Normalized 2D landmarks from the same inference are review-overlay data only and never phase features, candidate evidence, or DP input. A compatible source-bound kinematic cache avoids reinference; backend initialization may still occur to validate cache identity. The detailed contract, current development identities, and deferred work are in [`m4-3d-waveform-plan.md`](m4-3d-waveform-plan.md).
+Checkpoint analysis runs only inside accepted serve ranges. The active M4 path uses dense native-frame MediaPipe world-landmark tracks, segment-safe low-pass filtering, timestamped 3D kinematic waveforms, and optional aligned raw-source audio for contact. It detects composite candidates for `start`, `release`, `loading`, `cocking`, `contact`, and `finish` with dynamic-programming chronology selection; `acceleration` and `deceleration` are exact temporal midpoints between selected bounding anchors. Normalized 2D landmarks from the same inference are review-overlay data only and never phase features, candidate evidence, or DP input. A compatible source-bound kinematic cache avoids reinference; backend initialization may still occur to validate cache identity. The detailed contract, current identities, and deferred work are in [`serve-phase-analysis.md`](serve-phase-analysis.md).
 
 Every emitted checkpoint has a timestamp or uncertainty interval, confidence, provenance (`body-kinematic`, `racket-visual`, `ball-racket-visual`, or `manual`), and availability. Missing output is valid.
 

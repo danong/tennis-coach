@@ -1,6 +1,6 @@
 # Serve Review offline roadmap
 
-Status: active plan, 2026-09-14. M1–M3 implementation is complete. The original sparse M4 development gate failed; its dense 3D kinematic-waveform replacement is implemented and remains in development-only calibration before held-out evaluation. This replaces the archived iOS-first roadmap in `old-docs/`.
+Status: active plan, 2026-09-14. M1–M3 implementation is complete. The original sparse M4 development gate failed; its dense 3D kinematic-waveform replacement is implemented, frozen after development confirmation, and awaits one held-out evaluation. This replaces the archived iOS-first roadmap in `docs/archive/old-docs/`.
 
 ## Current state
 
@@ -300,7 +300,7 @@ M3 improvement is out of scope for this M4 remediation. This remediation neither
 ### M4.7 — Native 3D kinematic track
 
 - **Objective:** For one explicit serve video/range, run the approved Heavy model once on every native frame and persist a reusable source-bound 3D kinematic track: `pose_world_landmarks`, quality, missingness, and exact presentation timestamps (PTS). Normalized 2D landmarks are optional review-overlay payload only, never phase evidence.
-- **Dependency:** approved 3D waveform plan.
+- **Dependency:** archived 3D waveform implementation plan; see [`serve-phase-analysis.md`](serve-phase-analysis.md) for the current operational reference.
 - **Exit:** synthetic/cache tests prove identity, native support, missingness, cancellation, exact PTS, and optional 2D overlay alignment.
 
 ### M4.8 — Segment-safe Butterworth filtering

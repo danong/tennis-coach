@@ -22,10 +22,11 @@ A local command-line tool for aiding the analysis of videos, ideally slow-motion
 
 - [Design](docs/design.md): offline behavior, media rules, architecture, detection, checkpoints, and evaluation.
 - [Roadmap](docs/roadmap.md): single-run leaves, dependencies, allowed scope, checks, and milestone gates.
-- [M4 remediation plan](docs/m4-remediation-plan.md): current dense body-pose/audio repair under a narrow 120 fps rear-view contract.
+- [Serve phase analysis](docs/serve-phase-analysis.md): current native-PTS 3D phase pipeline, cues, weights, filtering, outputs, limitations, and code pointers.
+- [Archive](docs/archive/): superseded M4 remediation and iOS-first planning documents.
 - [M5 TCN proposal](docs/m5-tcn-phase-detection.md): deferred learned multi-view phase-detection experiment.
 
-The design is the behavioral source of truth. The roadmap defines delivery order and evidence required to mark work complete. If they conflict, resolve and update both before implementation.
+The design is the general behavioral source of truth. [Serve phase analysis](docs/serve-phase-analysis.md) is the operational source of truth for the current native-3D phase path; the roadmap defines delivery order and gates. If they conflict, resolve and update them before implementation.
 
 ## Offline development setup
 
@@ -47,7 +48,8 @@ Current commands:
 | `mise run test` | Run offline pipeline tests. |
 | `mise run check` | Run diagnostics and tests. |
 | `mise run cut -- <video> --padding 1 --output <compilation\|clips\|both>` | Detect accepted serves and export a compilation, clips, or both. |
-| `mise run analyze -- <video>` | Reuse compatible cached poses/audio and write `checkpoints.json`. |
+| `mise run analyze -- <video>` | Legacy attempt-based analysis; requires prior `cut` output or `--attempts`. |
+| `uv run --locked serve-review analyze-serve <video> [--start-seconds S --end-seconds E]` | Current one-serve native-PTS 3D phase analysis; writes checkpoints, diagnostics, review, and reusable world cache. |
 | `mise run review-phases -- <video>` | Render labeled pose-overlay keyframes for manual phase review. |
 | `mise run phase-annotate -- <video> --attempts <attempts.json> --labels <labels.json> --output <annotations.json>` | Convert zero-based decoded-frame labels to exact-PTS private annotations. |
 | `mise run phase-evaluate -- --checkpoints <checkpoints.json> --annotations <annotations.json> --output <report.json>` | Write the deterministic local phase-gate report. |
@@ -55,7 +57,7 @@ Current commands:
 
 Use `uv run python` for ad-hoc Python commands rather than an unversioned system `python`. Keep user labels and generated annotation manifests under local `refs/annotations/`; use decoded source timestamps, never `frame / assumed_fps`. Large source videos, downloaded models, caches, and generated outputs are kept out of normal source changes.
 
-The archived iOS-first plan is retained in `old-docs/` for reference but is not an active implementation specification.
+Historical iOS-first and superseded remediation plans are retained in [`docs/archive/`](docs/archive/) for reference only; they are not active implementation specifications. For current phase-analysis behavior, use [Serve phase analysis](docs/serve-phase-analysis.md).
 
 ## Footage and local storage
 

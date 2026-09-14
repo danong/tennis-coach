@@ -2,7 +2,7 @@
 
 ## Project
 
-Serve Review is currently a local macOS command-line pipeline for finding tennis serves in long iPhone slow-motion videos, exporting clips/a compilation, and later identifying review checkpoints. Read `docs/design.md` for behavior and `docs/roadmap.md` for ordered leaf work. `old-docs/` is archived iOS-first planning and is not the current specification. Reusable operational procedures are under `docs/procedures/`; consult that directory for anchor-video and downloaded slow-motion corpus workflows when asked to repeat those tasks.
+Serve Review is currently a local macOS command-line pipeline for finding tennis serves in long iPhone slow-motion videos, exporting clips/a compilation, and later identifying review checkpoints. Read `docs/design.md` for behavior and `docs/roadmap.md` for ordered leaf work. `docs/archive/old-docs/` is archived iOS-first planning and is not the current specification. Read `docs/serve-phase-analysis.md` for the current native-3D phase path. Reusable operational procedures are under `docs/procedures/`; consult that directory for anchor-video and downloaded slow-motion corpus workflows when asked to repeat those tasks.
 
 ## Commands
 

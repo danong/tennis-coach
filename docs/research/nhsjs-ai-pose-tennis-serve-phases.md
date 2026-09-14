@@ -3,7 +3,7 @@
 - Source URL: https://nhsjs.com/2026/using-ai-pose-estimation-to-characterize-tennis-serve-phases-and-explore-serve-speed-prediction/
 - Retrieval date (UTC): 2026-09-13 (retrieved live via `curl`; HTML parsed to text, ~47 kB extracted text).
 - Source identity: Maya Cukras, NHSJS Reports, published 2026-09-09. PDF download link is offered on the page; this report is based on the HTML article body including Abstract / Introduction / Methods / Results / Discussion / References. No private footage, annotations, or local paths are used here.
-- Project context read: `README.md`, `docs/design.md`, `docs/roadmap.md` (M4/M5 leaves), `docs/m4-remediation-plan.md`, plus skim of `docs/m5-tcn-phase-detection.md` §1–3 for M4/M5 boundary.
+- Project context read: `README.md`, `docs/design.md`, `docs/roadmap.md` (M4/M5 leaves), `docs/archive/m4-remediation-plan.md`, plus skim of `docs/m5-tcn-phase-detection.md` §1–3 for M4/M5 boundary.
 
 > Convention used below: **"Paper claims"** are statements directly supported by the article text/tables/figures. **"Project inference"** is our interpretation for Serve Review and is explicitly labeled as such. Uncertainties are called out; nothing here is a claim of local-footage validation.
 
@@ -57,7 +57,7 @@
 
 ## 3. Applicability to Serve Review under the narrow M4 contract
 
-The M4 remediation contract (see `docs/m4-remediation-plan.md` §1) is: native 120 fps iPhone slow motion, one right-handed player, rear view only, accepted M3 ranges only, existing MediaPipe Heavy body pose + raw-source audio, exact presentation timestamps, M3 outputs immutable, non-blocking advisory phases. Design §2 and roadmap M4 explicitly forbid claiming ball/racket contact, racket drop/orientation, shoulder internal/external rotation, toss release as observed ball event, speed, coaching, or technique scoring from body pose alone.
+The historical M4 remediation contract (see `docs/archive/m4-remediation-plan.md` §1) is: native 120 fps iPhone slow motion, one right-handed player, rear view only, accepted M3 ranges only, existing MediaPipe Heavy body pose + raw-source audio, exact presentation timestamps, M3 outputs immutable, non-blocking advisory phases. Design §2 and roadmap M4 explicitly forbid claiming ball/racket contact, racket drop/orientation, shoulder internal/external rotation, toss release as observed ball event, speed, coaching, or technique scoring from body pose alone.
 
 Under that contract:
 

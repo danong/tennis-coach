@@ -4,7 +4,7 @@
 - PDF URL: https://arxiv.org/pdf/2606.20542
 - Retrieval date (UTC): 2026-09-13 (retrieved live via `curl`; abs page ~42 kB HTML and PDF ~4.45 MB / 23 pages saved to `/tmp`; PDF text extracted with `pypdf`).
 - Source identity: Ilona Demler, Xinran Xie, Blake Werner, Anna Szczuka, Pietro Perona (California Institute of Technology). arXiv:2606.20542v1 [cs.CV], 18 Jun 2026. Project page: https://ilonadem.github.io/caltennis-website/ ; dataset: https://huggingface.co/datasets/demalenk/caltennis (links in paper §1/Abstract; not downloaded or inspected here).
-- Project context read: `README.md`, `docs/design.md`, `docs/roadmap.md` (M4/M5 leaves, gate handoff), `docs/m4-remediation-plan.md`, and `docs/m5-tcn-phase-detection.md` (§§1–6).
+- Project context read: `README.md`, `docs/design.md`, `docs/roadmap.md` (M4/M5 leaves, gate handoff), `docs/archive/m4-remediation-plan.md`, and `docs/m5-tcn-phase-detection.md` (§§1–6).
 - Evaluation status: documentation only. No code, dataset, video, or model was run; no local footage or annotation was consulted.
 
 > Convention used below: **"Paper claims"** are statements directly supported by the article text/equations/tables/figures. **"Project inference"** is our interpretation for Serve Review and is explicitly labeled as such. Nothing here is a claim of local-footage validation.
