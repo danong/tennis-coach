@@ -1,6 +1,6 @@
 # Serve Review offline pipeline design
 
-Status: implementation specification. M1–M4 code exists locally; the M4 development gate is currently failed and is being replaced by the approved dense MediaPipe 3D kinematic-waveform remediation in [`m4-3d-waveform-plan.md`](m4-3d-waveform-plan.md) before held-out phase evaluation.
+Status: implementation specification. M1–M3 are complete. The dense MediaPipe 3D kinematic-waveform M4 replacement is implemented and undergoing development-only calibration; held-out phase evaluation remains blocked until that configuration is frozen. See [`m4-3d-waveform-plan.md`](m4-3d-waveform-plan.md).
 
 ## 1. Product contract
 
@@ -35,7 +35,7 @@ The first useful release must:
 
 ### Checkpoints
 
-Checkpoint analysis runs only inside accepted serve ranges. The active M4 remediation uses dense native-frame MediaPipe world-landmark tracks, segment-safe low-pass filtering, and timestamped 3D kinematic waveforms. It detects composite anatomical candidates for `start`, `release`, `loading`, `cocking`, `contact`, and `finish` with dynamic-programming chronology selection; `acceleration` and `deceleration` are then emitted as temporal midpoints between their selected bounding anchors. Raw audio is an additional contact cue, not the only one. The detailed contract is [`m4-3d-waveform-plan.md`](m4-3d-waveform-plan.md).
+Checkpoint analysis runs only inside accepted serve ranges. The active M4 path uses dense native-frame MediaPipe world-landmark tracks, segment-safe low-pass filtering, timestamped 3D kinematic waveforms, and optional aligned raw-source audio for contact. It detects composite candidates for `start`, `release`, `loading`, `cocking`, `contact`, and `finish` with dynamic-programming chronology selection; `acceleration` and `deceleration` are exact temporal midpoints between selected bounding anchors. Normalized 2D landmarks from the same inference are review-overlay data only and never phase features, candidate evidence, or DP input. A compatible source-bound kinematic cache avoids reinference; backend initialization may still occur to validate cache identity. The detailed contract, current development identities, and deferred work are in [`m4-3d-waveform-plan.md`](m4-3d-waveform-plan.md).
 
 Every emitted checkpoint has a timestamp or uncertainty interval, confidence, provenance (`body-kinematic`, `racket-visual`, `ball-racket-visual`, or `manual`), and availability. Missing output is valid.
 
@@ -64,7 +64,7 @@ serve-review probe VIDEO
 serve-review export VIDEO --ranges ranges.json --output {compilation,clips,both}
 serve-review cut VIDEO --padding SECONDS --output {compilation,clips,both}
 serve-review analyze VIDEO [--attempts attempts.json]
-serve-review analyze-serve VIDEO [--start-seconds S --end-seconds E]
+serve-review analyze-serve VIDEO [--start-seconds S --end-seconds E] [--output-dir DIR] [--cache PATH] [--anchor2comparison]
 serve-review review-phases VIDEO [--checkpoints checkpoints.json]
 
 # local manual-gate tools (through mise)
@@ -83,7 +83,7 @@ output/<source-stem>/
   checkpoints.json             # only after checkpoint analysis
   serve-3d-diagnostics.json    # only after analyze-serve (3D audit trail)
   review-phases/               # labeled JPEGs, HTML index, review manifest
-  review-serve-3d/             # only after analyze-serve (JPEGs + index.html)
+  review-serve-3d/             # only after analyze-serve (selected/manual JPEGs + index.html)
   serves.mov                   # compilation/both
   clips/serve-001.mov          # clips/both
   cache/pose-v1.jsonl          # local derived cache

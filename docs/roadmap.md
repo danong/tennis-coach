@@ -1,6 +1,6 @@
 # Serve Review offline roadmap
 
-Status: active plan, 2026-09-13. M1–M3 implementation is complete; the original M4 implementation failed its development gate and is being replaced by the approved 3D kinematic-waveform remediation in `m4-3d-waveform-plan.md`. This replaces the archived iOS-first roadmap in `old-docs/`.
+Status: active plan, 2026-09-14. M1–M3 implementation is complete. The original sparse M4 development gate failed; its dense 3D kinematic-waveform replacement is implemented and remains in development-only calibration before held-out evaluation. This replaces the archived iOS-first roadmap in `old-docs/`.
 
 ## Current state
 
@@ -41,11 +41,11 @@ Give Tau a concise task specification outside the repository that names the outc
 | M4.4 | done | `4c684400-913c-457a-9065-cd84a1096d7e` | history rewritten; see run ID | DP skip states and advisory audio/body compatibility accepted |
 | M4.5 | done | `45e93d07-87a1-4002-b305-59c64c022ef7` | history rewritten; see run ID | atomic analyze/checkpoint report accepted |
 | M4.6 | code done; gate failed | `3ccf4265-c1ac-423a-90e2-6b20469b0148` plus renderer/annotation repair runs | history rewritten; see run IDs | evaluation/review tooling accepted; development gate requires heuristic repair |
-| M4.7 | planned | — | — | dense native MediaPipe world-landmark cache |
-| M4.8 | planned | — | — | segment-safe Butterworth world-track filtering |
-| M4.9 | planned | — | — | 3D kinematic waveform feature matrix |
-| M4.10 | planned | — | — | six composite anchor candidates and existing DP integration |
-| M4.11 | planned | — | — | frozen-exemplar calibration/confirmation and held-out gate |
+| M4.7 | done | direct/Tau history | `91865adf` lineage | dense native MediaPipe world-landmark cache and source-frame review |
+| M4.8 | done | direct/Tau history | `91865adf` lineage | segment-safe order-4, 12 Hz SOS world-track filter |
+| M4.9 | done | direct/Tau history | `91865adf` lineage | 3D waveform matrix, corrected vertical convention, aligned audio channels |
+| M4.10 | done | direct/Tau history | `c5449dcf` | composite six anchors, DP integration, start/contact/finish development calibration |
+| M4.11 | in progress | — | — | freeze configuration, one second-development-exemplar confirmation, then one held-out gate |
 
 ## M1 — Trusted media path
 
@@ -287,13 +287,14 @@ M3 improvement is out of scope for this M4 remediation. This remediation neither
 
 **M4 gate:** The user labels representative stage intervals on development attempts, configuration is frozen, and the system is run once on session-disjoint footage. Review every stage and anomaly, recording per-stage availability, timing usefulness, systematic errors, and whether 30 Hz pose observations are adequate. Structural status remains advisory and cannot alter M3 exports.
 
-### Current M4 gate handoff — failed development baseline
+### Current M4 development state
 
 - Private manual labels and their exact-decoded-PTS manifest live only under ignored `refs/annotations/dev/`; do not commit, print, or tune against held-out labels.
-- Reproduce the local baseline with `mise run cut`, `mise run analyze`, `mise run review-phases`, `mise run phase-annotate`, and `mise run phase-evaluate`. The review renderer is the human-facing artifact; its report is the deterministic record.
-- The reviewed development exemplar has three manually available stages emitted as unavailable. The remaining pre-contact body stages are systematically early; contact is near the manual frame but outside its one-frame accepted interval; finish is late. The exact report records the individual errors.
-- Sparse-development phase-debug showed that manual times generally had usable sparse pose support while several early candidates were seconds early. The approved response is therefore a representation reset, not further 2D weight tuning.
-- **Next leaf:** follow [the 3D kinematic-waveform remediation plan](m4-3d-waveform-plan.md). The frozen labels, M3 artifacts, exact PTS contract, private diagnostic artifacts, and no-held-out-tuning rule remain unchanged.
+- The production entry point is `serve-review analyze-serve VIDEO`, with optional explicit range, output directory, reusable dense-world cache, and narrow `--anchor2comparison` review. It writes `checkpoints.json`, `serve-3d-diagnostics.json`, and `review-serve-3d/index.html` atomically.
+- The dense 3D path corrected the earlier contact failure: the selected contact is audio-supported near the manually labeled impact rather than the later arm-down state. Current development calibration also prioritizes start arm-low/stillness, uses right-wrist speed trough for finish, and caps M4 `contact -> finish` at `0.80 s`. These are development settings, not held-out claims.
+- A cache-reuse smoke check reports `cache_hit=True` and `inferred_frames=0`; backend initialization remains necessary to validate model/cache identity.
+- Remaining deliberate deferrals are timestamp-uniform filter resampling, 3D geometry reliability/angle-quality gating, arbitrary-time audit presentation, sparse stage-specific event eligibility, robust first-post-contact-trough finish selection, and any formally approved 2D observation-quality contract.
+- **Next gate:** freeze this configuration, confirm it once on the second frozen development exemplar, and inspect the resulting review/diagnostics. Only then may one session-disjoint held-out run occur; do not tune afterward.
 
 ### M4.7 — Native 3D kinematic track
 
@@ -322,9 +323,9 @@ M3 improvement is out of scope for this M4 remediation. This remediation neither
 
 ### M4.11 — Frozen development and held-out gate
 
-- **Objective:** calibrate composite weights only on frozen exemplar 1, freeze configuration, confirm once on frozen exemplar 2, then run once on session-disjoint held-out footage if confirmation is accepted.
+- **Objective:** freeze the current versioned 3D waveform/composite/serve-solver configuration, confirm once on the second frozen development exemplar, then run once on session-disjoint held-out footage if confirmation is accepted.
 - **Dependency:** M4.10.
-- **Exit:** ignored diagnostic/evaluation artifacts document calibration, no-post-confirmation tuning, review of anomalies, and the one held-out result.
+- **Exit:** ignored diagnostic/evaluation artifacts document the frozen identities, confirmation review, no-post-confirmation tuning, review of anomalies, and the one held-out result.
 
 ## Completion rules
 
