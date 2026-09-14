@@ -13,8 +13,10 @@ from typing import Any
 from serve_review.domain import SourceMetadata, SourceMetadataError
 
 WORKFLOW_RECORD_SCHEMA_VERSION = 1
+SESSION_RECORD_SCHEMA_VERSION = 1
 _SOURCE_FINGERPRINT = re.compile(r"^sha256:([0-9a-fA-F]{64})$")
 _SOURCE_ID = re.compile(r"^source-[0-9a-f]{16}$")
+_SESSION_ID = re.compile(r"^session-[0-9a-f]{16}$")
 
 
 class WorkflowRecordError(ValueError):
@@ -177,6 +179,81 @@ class SourceRecord:
             raise WorkflowRecordError(
                 f"invalid source record JSON: {exc}."
             ) from exc
+        return cls.from_dict(value)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRecord:
+    """The complete, deliberately small persisted recording-session record."""
+
+    schema_version: int
+    session_id: str
+    display_name: str
+    source_ids: tuple[str, ...]
+    tags: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int):
+            raise WorkflowRecordError("schema_version must be an integer.")
+        if self.schema_version != WORKFLOW_RECORD_SCHEMA_VERSION:
+            raise WorkflowRecordError(f"unsupported schema_version {self.schema_version!r}.")
+        if not isinstance(self.session_id, str) or _SESSION_ID.fullmatch(self.session_id) is None:
+            raise WorkflowRecordError("session_id must have the form session- plus 16 lowercase hex digits.")
+        if not isinstance(self.display_name, str) or not self.display_name.strip():
+            raise WorkflowRecordError("display_name must be a nonblank string.")
+        if not isinstance(self.source_ids, tuple):
+            raise WorkflowRecordError("source_ids must be a tuple.")
+        for source_id in self.source_ids:
+            if not isinstance(source_id, str) or _SOURCE_ID.fullmatch(source_id) is None:
+                raise WorkflowRecordError("source_ids must contain valid source IDs.")
+        if len(set(self.source_ids)) != len(self.source_ids):
+            raise WorkflowRecordError("source_ids must be ordered and unique.")
+        if not isinstance(self.tags, tuple):
+            raise WorkflowRecordError("tags must be a tuple.")
+        for tag in self.tags:
+            if not isinstance(tag, str) or not tag.strip():
+                raise WorkflowRecordError("tags must contain nonblank strings.")
+        if self.tags != tuple(sorted(set(self.tags))):
+            raise WorkflowRecordError("tags must be in canonical sorted unique order.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"schema_version": self.schema_version, "session_id": self.session_id,
+                "display_name": self.display_name, "source_ids": list(self.source_ids),
+                "tags": list(self.tags)}
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> "SessionRecord":
+        if not isinstance(values, dict):
+            raise WorkflowRecordError("session record must be an object.")
+        keys = {"schema_version", "session_id", "display_name", "source_ids", "tags"}
+        missing, unknown = keys - set(values), set(values) - keys
+        if missing or unknown:
+            raise WorkflowRecordError(f"session record keys invalid; missing={sorted(missing, key=repr)!r}, unknown={sorted(unknown, key=repr)!r}.")
+        if not isinstance(values["source_ids"], list) or not isinstance(values["tags"], list):
+            raise WorkflowRecordError("source_ids and tags must be lists in JSON.")
+        return cls(values["schema_version"], values["session_id"], values["display_name"],
+                   tuple(values["source_ids"]), tuple(values["tags"]))
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n"
+
+    @classmethod
+    def from_json(cls, data: str | bytes | bytearray) -> "SessionRecord":
+        def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError(f"duplicate object key {key!r}")
+                result[key] = value
+            return result
+        def constant(value: str) -> None:
+            raise ValueError(f"non-standard JSON constant {value!r}")
+        try:
+            if isinstance(data, (bytes, bytearray)):
+                data = bytes(data).decode("utf-8")
+            value = json.loads(data, parse_constant=constant, object_pairs_hook=pairs)
+        except (TypeError, UnicodeError, ValueError) as exc:
+            raise WorkflowRecordError(f"invalid session record JSON: {exc}.") from exc
         return cls.from_dict(value)
 
 
