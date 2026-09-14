@@ -1232,17 +1232,8 @@ _CONTACT_AUDIO_PROVENANCES: tuple[str, ...] = ("audio_transient", "body_pose_aud
 _CONTACT_ALLOWED_PROVENANCES: tuple[str, ...] = (
     "audio_transient",
     "body_pose_audio",
+    "body_pose",
     "manual",
-)
-
-#: Stable limitations identifying the explicit audio-free 3D exception for
-#: contact: the ``analyze-serve`` production path selects contact from 3D
-#: body kinematics alone (no audio transient) and must carry both tokens.
-#: This is the only ``body_pose`` contact allowance; every other
-#: ``body_pose`` contact is still rejected as claimed visual contact.
-_CONTACT_3D_BODY_POSE_LIMITATIONS: tuple[str, ...] = (
-    "contact_not_directly_observed",
-    "audio_transient_not_used",
 )
 
 
@@ -1551,9 +1542,9 @@ class AttemptPhase:
     Available/partial stage intervals must lie inside ``attempt_range`` and
     run chronologically without overlap; keyframes follow the same order.
     An available/partial ``contact`` must use ``audio_transient``,
-    ``body_pose_audio``, or ``manual`` provenance (never body-only visual
-    contact); audio-anchored contact additionally requires a non-null
-    keyframe inside its interval and a finite nonnegative uncertainty.
+    ``body_pose_audio``, ``body_pose``, or ``manual`` provenance; contact
+    additionally requires a non-null keyframe inside its interval and a
+    finite nonnegative uncertainty.
     """
 
     attempt_id: str = ""
@@ -1676,47 +1667,28 @@ class AttemptPhase:
                         f"({previous_keyframe!r}); keyframes must be chronological."
                     )
                 previous_keyframe = stage.keyframe_seconds
-        # Honest contact provenance: never visually observed contact.
-        # Narrow explicit exception: the audio-free 3D production path
-        # (``analyze-serve``) emits contact with ``body_pose`` provenance
-        # only when it carries both stable audio-free limitations; that
-        # contact still requires an explicit keyframe anchor and finite
-        # uncertainty like audio-anchored contact. Every other body-only
-        # contact is rejected as claimed visual contact.
+        # Honest contact provenance: contact is a body-kinematic estimate
+        # with an explicit keyframe anchor and finite uncertainty. The
+        # analyze-serve path emits ``body_pose_audio`` when the selected
+        # contact carries an available supporting audio cue and ``body_pose``
+        # otherwise; both require the same anchor/uncertainty contract.
+        # ``manual`` contact keeps the pre-existing optional-anchor rule.
         contact = ordered["contact"]
         if contact.availability in ("available", "partial"):
-            is_3d_body_contact = contact.provenance == "body_pose" and all(
-                token in contact.limitations
-                for token in _CONTACT_3D_BODY_POSE_LIMITATIONS
-            )
-            if (
-                contact.provenance not in _CONTACT_ALLOWED_PROVENANCES
-                and not is_3d_body_contact
-            ):
+            if contact.provenance not in _CONTACT_ALLOWED_PROVENANCES:
                 raise PhaseError(
                     f"{name}: contact with {contact.availability!r} availability "
                     f"must use provenance one of "
                     f"{list(_CONTACT_ALLOWED_PROVENANCES)}, got "
-                    f"{contact.provenance!r}; body-only contact must never claim "
-                    f"visually observed contact."
+                    f"{contact.provenance!r}."
                 )
-            if is_3d_body_contact:
-                if contact.keyframe_seconds is None:
-                    raise PhaseError(
-                        f"{name}: contact with 'body_pose' provenance "
-                        f"requires a non-null keyframe_seconds anchor."
-                    )
-                if contact.temporal_uncertainty_seconds is None:
-                    raise PhaseError(
-                        f"{name}: contact with 'body_pose' provenance "
-                        f"requires finite nonnegative "
-                        f"temporal_uncertainty_seconds."
-                    )
-            if contact.provenance in _CONTACT_AUDIO_PROVENANCES:
+            if contact.provenance == "manual":
+                pass
+            else:
                 if contact.keyframe_seconds is None:
                     raise PhaseError(
                         f"{name}: contact with {contact.provenance!r} provenance "
-                        f"requires a non-null keyframe_seconds audio anchor."
+                        f"requires a non-null keyframe_seconds anchor."
                     )
                 if contact.temporal_uncertainty_seconds is None:
                     raise PhaseError(

@@ -370,16 +370,21 @@ def test_invalid_uncertainty_values(uncertainty) -> None:
 # --- Honest provenance constraints ----------------------------------------------
 
 
-def test_body_pose_contact_never_claims_visual_contact() -> None:
-    stages = full_stages()
-    stages["contact"] = avail_stage(
-        15.0, 16.0, keyframe=15.5, provenance="body_pose", uncertainty=0.05
-    )
-    with pytest.raises(PhaseError):
-        make_attempt(stages=stages)
+def test_body_pose_contact_uses_audio_dependent_provenance() -> None:
+    # Audio-integrated analyze-serve emits body_pose_audio when the
+    # selected contact carries an available supporting audio cue and
+    # body_pose otherwise; both require the same anchor/uncertainty.
+    for provenance in ("body_pose", "body_pose_audio"):
+        stages = full_stages()
+        stages["contact"] = avail_stage(
+            15.0, 16.0, keyframe=15.5, provenance=provenance, uncertainty=0.05
+        )
+        assert make_attempt(stages=stages).stage("contact").provenance == provenance
 
 
-@pytest.mark.parametrize("provenance", ["audio_transient", "body_pose_audio"])
+@pytest.mark.parametrize(
+    "provenance", ["audio_transient", "body_pose_audio", "body_pose"]
+)
 def test_audio_contact_requires_anchor_and_uncertainty(provenance: str) -> None:
     no_key = full_stages()
     no_key["contact"] = avail_stage(

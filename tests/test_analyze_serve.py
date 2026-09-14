@@ -1,15 +1,16 @@
-"""Focused tests for the single-command audio-free 3D path (analyze-serve).
+"""Focused tests for the single-command 3D path with audio cue (analyze-serve).
 
 Deterministic, offline, and independent of private footage, model
 weights, and network access: source videos are tiny fake byte files in
 temporary directories, probing/timestamps/inference/sampling/encoding
-are faked through the injectable ``run_analyze_serve`` hooks, and the
-real M4.8 filter, M4.9 waveform, M4.10a candidate, and M4.10b DP
+and audio are faked through the injectable ``run_analyze_serve`` hooks,
+and the real M4.8 filter, M4.9 waveform, M4.10a candidate, and M4.10b DP
 modules run for real over synthetic constant-geometry world poses.
 Legacy sparse functions (phase features/evidence, sparse pose cache,
-audio, the old phase solver entry points) are monkeypatched to fail
-loudly so any regression off the 3D-only path errors instead of
-passing silently.
+the old phase solver entry points) are monkeypatched to fail loudly so
+any regression off the 3D path errors instead of passing silently.
+Audio is faked through the ``audio_energies_fn`` hook (present versus
+absent) so no FFmpeg/ffprobe subprocess runs here.
 """
 
 from __future__ import annotations
@@ -135,7 +136,6 @@ def no_legacy_sparse(monkeypatch: pytest.MonkeyPatch) -> None:
     import serve_review.checkpoints.evidence as evidence_module
     import serve_review.checkpoints.phase_features as features_module
     import serve_review.checkpoints.phase_solver as solver_module
-    import serve_review.media.audio as audio_module
     import serve_review.pose.cache as cache_module
     import serve_review.pose.extract as extract_module
 
@@ -150,7 +150,28 @@ def no_legacy_sparse(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(solver_module, "solve_with_diagnostics", _boom)
     monkeypatch.setattr(cache_module, "load_cache", _boom)
     monkeypatch.setattr(extract_module, "extract_poses", _boom)
-    monkeypatch.setattr(audio_module, "iter_audio_energy", _boom)
+
+
+def _present_audio_energies(video_path: Path, frame_times: tuple[float, ...]):
+    """Synthetic present-audio hook: quiet bed with one impact peak."""
+    times = list(frame_times)
+    peak = len(times) // 2
+    out: list[float] = []
+    for index in range(len(times)):
+        out.append(0.9 if index == peak else 0.01)
+    return out
+
+
+def _absent_audio_energies(video_path: Path, frame_times: tuple[float, ...]):
+    """Synthetic absent-audio hook: no audio stream."""
+    return None
+
+
+def _failing_audio_energies(video_path: Path, frame_times: tuple[float, ...]):
+    """Synthetic demux-failure hook: must fall back to unavailable."""
+    from serve_review.media.audio import AudioError
+
+    raise AudioError("synthetic demux failure")
 
 
 def _run(
@@ -163,6 +184,7 @@ def _run(
     backend_holder: list | None = None,
     sampled_holder: list | None = None,
     encoded_holder: list | None = None,
+    audio: str = "absent",
 ):
     from serve_review.analyze_serve import run_analyze_serve as _run_fn
 
@@ -189,6 +211,13 @@ def _run(
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b"fake-jpeg-bytes")
 
+    if audio == "present":
+        audio_hook = _present_audio_energies
+    elif audio == "failing":
+        audio_hook = _failing_audio_energies
+    else:
+        audio_hook = _absent_audio_energies
+
     result = _run_fn(
         video,
         start_seconds=start,
@@ -205,6 +234,7 @@ def _run(
         backend_factory=lambda: backend,
         sample_frame_fn=_sample,
         encode_jpeg_fn=_encode,
+        audio_energies_fn=audio_hook,
     )
     return result, backend
 
@@ -331,14 +361,14 @@ def test_explicit_range_flows_to_outputs(tmp_path: Path, no_legacy_sparse: None)
     assert payload["requested_range"] == {"end_seconds": 1.0, "schema_version": 1, "start_seconds": 0.0}
 
 
-# --- 3D-only orchestration, cache reuse, artifacts ---------------------------
+# --- 3D orchestration with audio cue, cache reuse, artifacts -----------------
 
 
-def test_full_run_uses_cache_and_writes_artifacts(
+def test_absent_audio_fallback_uses_body_pose(
     tmp_path: Path, no_legacy_sparse: None
 ) -> None:
     holders: list = []
-    result, backend = _run(tmp_path, backend_holder=holders)
+    result, backend = _run(tmp_path, backend_holder=holders, audio="absent")
     assert result.cache_hit is False
     assert backend.calls == N_FRAMES
 
@@ -349,7 +379,7 @@ def test_full_run_uses_cache_and_writes_artifacts(
     import shutil as _shutil
 
     _shutil.rmtree(result.review_dir)
-    result2, backend2 = _run(tmp_path)
+    result2, backend2 = _run(tmp_path, audio="absent")
     assert result2.cache_hit is True
     assert backend2.calls == 0
     assert result2.frame_count == N_FRAMES
@@ -363,14 +393,13 @@ def test_full_run_uses_cache_and_writes_artifacts(
     assert set(phase.stages.keys()) == set(STAGE_ORDER)
     assert document.source_fingerprint == "sha256:test-serve"
 
-    # Audio-free contact honesty: body_pose + stable limitations, never audio.
+    # Absent-audio fallback: body_pose contact with no deprecated tokens.
     contact = phase.stages["contact"]
     assert contact.availability == "available"
     assert contact.provenance == "body_pose"
-    assert "contact_not_directly_observed" in contact.limitations
-    assert "audio_transient_not_used" in contact.limitations
-    for stage in STAGE_ORDER:
-        assert phase.stages[stage].provenance != "body_pose_audio"
+    assert "audio_transient" not in contact.evidence
+    assert "contact_not_directly_observed" not in contact.limitations
+    assert "audio_transient_not_used" not in contact.limitations
 
     # Six-anchor chronology plus exact derived midpoints.
     keyframes = _available_keyframes(phase)
@@ -389,7 +418,7 @@ def test_full_run_uses_cache_and_writes_artifacts(
     diagnostics = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
     assert diagnostics["schema_version"] == 1
     assert diagnostics["attempt_id"] == ANALYZE_SERVE_ATTEMPT_ID
-    assert diagnostics["audio"] == "not_used"
+    assert diagnostics["audio"] == "unavailable"
     assert diagnostics["coordinate_2d"] == "not_used"
     assert diagnostics["pts_seconds"] == list(TIMES)
     assert diagnostics["model"] == {"name": "test-world-backend", "version": "test-v1"}
@@ -403,6 +432,7 @@ def test_full_run_uses_cache_and_writes_artifacts(
         assert set(selected["cue_values"].keys()) == set(
             COMPOSITE_CUE_NAMES[stage]
         )
+    assert diagnostics["selected"]["contact"]["cue_values"]["audio_transient"] is None
     assert diagnostics["derived"]["acceleration"]["status"] == "selected"
     assert diagnostics["derived"]["deceleration"]["status"] == "selected"
 
@@ -410,7 +440,9 @@ def test_full_run_uses_cache_and_writes_artifacts(
     assert result.image_count == len(STAGE_ORDER)
     assert result.index_html.is_file()
     html = result.index_html.read_text(encoding="utf-8")
-    assert "never claimed as exact visual observation" in html
+    assert "Contact is a body-pose estimate and is never claimed" not in html
+    assert "contact_not_directly_observed" not in html
+    assert "audio_transient_not_used" not in html
     review = json.loads(result.review_json.read_text(encoding="utf-8"))
     assert len(review["entries"]) == len(STAGE_ORDER)
     for entry in review["entries"]:
@@ -420,6 +452,62 @@ def test_full_run_uses_cache_and_writes_artifacts(
         # PTS rendering linkage: requested keyframe versus sampled frame.
         assert entry["requested_source_time"] == keyframes[entry["stage"]]
         assert entry["actual_source_time"] == entry["requested_source_time"]
+
+
+def test_present_audio_uses_body_pose_audio(
+    tmp_path: Path, no_legacy_sparse: None
+) -> None:
+    result, _ = _run(tmp_path, audio="present")
+    payload = json.loads(result.checkpoints_path.read_text(encoding="utf-8"))
+    phase = PhaseDocument.from_dict(payload)[0]
+    contact = phase.stages["contact"]
+    assert contact.availability == "available"
+    assert contact.provenance == "body_pose_audio"
+    assert "audio_transient" in contact.evidence
+    assert "contact_not_directly_observed" not in contact.limitations
+    assert "audio_transient_not_used" not in contact.limitations
+    diagnostics = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
+    assert diagnostics["audio"] == "present"
+    selected = diagnostics["selected"]["contact"]
+    assert selected["status"] == "selected"
+    assert selected["cue_values"]["audio_transient"] is not None
+    keyframes = _available_keyframes(phase)
+    ordered = [keyframes[stage] for stage in STAGE_ORDER]
+    for earlier, later in zip(ordered, ordered[1:]):
+        assert later > earlier
+
+
+def test_audio_failure_falls_back_to_unavailable(
+    tmp_path: Path, no_legacy_sparse: None
+) -> None:
+    result, _ = _run(tmp_path, audio="failing")
+    payload = json.loads(result.checkpoints_path.read_text(encoding="utf-8"))
+    phase = PhaseDocument.from_dict(payload)[0]
+    contact = phase.stages["contact"]
+    assert contact.availability == "available"
+    assert contact.provenance == "body_pose"
+    diagnostics = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
+    assert diagnostics["audio"] == "unavailable"
+    assert diagnostics["selected"]["contact"]["cue_values"]["audio_transient"] is None
+
+
+def test_old_audio_free_wording_is_absent(
+    tmp_path: Path, no_legacy_sparse: None
+) -> None:
+    for mode in ("absent", "present"):
+        target = tmp_path / mode
+        target.mkdir()
+        result, _ = _run(target, audio=mode)
+        checkpoints = result.checkpoints_path.read_text(encoding="utf-8")
+        diagnostics = result.diagnostics_path.read_text(encoding="utf-8")
+        html = result.index_html.read_text(encoding="utf-8")
+        for blob in (checkpoints, diagnostics, html):
+            assert "audio_transient_not_used" not in blob
+            assert "contact_not_directly_observed" not in blob
+        assert '"audio": "not_used"' not in diagnostics
+        assert diagnostics and '"audio": "present"' in diagnostics or '"audio": "unavailable"' in diagnostics
+        assert "Contact is a body-pose estimate and is never claimed" not in html
+        assert "no audio transient\nwas used" not in html.lower()
 
 
 def test_missing_wrist_support_skips_honestly(
@@ -499,6 +587,7 @@ def test_outputs_collide_without_overwrite(
                 image=np.zeros((16, 16, 3), dtype=np.uint8),
             ),
             encode_jpeg_fn=lambda image, dest: dest.write_bytes(b"x"),
+            audio_energies_fn=_absent_audio_energies,
         )
     assert excinfo.value.stage in ("write", "review")
 
@@ -594,28 +683,29 @@ def _attempt_with_contact(contact: StagePhase) -> AttemptPhase:
     )
 
 
-def test_audio_free_body_pose_contact_is_allowed() -> None:
-    contact = _stage(
-        15.0,
-        16.0,
-        limitations=("contact_not_directly_observed", "audio_transient_not_used"),
-    )
+def test_body_pose_contact_is_allowed_without_legacy_tokens() -> None:
+    contact = _stage(15.0, 16.0, limitations=())
     assert _attempt_with_contact(contact).stage("contact").provenance == "body_pose"
 
 
-def test_body_pose_contact_without_limitations_stays_rejected() -> None:
-    with pytest.raises(PhaseError):
-        _attempt_with_contact(_stage(15.0, 16.0, limitations=()))
+def test_body_pose_audio_contact_is_allowed() -> None:
+    contact = _stage(15.0, 16.0, provenance="body_pose_audio", limitations=())
+    assert (
+        _attempt_with_contact(contact).stage("contact").provenance
+        == "body_pose_audio"
+    )
 
 
-def test_body_pose_contact_requires_anchor_and_uncertainty() -> None:
-    limited = ("contact_not_directly_observed", "audio_transient_not_used")
-    with pytest.raises(PhaseError):
-        _attempt_with_contact(_stage(15.0, 16.0, keyframe=None, limitations=limited))
-    with pytest.raises(PhaseError):
-        _attempt_with_contact(
-            _stage(15.0, 16.0, uncertainty=None, limitations=limited)
-        )
+def test_contact_requires_anchor_and_uncertainty() -> None:
+    for provenance in ("body_pose", "body_pose_audio"):
+        with pytest.raises(PhaseError):
+            _attempt_with_contact(
+                _stage(15.0, 16.0, provenance=provenance, keyframe=None)
+            )
+        with pytest.raises(PhaseError):
+            _attempt_with_contact(
+                _stage(15.0, 16.0, provenance=provenance, uncertainty=None)
+            )
 
 
 # --- anchor2 manual comparison (fixed minimal JSON + CLI flag) --------------
@@ -755,6 +845,7 @@ def _run_anchor2(
         backend_factory=lambda: backend,
         sample_frame_fn=_sample,
         encode_jpeg_fn=_encode,
+        audio_energies_fn=_absent_audio_energies,
         anchor2comparison=True,
     )
     return result, sampled, encoded
@@ -847,6 +938,7 @@ def test_anchor2_absent_sides_are_null(
         backend_factory=lambda: backend,
         sample_frame_fn=_sample,
         encode_jpeg_fn=_encode,
+        audio_energies_fn=_absent_audio_energies,
         anchor2comparison=True,
     )
     review2 = json.loads(result2.review_json.read_text(encoding="utf-8"))

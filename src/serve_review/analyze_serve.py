@@ -1,11 +1,12 @@
-"""Single-command audio-free 3D serve analysis (``analyze-serve``).
+"""Single-command 3D serve analysis with audio contact cue (``analyze-serve``).
 
-Production M4 path for one explicit serve video/range using only the
-native 3D kinematic chain:
+Production M4 path for one explicit serve video/range using the
+native 3D kinematic chain plus the optional raw-source audio contact cue:
 
 ```text
 one explicit serve video/range → native-PTS 3D kinematic track
-→ segment-safe Butterworth filter (M4.8) → 3D feature matrix (M4.9)
+→ segment-safe Butterworth filter (M4.8) → 3D feature matrix (M4.9,
+  with aligned raw-audio transient channels when present)
 → six composite anchor candidate sets (M4.10a)
 → six-anchor DP chronology search (M4.10b)
 → two derived midpoint stages → source-frame review
@@ -37,10 +38,14 @@ Behavior:
   ``cocking``/``contact`` and ``deceleration`` the exact midpoint of
   selected ``contact``/``finish``; a derived stage is unavailable when
   either bounding anchor is unavailable.
-- This path is audio-free, so ``contact`` honestly uses ``body_pose``
-  provenance with the stable ``contact_not_directly_observed`` and
-  ``audio_transient_not_used`` limitations (narrowly allowed by the
-  domain schema). It never claims ``body_pose_audio``.
+- This path demuxes raw source audio once with the existing
+  ``media.audio`` API, aligns it to the exact kinematic PTS grid, and
+  passes it to the M4.9 waveform builder as the optional aligned audio
+  sequence. Demux/alignment failure or an absent audio stream is
+  nonfatal and yields honestly unavailable audio channels. ``contact``
+  uses ``body_pose_audio`` provenance iff the selected contact carries
+  an available supporting ``audio_transient`` cue, otherwise
+  ``body_pose``.
 - Writes a normal compatible ``checkpoints.json``
   (:class:`PhaseDocument`), a compact deterministic 3D diagnostic
   JSON, and a review directory with source-frame JPEGs plus a
@@ -99,6 +104,7 @@ from serve_review.domain import (
     SourceMetadata,
     StagePhase,
 )
+from serve_review.media import audio as audio_module
 from serve_review.media import frames as frames_module
 from serve_review.media import probe as probe_module
 from serve_review.phase_review import render_caption
@@ -121,8 +127,6 @@ __all__ = [
     "INDEX_HTML_FILENAME",
     "KINEMATIC_CACHE_FILENAME",
     "CACHE_FLUSH_INTERVAL_FRAMES",
-    "CONTACT_NOT_DIRECTLY_OBSERVED",
-    "AUDIO_TRANSIENT_NOT_USED",
     "AnalyzeServeError",
     "AnalyzeServeCancelled",
     "AnalyzeServeResult",
@@ -162,11 +166,6 @@ INDEX_HTML_FILENAME = "index.html"
 KINEMATIC_CACHE_FILENAME = "kinematic-track-v1.jsonl"
 #: How often to atomically flush a resumable partial kinematic cache.
 CACHE_FLUSH_INTERVAL_FRAMES = 30
-
-#: Stable contact limitation: body-pose contact is never direct observation.
-CONTACT_NOT_DIRECTLY_OBSERVED = "contact_not_directly_observed"
-#: Stable contact limitation: this audio-free path uses no audio transient.
-AUDIO_TRANSIENT_NOT_USED = "audio_transient_not_used"
 
 #: Tolerance for requested-duration versus probed-duration agreement.
 _DURATION_TOLERANCE_SECONDS = 1e-6
@@ -621,9 +620,7 @@ def _build_index_html(
         f"<h1>Serve review {attempt_id} ({fingerprint})</h1>\n"
         f"<p>Serve range (source seconds): {range_text}. Timestamps are "
         "canonical source times; every image carries its label and source "
-        "time burned into the frame. Contact is a body-pose estimate and "
-        "is never claimed as exact visual observation; no audio transient "
-        "was used.</p>\n"
+        "time burned into the frame.</p>\n"
         "<table border=\"1\">\n"
         f"{header}"
         f"{body}\n</table>\n</body></html>\n"
@@ -664,11 +661,12 @@ def run_analyze_serve(
     backend_factory: Callable[[], Any] | None = None,
     sample_frame_fn: Callable[..., Any] | None = None,
     encode_jpeg_fn: Callable[[np.ndarray, Path], None] | None = None,
+    audio_energies_fn: Callable[..., Any] | None = None,
     progress_callback: Callable[[str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
     anchor2comparison: bool = False,
 ) -> AnalyzeServeResult:
-    """Analyze one explicit serve range through the audio-free 3D path.
+    """Analyze one explicit serve range through the 3D path with audio cue.
 
     Args:
         video: Source video path; read only, never modified.
@@ -686,8 +684,12 @@ def run_analyze_serve(
             Versioned M4 configs (defaults are the modules' defaults;
             weights are never tuned here).
         probe_fn/native_times_fn/native_frame_factory/backend_factory/
-        sample_frame_fn/encode_jpeg_fn: Injectable stage functions for
-            tests. When None, the real media/pose adapters run.
+        sample_frame_fn/encode_jpeg_fn/audio_energies_fn: Injectable stage
+            functions for tests. When None, the real media/pose/audio
+            adapters run. ``audio_energies_fn`` receives
+            ``(video_path, frame_times)`` (exact kinematic PTS tuple) and
+            returns an aligned audio sequence with exactly one entry per
+            frame time, or ``None`` for unavailable audio.
         progress_callback: Optional ``(stage_message)`` hook.
         is_cancelled: Optional hook; a true return raises
             :class:`AnalyzeServeCancelled` and writes no final file.
@@ -760,6 +762,7 @@ def run_analyze_serve(
         ("backend_factory", backend_factory),
         ("sample_frame_fn", sample_frame_fn),
         ("encode_jpeg_fn", encode_jpeg_fn),
+        ("audio_energies_fn", audio_energies_fn),
     ):
         if fn is not None and not callable(fn):
             raise _fail("validate", f"invalid {label}: {fn!r}.")
@@ -1394,7 +1397,7 @@ def run_analyze_serve(
                 except Exception:
                     pass
 
-        # --- 3D-only waveform chain (never 2D, never sparse) ---
+        # --- 3D waveform chain with optional audio cue (never 2D, never sparse) ---
         _progress("analyze-serve: building 3D waveforms")
         if _cancelled():
             raise AnalyzeServeCancelled(
@@ -1408,14 +1411,75 @@ def run_analyze_serve(
             raise _fail(
                 "solve", f"3D filtering failed: {exc}."
             ) from exc
+        # --- raw-source audio demux once, aligned to exact kinematic PTS ---
+        # Nonfatal: demux/alignment failure or an absent stream yields
+        # honestly unavailable audio channels.
+        _progress("analyze-serve: sampling audio cue")
+        audio_status = "unavailable"
+        aligned_audio: Any = None
+        try:
+            if _cancelled():
+                raise AnalyzeServeCancelled(
+                    "solve",
+                    "analyze-serve was cancelled before audio sampling.",
+                )
+            if audio_energies_fn is not None:
+                custom = audio_energies_fn(video_path, tuple(expected))
+                if custom is None:
+                    aligned_audio = None
+                else:
+                    aligned_audio = list(custom)  # type: ignore[arg-type]
+                    if len(aligned_audio) != len(expected):
+                        aligned_audio = None
+                    else:
+                        audio_status = "present"
+                        if not aligned_audio:
+                            aligned_audio = None
+                            audio_status = "unavailable"
+            else:
+                dense_times = audio_module.dense_audio_schedule(duration)
+                dense_iter = audio_module.iter_audio_energy(
+                    video_path,
+                    dense_times,
+                    ffmpeg=ffmpeg_exe,
+                    ffprobe=ffprobe_exe,
+                    is_cancelled=is_cancelled,
+                )
+                dense_energies = list(dense_iter)
+                pooled = audio_module.align_audio_maxpool(
+                    tuple(dense_energies), tuple(expected)
+                )
+                aligned_audio = list(pooled)
+                audio_status = "present"
+        except AnalyzeServeCancelled:
+            raise
+        except audio_module.AudioCancelled as exc:
+            raise AnalyzeServeCancelled(
+                "solve", f"audio sampling was cancelled: {exc}."
+            ) from exc
+        except Exception:
+            aligned_audio = None
+            audio_status = "unavailable"
         try:
             track = waveforms_module.build_kinematic_waveform_track(
-                filtered, cfg_waveforms
+                filtered, cfg_waveforms, audio_energies=aligned_audio
             )
         except Exception as exc:
-            raise _fail(
-                "solve", f"3D waveform construction failed: {exc}."
-            ) from exc
+            if aligned_audio is not None:
+                try:
+                    track = waveforms_module.build_kinematic_waveform_track(
+                        filtered, cfg_waveforms, audio_energies=None
+                    )
+                except Exception as exc2:
+                    raise _fail(
+                        "solve", f"3D waveform construction failed: {exc2}."
+                    ) from exc2
+                aligned_audio = None
+                audio_status = "unavailable"
+            else:
+                raise _fail(
+                    "solve", f"3D waveform construction failed: {exc}."
+                ) from exc
         try:
             anchor_set = composite_module.build_composite_anchor_set(
                 track, cfg_composite
@@ -1588,17 +1652,18 @@ def run_analyze_serve(
                     for cue in cue_order
                     if candidate.cue_values.get(cue) is not None
                 )
+                limitations: tuple[str, ...] = ()
+                provenance = "body_pose"
                 if stage == "contact":
-                    limitations = (
-                        CONTACT_NOT_DIRECTLY_OBSERVED,
-                        AUDIO_TRANSIENT_NOT_USED,
-                    )
-                else:
-                    limitations = ()
+                    audio_cue = candidate.cue_values.get("audio_transient")
+                    if audio_cue is not None:
+                        provenance = "body_pose_audio"
+                    else:
+                        provenance = "body_pose"
                 moment = float(candidate.time_seconds)
                 stages[stage] = StagePhase(
                     availability="available",
-                    provenance="body_pose",
+                    provenance=provenance,
                     confidence=max(0.0, min(1.0, float(candidate.score))),
                     interval=_interval_for(moment, next_by_stage.get(stage)),
                     keyframe_seconds=moment,
@@ -1726,7 +1791,7 @@ def run_analyze_serve(
         diagnostics = {
             "attempt_id": ANALYZE_SERVE_ATTEMPT_ID,
             "attempt_range": attempt_range.to_dict(),
-            "audio": "not_used",
+            "audio": audio_status,
             "candidates": {
                 stage: {
                     "eligible": len(eligible[stage]),
@@ -1757,9 +1822,10 @@ def run_analyze_serve(
                 },
             },
             "contact_note": (
-                "audio-free 3D path: contact uses body_pose provenance with "
-                f"{CONTACT_NOT_DIRECTLY_OBSERVED} and {AUDIO_TRANSIENT_NOT_USED}; "
-                "never body_pose_audio."
+                "contact uses body_pose_audio provenance when the selected "
+                "contact carries an available supporting audio_transient cue, "
+                "otherwise body_pose; audio channels are unavailable without "
+                "present raw-source audio."
             ),
             "coordinate_2d": "not_used",
             "derived": {

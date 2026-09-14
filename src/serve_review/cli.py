@@ -927,19 +927,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve_parser = subparsers.add_parser(
         "analyze-serve",
-        help="analyze one serve range through the audio-free 3D path",
+        help="analyze one serve range through the 3D waveform path",
         description=(
-            "Analyze one explicit serve video/range using only the 3D "
+            "Analyze one explicit serve video/range using the 3D "
             "kinematic path (native-PTS world track, segment-safe filter, "
-            "3D waveforms, six composite anchor candidates, DP chronology "
+            "3D waveforms with aligned raw-audio transient channels when "
+            "present, six composite anchor candidates, DP chronology "
             "search, two derived midpoint stages) and atomically write "
             "checkpoints.json, a 3D diagnostic JSON, and a source-frame "
             "review page. Defaults to the entire source timeline; no "
             "attempts.json, attempt id, or phase JSON is required. A "
             "synthetic in-memory serve-001 range exists solely for output "
-            "linkage. Contact uses honest body_pose provenance with "
-            "contact_not_directly_observed and audio_transient_not_used "
-            "limitations; no audio is used."
+            "linkage. Raw-source audio is demuxed once and aligned to the "
+            "exact kinematic PTS; demux/alignment failure or an absent "
+            "stream is nonfatal and yields unavailable audio channels. "
+            "Contact uses body_pose_audio provenance when the selected "
+            "contact carries an available supporting audio cue, otherwise "
+            "body_pose."
         ),
     )
     serve_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
