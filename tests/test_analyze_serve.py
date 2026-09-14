@@ -614,9 +614,26 @@ def _direct_candidate(
         cue_values=cues,
         provenance="kinematic_waveform",
         temporal_uncertainty_seconds=0.002,
-        method_version="composite-anchors-v3",
-        config_id="composite-anchors-default-v3",
-        schema_version=3,
+        method_version="composite-anchors-v4",
+        config_id="composite-anchors-default-v5",
+        schema_version=4,
+    )
+
+
+def test_contact_to_finish_cap_only_limits_that_stage_pair() -> None:
+    cfg = PhaseSolverConfig(max_contact_to_finish_seconds=0.8)
+    contact = _direct_candidate("contact", 4.0)
+    finish_at_cap = _direct_candidate("finish", 4.8)
+    finish_after_cap = _direct_candidate("finish", 4.800001)
+    assert six_module.transition_feasible(contact, finish_at_cap, 4, 5, cfg)
+    assert not six_module.transition_feasible(contact, finish_after_cap, 4, 5, cfg)
+    # The same temporal gap remains legal for another adjacent six-anchor pair.
+    assert six_module.transition_feasible(
+        _direct_candidate("cocking", 4.0),
+        _direct_candidate("contact", 4.800001),
+        3,
+        4,
+        cfg,
     )
 
 

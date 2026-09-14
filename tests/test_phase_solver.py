@@ -281,10 +281,11 @@ def _pipeline_grid(
 
 
 def test_schema_and_method_pinned() -> None:
-    assert PHASE_SOLVER_SCHEMA_VERSION == 1
+    assert PHASE_SOLVER_SCHEMA_VERSION == 2
     assert PHASE_SOLVER_METHOD_VERSION == "phase-solver-v1"
     cfg = PhaseSolverConfig()
-    assert cfg.schema_version == 1
+    assert cfg.schema_version == 2
+    assert cfg.max_contact_to_finish_seconds is None
     assert cfg.config_id == PHASE_SOLVER_DEFAULT_CONFIG_ID
     assert cfg.skip_cost("contact") == pytest.approx(cfg.contact_skip_penalty)
     assert cfg.skip_cost("start") == pytest.approx(cfg.skip_penalty)
@@ -311,6 +312,9 @@ def test_config_validation_and_codecs() -> None:
         PhaseSolverConfig(
             min_transition_gap_seconds=2.0, max_transition_gap_seconds=1.0
         )
+    with pytest.raises(PhaseSolverError):
+        PhaseSolverConfig(max_contact_to_finish_seconds=0.0)
+    assert PhaseSolverConfig(max_contact_to_finish_seconds=0.8).max_contact_to_finish_seconds == 0.8
     with pytest.raises(PhaseSolverError):
         PhaseSolverConfig.from_dict({**cfg.to_dict(), "mystery": 1})
     with pytest.raises(PhaseSolverError):

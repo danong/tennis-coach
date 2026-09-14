@@ -91,10 +91,10 @@ def _times(count: int, dt: float = DT) -> list[float]:
 def test_default_weights_match_exact_initial_generic_values() -> None:
     config = ca.CompositeAnchorConfig()
     assert dict(config.weight_for("start")) == {
-        "left_arm_elevation_rise": 0.35,
-        "left_elbow_extension": 0.25,
-        "stillness": 0.25,
-        "left_arm_low": 0.15,
+        "left_arm_elevation_rise": 0.15,
+        "left_elbow_extension": 0.05,
+        "stillness": 0.35,
+        "left_arm_low": 0.45,
     }
     assert dict(config.weight_for("release")) == {
         "left_arm_elevation": 0.30,
@@ -126,9 +126,9 @@ def test_default_weights_match_exact_initial_generic_values() -> None:
         "audio_transient": 0.20,
     }
     assert dict(config.weight_for("finish")) == {
-        "whole_body_settling": 0.45,
-        "right_wrist_settling": 0.35,
-        "torso_settling": 0.20,
+        "right_wrist_speed_trough": 0.60,
+        "whole_body_settling": 0.25,
+        "torso_settling": 0.15,
     }
     for stage in ca.COMPOSITE_ANCHOR_STAGES:
         total = sum(config.weight_for(stage).values())
@@ -143,8 +143,8 @@ def test_config_immutable_versioned_and_json_roundtrip() -> None:
         config.config_id = "mutated"  # type: ignore[misc]
     payload = config.to_dict()
     assert payload["schema_version"] == ca.COMPOSITE_ANCHORS_SCHEMA_VERSION
-    assert payload["weights"]["start"]["left_arm_elevation_rise"] == 0.35
-    assert payload["start"]["left_arm_elevation_rise"] == 0.35
+    assert payload["weights"]["start"]["left_arm_elevation_rise"] == 0.15
+    assert payload["start"]["left_arm_elevation_rise"] == 0.15
     restored = ca.CompositeAnchorConfig.from_dict(payload)
     assert restored == config
     assert ca.CompositeAnchorConfig.from_json(config.to_json()) == config
@@ -200,7 +200,7 @@ def test_no_chronology_or_selection_dense_for_all_stages() -> None:
 # --- cue composition ------------------------------------------------------------
 
 
-def test_start_score_rewards_elevation_rise_composition() -> None:
+def test_start_score_prioritizes_low_arm_over_elevation_rise() -> None:
     count = 20
     times = _times(count)
     elev = [0.0 if i < 10 else (i - 10) * 0.1 for i in range(count)]
@@ -209,7 +209,7 @@ def test_start_score_rewards_elevation_rise_composition() -> None:
     rows = anchor_set.for_stage("start")
     late = sum(c.score for c in rows[12:18]) / 6
     early = sum(c.score for c in rows[1:7]) / 6
-    assert late > early
+    assert early > late
     # Score equals the availability-weighted mean over available cues.
     config = ca.CompositeAnchorConfig()
     normalized = ca.compute_composite_anchor_scores(track)["start"]
@@ -294,6 +294,7 @@ def test_contradictory_cue_lowers_score_honestly() -> None:
         {
             "whole_body_settling_energy": [float(count - i) for i in range(count)],
             "right_wrist_speed": [float(count - i) for i in range(count)],
+            "right_wrist_speed_trough": [0.0] * (count - 1) + [1.0],
             "right_wrist_acceleration": [0.1] * count,
         },
     )
@@ -302,13 +303,14 @@ def test_contradictory_cue_lowers_score_honestly() -> None:
         {
             "whole_body_settling_energy": [float(count - i) for i in range(count)],
             "right_wrist_speed": [float(i) for i in range(count)],
+            "right_wrist_speed_trough": [0.0] * count,
             "right_wrist_acceleration": [0.1] * count,
         },
     )
     calm_scores = [c.score for c in ca.build_composite_anchor_set(varying_calm).for_stage("finish")]
     wild_scores = [c.score for c in ca.build_composite_anchor_set(varying_wild).for_stage("finish")]
-    # At the last frame calm has low settling+low speed (both settled),
-    # wild has low settling cue but high speed contradiction.
+    # At the last frame calm has explicit wrist-trough support while
+    # wild has identical non-wrist settling support but no trough.
     assert wild_scores[-1] < calm_scores[-1]
 
 
@@ -357,7 +359,7 @@ def test_partial_missing_coverage_is_mean_available_weight() -> None:
     rows = ca.build_composite_anchor_set(track).for_stage("start")
     for candidate in rows:
         assert candidate.cue_values["stillness"] is None
-        assert candidate.coverage == pytest.approx(0.75, abs=1e-12)
+        assert candidate.coverage == pytest.approx(0.65, abs=1e-12)
         assert candidate.score >= 0.0
     # Loading stillness weight is 0.10 -> coverage 0.90.
     loading = ca.build_composite_anchor_set(track).for_stage("loading")

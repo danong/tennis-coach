@@ -94,7 +94,7 @@ __all__ = [
 ]
 
 #: Version of the solver configuration/result schemas.
-PHASE_SOLVER_SCHEMA_VERSION = 1
+PHASE_SOLVER_SCHEMA_VERSION = 2
 #: Method identity recorded on every emitted attempt phase.
 PHASE_SOLVER_METHOD_VERSION = "phase-solver-v1"
 #: Default configuration identity.
@@ -163,6 +163,9 @@ class PhaseSolverConfig:
     contact_skip_penalty: float = 0.80
     min_transition_gap_seconds: float = 0.0
     max_transition_gap_seconds: float = 1.50
+    # Optional six-anchor-only cap for the direct contact -> finish transition.
+    # None preserves the shared legacy solver's broad-gap behavior.
+    max_contact_to_finish_seconds: float | None = None
     transition_bonus: float = 0.05
     available_observation_floor: float = 0.50
     body_support_quality_floor: float = 0.30
@@ -223,6 +226,16 @@ class PhaseSolverConfig:
                 f"'max_transition_gap_seconds' "
                 f"({self.max_transition_gap_seconds!r})."
             )
+        if self.max_contact_to_finish_seconds is not None:
+            bound = _check_nonnegative(
+                "'max_contact_to_finish_seconds'", self.max_contact_to_finish_seconds
+            )
+            if bound <= 0.0:
+                raise PhaseSolverError(
+                    f"{name}: 'max_contact_to_finish_seconds' must be > 0 when set, "
+                    f"got {bound!r}."
+                )
+            object.__setattr__(self, "max_contact_to_finish_seconds", bound)
         object.__setattr__(
             self,
             "transition_bonus",
@@ -302,6 +315,7 @@ class PhaseSolverConfig:
             "contact_body_confidence_bonus": self.contact_body_confidence_bonus,
             "contact_body_confidence_penalty": self.contact_body_confidence_penalty,
             "contact_skip_penalty": self.contact_skip_penalty,
+            "max_contact_to_finish_seconds": self.max_contact_to_finish_seconds,
             "max_transition_gap_seconds": self.max_transition_gap_seconds,
             "min_transition_gap_seconds": self.min_transition_gap_seconds,
             "schema_version": self.schema_version,
@@ -325,6 +339,7 @@ class PhaseSolverConfig:
             "contact_body_confidence_bonus",
             "contact_body_confidence_penalty",
             "contact_skip_penalty",
+            "max_contact_to_finish_seconds",
             "max_transition_gap_seconds",
             "min_transition_gap_seconds",
             "schema_version",

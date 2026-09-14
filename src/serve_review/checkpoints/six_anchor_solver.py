@@ -139,7 +139,10 @@ def transition_feasible(
     Preserves the M4.4 transition semantics on point candidates:
     strictly chronological PTS, with the keyframe gap inside
     ``[min_transition_gap_seconds,
-    max_transition_gap_seconds * (later_index - earlier_index)]``.
+    max_transition_gap_seconds * (later_index - earlier_index)]``. When
+    configured, the direct ``contact -> finish`` pair additionally obeys
+    ``max_contact_to_finish_seconds``; this does not constrain any other
+    stage pair or the legacy eight-stage solver.
     """
     if not later.time_seconds > earlier.time_seconds:
         return False
@@ -148,6 +151,14 @@ def transition_feasible(
     if gap < float(config.min_transition_gap_seconds) - _GAP_EPSILON_SECONDS:
         return False
     if gap > float(config.max_gap_for_span(span)) + _GAP_EPSILON_SECONDS:
+        return False
+    finish_cap = config.max_contact_to_finish_seconds
+    if (
+        earlier.stage == "contact"
+        and later.stage == "finish"
+        and finish_cap is not None
+        and gap > float(finish_cap) + _GAP_EPSILON_SECONDS
+    ):
         return False
     return True
 

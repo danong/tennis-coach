@@ -146,6 +146,10 @@ ANALYZE_SERVE_SCHEMA_VERSION = 1
 ANALYZE_SERVE_ATTEMPT_ID = "serve-001"
 #: Anchor stages searched by the DP (derived stages follow afterwards).
 ANALYZE_SERVE_ANCHOR_STAGES: tuple[str, ...] = SIX_ANCHOR_STAGES
+#: M4 production calibration: finish must occur within this bound of contact.
+ANALYZE_SERVE_MAX_CONTACT_TO_FINISH_SECONDS = 0.80
+#: Distinguishes the M4-specific constrained solver from the shared default.
+ANALYZE_SERVE_SOLVER_CONFIG_ID = "phase-solver-serve-default-v2"
 
 #: Fixed basename for the one known anchor video supporting --anchor2comparison.
 ANCHOR2_VIDEO_BASENAME = "single-serve-02.mov"
@@ -895,7 +899,14 @@ def run_analyze_serve(
             "invalid composite_config: expected CompositeAnchorConfig, "
             f"got {type(cfg_composite).__name__}.",
         )
-    cfg_solver = solver_config if solver_config is not None else PhaseSolverConfig()
+    cfg_solver = (
+        solver_config
+        if solver_config is not None
+        else PhaseSolverConfig(
+            config_id=ANALYZE_SERVE_SOLVER_CONFIG_ID,
+            max_contact_to_finish_seconds=ANALYZE_SERVE_MAX_CONTACT_TO_FINISH_SECONDS,
+        )
+    )
     if not isinstance(cfg_solver, PhaseSolverConfig):
         raise _fail(
             "validate",

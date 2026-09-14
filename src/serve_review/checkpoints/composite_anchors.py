@@ -85,8 +85,8 @@ evidence after the documented orientation):
   ``audio_transient_energy`` is quantile-normalized only on frames without
   an explicit flag; honestly ``None`` without audio, never zero-filled).
 - finish: ``whole_body_settling``
-  (``-whole_body_settling_energy``), ``right_wrist_settling``
-  (``-right_wrist_speed``), ``torso_settling``
+  (``-whole_body_settling_energy``), ``right_wrist_speed_trough``
+  (strict local minimum of ``right_wrist_speed``), ``torso_settling``
   (``-right_wrist_acceleration`` calm proxy; the M4.9 matrix carries no
   torso-velocity channel, so wrist-acceleration calm is the documented
   honest proxy).
@@ -132,11 +132,11 @@ __all__ = [
 ]
 
 #: Version of the composite-anchor schemas in this module.
-COMPOSITE_ANCHORS_SCHEMA_VERSION = 3
+COMPOSITE_ANCHORS_SCHEMA_VERSION = 4
 #: Method identity recorded on every candidate and set.
-COMPOSITE_ANCHORS_METHOD_VERSION = "composite-anchors-v3"
-#: Default configuration identity (untuned generic weights).
-COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v3"
+COMPOSITE_ANCHORS_METHOD_VERSION = "composite-anchors-v4"
+#: Default configuration identity (start/finish-reweighted development defaults).
+COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v5"
 #: Provenance recorded on every candidate (pure waveform evidence only).
 COMPOSITE_ANCHOR_PROVENANCE = "kinematic_waveform"
 
@@ -189,22 +189,22 @@ COMPOSITE_CUE_NAMES: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "audio_transient",
         ),
         "finish": (
+            "right_wrist_speed_trough",
             "whole_body_settling",
-            "right_wrist_settling",
             "torso_settling",
         ),
     }
 )
 
-#: Exact initial generic weights (untuned; each stage sums to 1.0).
+#: Exact development weights (each stage sums to 1.0).
 COMPOSITE_DEFAULT_WEIGHTS: Mapping[str, Mapping[str, float]] = MappingProxyType(
     {
         "start": MappingProxyType(
             {
-                "left_arm_elevation_rise": 0.35,
-                "left_elbow_extension": 0.25,
-                "stillness": 0.25,
-                "left_arm_low": 0.15,
+                "left_arm_elevation_rise": 0.15,
+                "left_elbow_extension": 0.05,
+                "stillness": 0.35,
+                "left_arm_low": 0.45,
             }
         ),
         "release": MappingProxyType(
@@ -246,9 +246,9 @@ COMPOSITE_DEFAULT_WEIGHTS: Mapping[str, Mapping[str, float]] = MappingProxyType(
         ),
         "finish": MappingProxyType(
             {
-                "whole_body_settling": 0.45,
-                "right_wrist_settling": 0.35,
-                "torso_settling": 0.20,
+                "right_wrist_speed_trough": 0.60,
+                "whole_body_settling": 0.25,
+                "torso_settling": 0.15,
             }
         ),
     }
@@ -353,7 +353,7 @@ class CompositeAnchorConfig:
     Each stage mapping carries exactly the documented cue keys with
     weights in ``[0, 1]`` summing to ``1.0``. The defaults equal
     :data:`COMPOSITE_DEFAULT_WEIGHTS` verbatim and are recorded as
-    initial generic (untuned) values.
+    current development defaults.
     """
 
     config_id: str = COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID
@@ -811,7 +811,6 @@ def _extract_raw_cues(
     wrist_dy = list(_series(track, "right_wrist_rel_shoulder_dy"))
     wrist_dist = list(_series(track, "right_wrist_rel_shoulder_distance"))
     wrist_acc = list(_series(track, "right_wrist_acceleration"))
-    wrist_speed = list(_series(track, "right_wrist_speed"))
     speed_peak = list(_series(track, "right_wrist_speed_peak"))
     accel_peak = list(_series(track, "right_wrist_accel_peak"))
     settling = list(_series(track, "whole_body_settling_energy"))
@@ -828,7 +827,6 @@ def _extract_raw_cues(
     tilt_mean = _mean_abs_tilt(shoulder_tilt, hip_tilt)
     trough = _negate(wrist_dy)
     unwind = _negate(separation)
-    wrist_settle = _negate(wrist_speed)
     torso_settle = _negate(wrist_acc)
 
     raw: dict[str, dict[str, list[float | None]]] = {
@@ -868,8 +866,8 @@ def _extract_raw_cues(
             "audio_transient": list(audio_cue),
         },
         "finish": {
+            "right_wrist_speed_trough": list(_series(track, "right_wrist_speed_trough")),
             "whole_body_settling": list(stillness_raw),
-            "right_wrist_settling": list(wrist_settle),
             "torso_settling": list(torso_settle),
         },
     }
