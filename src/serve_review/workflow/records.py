@@ -14,9 +14,12 @@ from serve_review.domain import SourceMetadata, SourceMetadataError
 
 WORKFLOW_RECORD_SCHEMA_VERSION = 1
 SESSION_RECORD_SCHEMA_VERSION = 1
+COLLECTION_RECORD_SCHEMA_VERSION = 1
 _SOURCE_FINGERPRINT = re.compile(r"^sha256:([0-9a-fA-F]{64})$")
 _SOURCE_ID = re.compile(r"^source-[0-9a-f]{16}$")
 _SESSION_ID = re.compile(r"^session-[0-9a-f]{16}$")
+_ATTEMPT_ID = re.compile(r"^attempt-[0-9a-f]{24}$")
+_COLLECTION_ID = re.compile(r"^collection-[0-9a-f]{16}$")
 
 
 class WorkflowRecordError(ValueError):
@@ -179,6 +182,81 @@ class SourceRecord:
             raise WorkflowRecordError(
                 f"invalid source record JSON: {exc}."
             ) from exc
+        return cls.from_dict(value)
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionRecord:
+    """Versioned explicit collection membership and presentation metadata."""
+
+    schema_version: int
+    collection_id: str
+    display_name: str
+    source_ids: tuple[str, ...]
+    attempt_ids: tuple[str, ...]
+    tags: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int):
+            raise WorkflowRecordError("schema_version must be an integer.")
+        if self.schema_version != COLLECTION_RECORD_SCHEMA_VERSION:
+            raise WorkflowRecordError(f"unsupported schema_version {self.schema_version!r}.")
+        if not isinstance(self.collection_id, str) or _COLLECTION_ID.fullmatch(self.collection_id) is None:
+            raise WorkflowRecordError("collection_id must have the form collection- plus 16 lowercase hex digits.")
+        if not isinstance(self.display_name, str) or not self.display_name.strip():
+            raise WorkflowRecordError("display_name must be a nonblank string.")
+        for name, values, pattern in (("source_ids", self.source_ids, _SOURCE_ID), ("attempt_ids", self.attempt_ids, _ATTEMPT_ID)):
+            if not isinstance(values, tuple):
+                raise WorkflowRecordError(f"{name} must be a tuple.")
+            if any(not isinstance(value, str) or pattern.fullmatch(value) is None for value in values):
+                raise WorkflowRecordError(f"{name} must contain valid IDs.")
+            if len(set(values)) != len(values):
+                raise WorkflowRecordError(f"{name} must be ordered and unique.")
+        if not isinstance(self.tags, tuple):
+            raise WorkflowRecordError("tags must be a tuple.")
+        if any(not isinstance(tag, str) or not tag.strip() for tag in self.tags):
+            raise WorkflowRecordError("tags must contain nonblank strings.")
+        if self.tags != tuple(sorted(set(self.tags))):
+            raise WorkflowRecordError("tags must be in canonical sorted unique order.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"schema_version": self.schema_version, "collection_id": self.collection_id,
+                "display_name": self.display_name, "source_ids": list(self.source_ids),
+                "attempt_ids": list(self.attempt_ids), "tags": list(self.tags)}
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> "CollectionRecord":
+        if not isinstance(values, dict):
+            raise WorkflowRecordError("collection record must be an object.")
+        keys = {"schema_version", "collection_id", "display_name", "source_ids", "attempt_ids", "tags"}
+        missing, unknown = keys - set(values), set(values) - keys
+        if missing or unknown:
+            raise WorkflowRecordError(f"collection record keys invalid; missing={sorted(missing, key=repr)!r}, unknown={sorted(unknown, key=repr)!r}.")
+        if any(not isinstance(values[name], list) for name in ("source_ids", "attempt_ids", "tags")):
+            raise WorkflowRecordError("source_ids, attempt_ids, and tags must be lists in JSON.")
+        return cls(values["schema_version"], values["collection_id"], values["display_name"],
+                   tuple(values["source_ids"]), tuple(values["attempt_ids"]), tuple(values["tags"]))
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n"
+
+    @classmethod
+    def from_json(cls, data: str | bytes | bytearray) -> "CollectionRecord":
+        def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError(f"duplicate object key {key!r}")
+                result[key] = value
+            return result
+        def constant(value: str) -> None:
+            raise ValueError(f"non-standard JSON constant {value!r}")
+        try:
+            if isinstance(data, (bytes, bytearray)):
+                data = bytes(data).decode("utf-8")
+            value = json.loads(data, parse_constant=constant, object_pairs_hook=pairs)
+        except (TypeError, UnicodeError, ValueError) as exc:
+            raise WorkflowRecordError(f"invalid collection record JSON: {exc}.") from exc
         return cls.from_dict(value)
 
 
