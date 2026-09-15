@@ -1,6 +1,6 @@
 # Minimal local processing workflow
 
-> **Status:** Proposed · **State:** Draft · **Work:** Next · **As of:** 2026-09-14
+> **Status:** Current · **State:** Accepted · **Work:** Next · **As of:** 2026-09-15
 
 ## 1. Purpose
 
@@ -29,14 +29,19 @@ A single source may also be selected:
 mise run process -- ~/videos/tennis/2026-09-10/court-1.mov
 ```
 
-Force regeneration with either spelling:
+Preview work without changing anything:
+
+```sh
+mise run process -- TARGET --dry-run
+```
+
+Force regeneration explicitly:
 
 ```sh
 mise run process -- TARGET --force
-mise run process -- TARGET --rebuild
 ```
 
-`--force` is the canonical spelling. `--rebuild` is an exact alias. Supplying both has the same meaning as supplying either one.
+CLI option names use kebab case and their Python parameters use snake case: `--dry-run` maps to `dry_run`, and `--force` maps to `force`. This is the same convention for `process`, `cut`, and `analyze-serve`. There is no user-facing `--overwrite` or `--rebuild`, and no corresponding `overwrite` or `rebuild` parameter on those command entrypoints. Lower-level file-writing helpers may retain an internal `overwrite` argument that is not exposed as a separate UX concept.
 
 User documentation uses Mise commands. Internal and partial pipeline commands remain available to the developer through `uv run --locked serve-review ...`, but they are not presented as a separately installed application.
 
@@ -122,7 +127,7 @@ The comments identify the owner and pipeline stage for each file. Exact existing
 - `metadata/index.html` is the process summary;
 - `metadata/STEM/` is the exact cut metadata/cache destination;
 - `metadata/STEM/attempts/serve-NNN/` is the exact automated analysis destination;
-- `metadata/STEM/manual-analysis/` is the replaceable default for direct range analysis; and
+- `metadata/STEM/manual-analysis/` is the default for direct range analysis and is not overwritten without explicit `--force`; and
 - `exports/STEM/serves.mov` is the only retained cut video.
 
 No individual serve clips are retained. `metadata/STEM/run.json` is the cut command's current diagnostic result, not workflow run history. No global application workspace is involved. There are no source, session, collection, attempt, or workflow-run identities beyond the source filename and existing source-local `serve-NNN` labels.
@@ -148,14 +153,14 @@ VIDEO.parent / "metadata" / VIDEO.stem / "manual-analysis"
 
 Its default kinematic cache is `cache/kinematic-track-v1.jsonl` beneath that exact destination. The process coordinator supplies `metadata/STEM/attempts/serve-NNN/` as the exact destination for detected attempts.
 
-Accordingly, the direct partial commands remain simple:
+Accordingly, the direct partial commands remain simple and use the same control flags:
 
 ```sh
-uv run --locked serve-review cut VIDEO --padding 1 --output compilation
-uv run --locked serve-review analyze-serve VIDEO --start-seconds S --end-seconds E
+uv run --locked serve-review cut VIDEO --padding 1 --output compilation [--dry-run] [--force]
+uv run --locked serve-review analyze-serve VIDEO --start-seconds S --end-seconds E [--dry-run] [--force]
 ```
 
-They produce the same local directory schema as `process`. Explicit output overrides, if retained in the internal CLI, mean exact destinations and are not part of the primary workflow.
+They produce the same local directory schema as `process`. `--dry-run` validates the request and reports the intended destinations without writes, model initialization, or media export. `--force` permits replacement of that command's generated destination. Explicit output overrides, if retained in the internal CLI, mean exact destinations and are not part of the primary workflow.
 
 The implementation does not stage work in XDG storage, copy generated media or caches, create symlinks, rewrite producer manifests, or migrate old outputs. The old `output/` tree and removed global Stage-2 workspace are unrelated generated data and may be deleted manually after replacement acceptance.
 
@@ -175,7 +180,7 @@ Processing one attempt must use an attempt-specific output directory so analyzer
 
 An individual source or attempt failure does not prevent later independent sources or attempts from running. Failures appear both in terminal output and on the summary page.
 
-## 6. Continuation and force
+## 6. Continuation, dry run, and force
 
 Existing artifacts are the current state. The replacement workflow adds no state database, global manifests, historical run records, invalidation graph, or new `state.json` schema.
 
@@ -189,14 +194,22 @@ A cut unit is complete when the existing cut result reports successful detection
 
 An attempt-analysis unit is complete when its checkpoints, diagnostics, review document, and review HTML are readable. Individual JPEG presence follows the analyzer's recorded stage availability; the coordinator does not invent missing stages.
 
-A directory existing by itself never proves completion. If an interruption leaves only some required files, the next invocation clears that source's incomplete cut unit or that attempt's incomplete analysis unit and retries it. Completed sibling attempts remain untouched.
+A directory existing by itself never proves completion. If an interruption leaves only some required files, the next invocation applies deliberately coarse recovery:
 
-`--force` and `--rebuild` remove the selected generated units before processing:
+- an incomplete cut unit clears that source's entire `metadata/STEM/` and `exports/STEM/` trees, including any attempt and manual analysis beneath them, because its detected attempt set is not trusted;
+- an incomplete attempt-analysis unit clears only that `attempts/serve-NNN/` tree, preserving completed sibling attempts; and
+- a source fingerprint mismatch is not treated as ordinary incompleteness and still requires explicit `--force`.
 
-- for a video target, only that stem's metadata and compilation are removed;
-- for a directory target, generated metadata and exports for all discovered source stems are removed.
+This may repeat valid expensive work after unusual manual damage, such as deleting only a compilation after analysis completed. That cost is preferred over attempt matching, invalidation, or reconciliation logic.
+
+`--force` removes the selected generated units before processing:
+
+- for a video target, only that stem's entire metadata and export trees are removed;
+- for a directory target, the metadata and export trees for all discovered source stems are removed.
 
 Raw media is outside every deletion boundary.
+
+`--dry-run` performs target discovery, preflight validation, fingerprint checks, and current artifact classification, then reports which source and attempt units would be skipped, cleared, or run. It performs no deletion, directory creation, producer call, model initialization, media export, or summary-page write. If a cut unit is not complete, dry-run does not speculate about attempts that have not yet been detected.
 
 The workflow does not automatically invalidate output after an algorithm change. While the pipeline is evolving, the user explicitly requests `--force` when new results are wanted.
 
@@ -222,7 +235,7 @@ Failed: 1 attempt
 Review: file:///Users/me/videos/tennis/2026-09-10/metadata/index.html
 ```
 
-The summary is regenerated on every invocation, including invocations where all computation is skipped. A truncated or manually damaged page is therefore repaired by running `process` again; `--force` is also acceptable when the user wants to start over. No special transactional HTML machinery is required.
+The summary is regenerated on every non-dry-run invocation, including invocations where all computation is skipped. A truncated or manually damaged page is therefore repaired by running `process` again; `--force` is also acceptable when the user wants to start over. No special transactional HTML machinery is required.
 
 Exit status is deliberately small:
 
@@ -290,11 +303,12 @@ The replacement is useful only when the actual user workflow succeeds. Acceptanc
 3. an honest-empty source is understandable;
 4. an actual attempt failure is visible without opening private manifests;
 5. interruption followed by the same command preserves completed attempts and resumes incomplete work;
-6. an immediate completed rerun performs no model inference or media export;
-7. `--force` on one video leaves sibling generated results untouched;
-8. directory `--force` regenerates all selected results;
-9. source videos remain byte-for-byte unchanged; and
-10. terminal output remains readable in the presence of model-runtime diagnostics.
+6. `--dry-run` accurately describes current skip/clear/run decisions and performs no writes, model inference, or media export;
+7. an immediate completed rerun performs no model inference or media export;
+8. `--force` on one video leaves sibling generated results untouched;
+9. directory `--force` regenerates all selected results;
+10. source videos remain byte-for-byte unchanged; and
+11. terminal output remains readable in the presence of model-runtime diagnostics.
 
 Automated tests use temporary directories and injected expensive collaborators. At least one manual acceptance run must use the real cutting and analysis stack. Passing injected tests alone is not acceptance.
 
@@ -302,7 +316,34 @@ Automated tests use temporary directories and injected expensive collaborators. 
 
 The implementation must be a net deletion. Each unit has one externally reviewable outcome and should avoid reusable abstractions that are not needed by the next unit.
 
-## Work unit 1 — Reset producer destinations
+## Work unit 1 — Remove the generalized workflow
+
+**Outcome:** Delete Stage 2 production code and tests before changing producer contracts, so no replacement work must preserve obsolete callers or pass obsolete acceptance tests.
+
+**Primary files:**
+
+- delete `src/serve_review/workflow/` completely;
+- delete `tests/test_workflow_*.py` completely;
+- remove the old workflow parser hook from `src/serve_review/cli.py`; and
+- remove the obsolete Stage-2 `process` Mise alias until its replacement is added.
+
+The dedicated Stage-2 and old UX documents were already deleted in commit `a7590951`; they are not part of this work unit.
+
+**Required behavior:**
+
+- No Stage-2 source, session, collection, status, review, compare, cleanup, landing, record, or workspace implementation remains.
+- No production or test import of `serve_review.workflow` remains.
+- No old workflow command remains visible in CLI help.
+- Existing cutting, one-attempt analysis, annotation, evaluation, and diagnostic commands continue to work unchanged.
+- Nothing from the removed package is copied into a temporary compatibility module.
+
+**Focused check:** Search for remaining imports and old command registration, run the surviving CLI tests, run the full repository check, and inspect the exact deletion diff.
+
+**Review gate:** This unit is deletion and narrow hook cleanup only. It must not begin the replacement coordinator or retain dead code for possible future reuse.
+
+## Work unit 2 — Reset producer destinations
+
+**Dependency:** Work unit 1 accepted.
 
 **Outcome:** Make the existing cut and one-attempt analysis commands write the §4 schema by default, without changing detection, export encoding, timestamps, checkpoint scoring, or artifact contents.
 
@@ -315,22 +356,27 @@ The implementation must be a net deletion. Each unit has one externally reviewab
 
 **Required behavior:**
 
-- `run_cut(VIDEO)` defaults metadata to `VIDEO.parent/metadata/STEM/` and media to `VIDEO.parent/exports/STEM/`.
+- `run_cut` accepts optional exact `metadata_dir` and `export_dir` keyword arguments plus `dry_run: bool = False` and `force: bool = False`.
+- With neither destination override, `run_cut(VIDEO)` defaults metadata to `VIDEO.parent/metadata/STEM/` and media to `VIDEO.parent/exports/STEM/`.
 - Cut metadata/cache files and `run.json` stay in metadata; `run.json` and `CutResult` name the actual export path.
 - Compilation mode creates only `exports/STEM/serves.mov`; existing clips/both debug modes place their media beneath the same export destination.
-- `run_analyze_serve(VIDEO)` defaults to the exact `metadata/STEM/manual-analysis/` destination.
-- A supplied analyzer output directory is exact; no source stem is appended.
+- `run_analyze_serve` retains an optional `output_dir` keyword, but it now means the exact output directory, and accepts `dry_run: bool = False` and `force: bool = False`.
+- With no destination override, `run_analyze_serve(VIDEO)` defaults to `metadata/STEM/manual-analysis/`.
+- No source stem is appended to an explicitly supplied analyzer `output_dir`.
 - The analyzer's default kinematic cache is beneath its exact output directory.
-- CLI defaults use these paths without `--output-dir`. Internal exact-path overrides may remain but must be described as overrides, not normal usage.
-- Existing collision and `--overwrite` behavior remains within these lower-level commands.
+- The `cut` and `analyze-serve` CLI commands expose `--dry-run` and `--force`, mapped to the same-named snake-case Python parameters. They expose neither `--overwrite` nor `--rebuild`.
+- With `dry_run=True`, each producer validates its request and destinations but performs no directory creation, cache/model work, media export, or artifact write.
+- With `force=False`, existing output collisions fail clearly; with `force=True`, the command may replace only its own exact generated destinations.
+- CLI defaults use the local paths without `--output-dir`. Internal exact-path overrides may remain but must be described as overrides, not normal usage.
+- Existing lower-level media/cache writers may continue to receive an internal `overwrite=force` translation; `overwrite` is not a public command or producer-service option.
 
-**Focused check:** Existing pipeline, analyzer, and CLI tests updated for destination behavior, plus `git diff --check`.
+**Focused check:** Existing pipeline, analyzer, and CLI tests updated for destination, dry-run, force, collision, and no-user-facing-overwrite behavior; full repository check; and `git diff --check`.
 
-**Review gate:** The diff changes path calculation and returned/recorded paths only. It must not add XDG handling, copying, symlinks, migration, workflow records, or algorithm changes.
+**Review gate:** The diff changes path calculation, command-control naming, dry-run behavior, and returned/recorded paths only. It must not add XDG handling, copying, symlinks, migration, workflow records, or algorithm changes.
 
-## Work unit 2 — Build the local coordinator
+## Work unit 3 — Build the local coordinator
 
-**Dependency:** Work unit 1 accepted.
+**Dependency:** Work unit 2 accepted.
 
 **Outcome:** Add one small coordinator for discovery, artifact-based completion, force boundaries, and direct producer calls. No HTML or public command wiring yet.
 
@@ -352,15 +398,18 @@ The implementation must be a net deletion. Each unit has one externally reviewab
 - Invoke `run_cut` once per needed source with padding `1` and compilation mode.
 - Invoke `run_analyze_serve` once per needed accepted attempt, using its unpadded detected range and exact `metadata/STEM/attempts/serve-NNN/` destination.
 - Continue independent attempts and sources after operational failure and retain actionable failure details for presentation.
-- Implement identical `force=True` behavior for the future `--force` and `--rebuild` spellings; deletion can target only generated paths for selected source stems.
+- Accept only `force: bool = False` and `dry_run: bool = False` orchestration controls; do not add a `rebuild` synonym.
+- When `force` is true, deletion can target only the complete generated metadata/export trees for selected source stems.
+- When an ordinary cut unit is incomplete, clear that source's complete generated trees and regenerate it; when only one attempt is incomplete, clear only that attempt tree.
+- When `dry_run` is true, return the planned skip/clear/run actions without deleting, writing, or invoking cut/analyze collaborators. Combined `dry_run=True, force=True` reports the forced plan without applying it.
 
 **Focused check:** Temporary-directory tests with injected cut/analyze collaborators; no model, FFmpeg, network, private media, HTML, CLI, or old workflow package.
 
 **Review gate:** The module should remain a direct loop over sources and attempts. If it introduces stores, selectors, generalized records, provenance history, cleanup policy, or a plugin/service framework, reduce it.
 
-## Work unit 3 — Add summary and user entrypoints
+## Work unit 4 — Add summary and user entrypoints
 
-**Dependency:** Work unit 2 accepted.
+**Dependency:** Work unit 3 accepted.
 
 **Outcome:** Make the coordinator useful through one summary page, concise progress, `mise run process`, and `mise run help`.
 
@@ -373,39 +422,31 @@ The implementation must be a net deletion. Each unit has one externally reviewab
 
 **Required behavior:**
 
-- Render `metadata/index.html` directly from discovered source names, current artifacts, and current invocation failures.
+- Render `metadata/index.html` directly from discovered source names, current artifacts, and current invocation failures on non-dry-run invocations.
 - Use escaped text and relative links to raw sources, compilations, and per-attempt analyzer pages.
 - Regenerate the summary even when all computation is skipped.
 - Print progress in the exact granularity described in §7; do not invent frame percentages or estimates.
 - Print complete/failed counts and one absolute `file://` summary URL.
 - Return `0`, `1`, or `2` with the §7 meanings.
-- Parse `--force` and `--rebuild` as aliases for one boolean.
-- Make `mise run process -- TARGET [--force|--rebuild]` the user entrypoint.
+- Parse `--dry-run` into `dry_run` and `--force` into `force`; expose no `--rebuild` or `rebuild` synonym.
+- Make `mise run process -- TARGET [--dry-run] [--force]` the user entrypoint.
 - Make `mise run help` show process first and then repository-only internal commands.
 - Do not open a browser automatically or add an installed-application promise.
 
-**Focused check:** Coordinator/CLI tests covering complete, empty, partial failure, skip, force, HTML escaping, relative links, and both force spellings.
+**Focused check:** Coordinator/CLI tests covering complete, empty, partial failure, skip, dry-run, force, combined dry-run/force, HTML escaping, and relative links.
 
 **Review gate:** The page is one index over existing outputs, not a new review application. No source-ID pages, comparison, filtering, JavaScript, media proxy, or additional command family.
 
-## Work unit 4 — Remove Stage 2 and accept the replacement
+## Work unit 5 — Document and accept the replacement
 
-**Dependency:** Work unit 3 accepted.
+**Dependency:** Work unit 4 accepted.
 
-**Outcome:** Delete the generalized Stage-2 implementation and stale workflow documentation, update the README to the one-user workflow, and prove the replacement against real media.
+**Outcome:** Update the README for the implemented one-user workflow and prove the replacement against real media. Stage-2 code, tests, and dedicated documentation must already be absent.
 
-**Deletion scope:**
+**README outcome:** One usage section shows creating/importing a recording directory, `mise run process -- DIRECTORY`, the resulting `metadata/` and `exports/`, the summary URL, `--dry-run`, `--force`, and `mise run help`. Internal `uv run --locked` syntax appears only in the development/debug command inventory.
 
-- `src/serve_review/workflow/` and its integration hook, except no code that the new coordinator actually uses may be moved wholesale;
-- `tests/test_workflow_*.py` superseded by the bounded replacement tests;
-- Stage-2 workflow plans, generalized CLI/workspace/schema guides, and session/collection/review guides;
-- workflow-only terminology from maintained architecture documentation; and
-- obsolete Mise workflow aliases.
+**Documentation check:** Verify that no maintained document links to removed Stage-2 material or describes the removed workspace, source registration, sessions, collections, status, review, compare, or cleanup commands. Retain detector, cutting, analyzer, cache, evaluation, and reusable procedure documentation.
 
-Before deletion, inventory exact inbound imports and links. Retain detector, cutting, analyzer, cache, evaluation, and reusable procedure documentation. Do not archive deleted workflow prose elsewhere.
+**Automated gate:** Focused replacement tests, full `mise run check`, exact diff review, and a clear net reduction in production code, tests, and maintained documentation relative to `a7590951`.
 
-**README outcome:** One usage section shows creating/importing a recording directory, `mise run process -- DIRECTORY`, the resulting `metadata/` and `exports/`, the summary URL, `--force`, and `mise run help`. Internal `uv run --locked` syntax appears only in the development/debug command inventory.
-
-**Automated gate:** Focused replacement tests, full `mise run check`, exact diff review, and a clear net reduction in production code, tests, and maintained documentation.
-
-**Real acceptance gate:** Use a disposable multi-video recording directory and complete all checks in §10, including interrupt/resume, a no-op rerun with no model initialization, one-video force, directory force, visible failure details, valid compilation links, and valid attempt review links. Passing mocks alone is not acceptance.
+**Real acceptance gate:** Use a disposable multi-video recording directory and complete all checks in §10, including dry-run with no filesystem changes or model initialization, interrupt/resume, a no-op rerun with no model initialization, one-video force, directory force, visible failure details, valid compilation links, and valid attempt review links. Passing mocks alone is not acceptance.
