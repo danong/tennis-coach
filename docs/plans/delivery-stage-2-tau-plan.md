@@ -1,6 +1,6 @@
 # Delivery stage 2 Tau dispatch plan
 
-> **Status:** Current · **State:** Accepted · **Work:** Active · **As of:** 2026-09-14
+> **Status:** Historical · **State:** Complete · **Work:** None · **As of:** 2026-09-14
 
 This plan decomposes delivery stage 2 of the accepted [UX and workflow design](ux-workflow-design.md) into small, sequential Tau tasks for `opencode/muse-spark-1.3-contributor-free`. It specifies tasks for review; it does not dispatch them.
 

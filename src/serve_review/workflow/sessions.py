@@ -12,6 +12,9 @@ from serve_review.workflow.workspace import WorkspaceError, WorkspacePaths, writ
 SESSION_RECORD_SUFFIX = ".json"
 _SESSION_ID = re.compile(r"^session-[0-9a-f]{16}$")
 _SOURCE_ID = re.compile(r"^source-[0-9a-f]{16}$")
+_SESSION_LANDING = re.compile(
+    r"^session-[0-9a-f]{16}-(?:source-[0-9a-f]{16}|index)\.html$"
+)
 
 
 class SessionStoreError(Exception):
@@ -73,6 +76,8 @@ def _all(workspace: WorkspacePaths) -> list[SessionRecord]:
         raise SessionStoreError(f"could not inspect sessions path {root}: {exc}") from exc
     records: list[SessionRecord] = []
     for entry in entries:
+        if entry.is_file() and _SESSION_LANDING.fullmatch(entry.name) is not None:
+            continue
         try:
             contained = entry.resolve(strict=False).parent == resolved_root
         except (OSError, RuntimeError) as exc:

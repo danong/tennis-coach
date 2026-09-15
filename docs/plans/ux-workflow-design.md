@@ -1,15 +1,15 @@
 # UX and workflow design
 
-> **Status:** Proposed · **State:** Accepted · **Work:** None · **As of:** 2026-09-14
+> **Status:** Current · **State:** Accepted · **Work:** None · **As of:** 2026-09-14
 
-This document specifies the intended command-line workflow and user-visible contracts for Serve Review. It uses the [glossary](../reference/glossary.md) and the proposed [domain model](../architecture/domain-model.md).
+This document specifies the accepted command-line workflow and user-visible contracts for the implemented delivery-stage-2 compatibility workflow. It uses the [glossary](../reference/glossary.md) and the current [domain model](../architecture/domain-model.md).
 
 ## 0. Delivery stages
 
 The delivery strategy is deliberately incremental:
 
-1. **Design (current):** specify the UX and contracts without changing runtime behavior.
-2. **Compatibility workflow (next):** compose the existing cutting and stage-checkpoint services behind the new workflow, preserving their algorithms, caches, and artifacts.
+1. **Design (complete):** specify the UX and contracts without changing runtime behavior.
+2. **Compatibility workflow (current/accepted):** compose the existing cutting and stage-checkpoint services behind the new workflow, preserving their algorithms, caches, and artifacts.
 3. **Tooling and naming unification (later):** consolidate commands, schemas, names, artifact invalidation, and compatibility aliases after the workflow has been exercised.
 4. **Product polish (last):** improve presentation, packaging, progress reporting, and other refinements after the contracts and engineering foundations stabilize.
 
@@ -226,7 +226,7 @@ serve-review compare --collection "Carlos Alcaraz reference serves" --stage cont
 
 Different selector types narrow the result (`AND`): for example, `--session practice --source 3 --stage contact` selects contact checkpoints from the third source in that session. Repeating the same selector type broadens that part of the query (`OR`): two `--session` options select from either session. Ambiguous names or unsupported combinations are rejected rather than guessed.
 
-In delivery stage 2, `compare` produces a simple index of existing clips and checkpoint keyframes. A filterable stage gallery and synchronized player are deferred to the review-application project.
+In delivery stage 2, `compare` produces a simple index from artifact paths present in workflow-run provenance. The renderer can embed explicitly supplied clips and checkpoint keyframes, but current workflow runs do not expose every cutting output to `compare`. Use the printed cutting artifacts directly when they are absent from the comparison index. A filterable stage gallery and synchronized player are deferred to the review-application project.
 
 A comparison can be saved without duplicating artifacts:
 
@@ -417,8 +417,8 @@ serve-review review --collection "September cocking review" --open
 Delivery stage 2 generates a deliberately minimal static landing page that:
 
 - identifies the selected sources and attempts;
-- embeds existing clips or compilations with basic HTML video controls;
-- displays existing checkpoint keyframes inline;
+- embeds clips or compilations supplied explicitly to the renderer with basic HTML video controls;
+- displays supplied checkpoint JPEGs inline;
 - links existing per-attempt review pages;
 - links every other generated artifact, including JSON manifests and diagnostics, for manual inspection;
 - identifies missing, failed, or stale analysis; and

@@ -1,8 +1,8 @@
 # Domain model
 
-> **Status:** Proposed · **State:** Accepted · **Work:** None · **As of:** 2026-09-14
+> **Status:** Current · **State:** Maintained · **Work:** None · **As of:** 2026-09-14
 
-This document defines the proposed organizational model for the UX rework. See the normative [glossary](../reference/glossary.md) for terminology. Current schemas remain documented by their implemented compatibility names until separately versioned migrations are accepted.
+This document defines the current organizational model used by the delivery-stage-2 workflow. See the normative [glossary](../reference/glossary.md) for terminology. Current schemas remain documented by their implemented compatibility names until separately versioned migrations are accepted.
 
 ## Relationships
 
