@@ -159,8 +159,10 @@ def _analysis_complete(directory: Path) -> bool:
 
 def _clear(*directories: Path) -> None:
     for directory in directories:
-        if directory.exists():
+        if directory.is_dir():
             shutil.rmtree(directory)
+        elif directory.exists():
+            directory.unlink()
 
 
 def _failure(video: Path, attempt: str | None, fallback: str, error: Exception) -> Failure:
