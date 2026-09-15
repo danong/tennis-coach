@@ -164,7 +164,9 @@ def _clear(*directories: Path) -> None:
 
 
 def _failure(video: Path, attempt: str | None, fallback: str, error: Exception) -> Failure:
-    return Failure(video.name, attempt, str(getattr(error, "stage", fallback)), str(error))
+    step = str(getattr(error, "stage", fallback))
+    detail = str(getattr(error, "message", error))
+    return Failure(video.name, attempt, step, detail)
 
 
 def _format_moment(value: float) -> str:
@@ -400,7 +402,7 @@ def process(
             if dry_run:
                 continue
             _emit(
-                f"  [{position}/{total_attempts} attempts] analyzing "
+                f"  [{video.name} {position}/{total_attempts} attempts] analyzing "
                 f"{_format_range(attempt.detected_range.start_seconds, attempt.detected_range.end_seconds)}\u2026"
             )
             try:
@@ -420,7 +422,10 @@ def process(
     if dry_run:
         return ProcessResult(videos, tuple(actions), tuple(failures))
     recording_dir = videos[0].parent
-    summary_path = _write_index(recording_dir, videos, documents, tuple(failures))
+    summary_videos = discover(recording_dir)
+    summary_path = _write_index(
+        recording_dir, summary_videos, documents, tuple(failures)
+    )
     complete_sources = 0
     complete_attempts = 0
     failed_names = {item.filename for item in failures}

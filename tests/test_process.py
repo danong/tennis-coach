@@ -226,11 +226,15 @@ def test_summary_links_raw_compilation_and_checkpoint(tmp_path: Path) -> None:
     document = attempts(count=1)
     write_cut(video, document)
     write_analysis(tmp_path / "metadata" / video.stem / "attempts" / "serve-001")
+    sibling = tmp_path / "other.mov"
+    sibling.write_bytes(b"video")
+    write_cut(sibling, attempts(count=0))
     result = process(video, probe_fn=lambda path: metadata(), cut_fn=_boom, analyze_fn=_boom)
     summary = tmp_path / "metadata" / "index.html"
     assert result.summary_path == summary
     text = summary.read_text(encoding="utf-8")
     assert "court 1&amp;2.mov" in text
+    assert "other.mov" in text
     assert "complete" in text
     assert "../court%201%262.mov" in text
     assert "../exports/court%201%262/serves.mov" in text

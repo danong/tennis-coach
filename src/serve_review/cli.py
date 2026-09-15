@@ -5,25 +5,31 @@ import os
 import shutil
 import subprocess
 import sys
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Sequence
 
 
 @contextmanager
-def _silence_stdout():
+def _silence_model_output():
     """Hide noisy in-process/native model output during the primary workflow."""
     with open(os.devnull, "w", encoding="utf-8") as sink:
         sys.stdout.flush()
+        sys.stderr.flush()
         saved_stdout = os.dup(1)
+        saved_stderr = os.dup(2)
         try:
             os.dup2(sink.fileno(), 1)
-            with redirect_stdout(sink):
+            os.dup2(sink.fileno(), 2)
+            with redirect_stdout(sink), redirect_stderr(sink):
                 yield
         finally:
             sys.stdout.flush()
+            sys.stderr.flush()
             os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
             os.close(saved_stdout)
+            os.close(saved_stderr)
 
 
 def _tool_version(executable: str) -> str | None:
@@ -717,11 +723,13 @@ def process_cmd(args: argparse.Namespace) -> int:
 
     target = args.target.expanduser()
 
+    progress_stream = os.fdopen(os.dup(2), "w", encoding="utf-8")
+
     def _progress(message: str) -> None:
-        print(message, file=sys.stderr)
+        print(message, file=progress_stream, flush=True)
 
     try:
-        with _silence_stdout():
+        with progress_stream, _silence_model_output():
             result = run_process(
                 target,
                 force=args.force,

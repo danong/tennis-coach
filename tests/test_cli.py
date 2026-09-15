@@ -1984,7 +1984,9 @@ def test_process_hides_model_stdout_but_keeps_progress(
 
     def _noisy(target, **kwargs):
         print("python model noise")
+        print("python model warning", file=__import__("sys").stderr)
         os.write(1, b"native model noise\n")
+        os.write(2, b"native model warning\n")
         kwargs["progress_callback"]("useful progress")
         return ProcessResult((source,), (), (), complete_sources=1)
 
@@ -1993,6 +1995,7 @@ def test_process_hides_model_stdout_but_keeps_progress(
     assert process_cmd(args) == 0
     captured = capfd.readouterr()
     assert "model noise" not in captured.out
+    assert "model warning" not in captured.err
     assert "useful progress" in captured.err
     assert "Complete: 1 videos" in captured.out
 
