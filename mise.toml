@@ -20,10 +20,6 @@ run = "uv run --locked pytest"
 description = "Run diagnostics and tests"
 depends = ["doctor", "test"]
 
-[tasks.process]
-description = "Process sources through the managed workspace workflow"
-run = "uv run --locked serve-review process \"$@\""
-
 [tasks.cut]
 description = "Detect serves and export clips or a compilation"
 run = "uv run --locked serve-review cut \"$@\""
