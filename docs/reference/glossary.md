@@ -1,6 +1,6 @@
 # Glossary and terminology
 
-> **Status:** Current · **State:** Maintained · **Work:** None · **As of:** 2026-09-14
+> **Status:** Current · **State:** Maintained · **Work:** None · **As of:** 2026-09-15
 
 This is the normative vocabulary for current and proposed Serve Review documentation. Literal commands, filenames, schema fields, and Python types retain their implemented names in backticks even when those names predate this vocabulary.
 
@@ -8,7 +8,7 @@ This is the normative vocabulary for current and proposed Serve Review documenta
 
 ### Source
 
-One immutable input media asset, identified by its content fingerprint. A filesystem path locates a source but is not its identity. Use **source video** on first mention when that helps a reader, then **source**. Use `VIDEO` only as a CLI metavariable.
+One immutable input media file. Its path locates it and its content fingerprint detects replacement or damage. Use **source video** on first mention when that helps a reader, then **source**. Use `VIDEO` only as a CLI metavariable.
 
 ### Range
 
@@ -26,23 +26,19 @@ A stable review unit representing one detected serve-like action. The intended m
 
 Human-readable shorthand for an accepted attempt. In precise detector and schema prose, prefer **candidate** or **attempt** as appropriate.
 
-### Session
+### Recording directory
 
-An optional, ordered grouping of sources representing a real recording, practice, match, or acquisition context. A source belongs to zero or one session; use collections for non-exclusive or cross-session grouping. A session is not a processing run or an output directory.
-
-### Collection
-
-A non-exclusive, named or temporary selection of sources or attempts. Collections support corpora and comparisons and may span sessions. Membership never duplicates source media or analysis.
+A user-named filesystem directory containing related source videos. It is the complete organizational boundary for local processing; Serve Review does not register or catalog it.
 
 ### Corpus
 
-The broader body of reference material available to a workspace. Represent useful subsets of a corpus as collections rather than encoding every grouping as a session.
+A body of reference media used for development or evaluation. A corpus is not application-managed user state.
 
 ## Processing and artifacts
 
 ### Run
 
-One execution with recorded configuration, software/model versions, status, timing, and errors. Repeating work creates or resumes a run; it does not create a recording session.
+One producer execution whose current diagnostics may record configuration, status, timing, and errors. It is not workflow history; repeating local processing relies on completed artifacts.
 
 ### Cache
 
@@ -106,9 +102,8 @@ A fixed development source used for repeatable inspection or comparison. Always 
 - Use **pipeline step** for orchestration timing or errors so it is not confused with a serve stage.
 - Put implemented compatibility names such as `PhaseDocument`, `review-phases`, and `stage_timings_seconds` in code formatting.
 - Link to this glossary near the beginning of terminology-heavy maintained documents; do not link every occurrence.
-- Preserve historical documents as records rather than silently modernizing their terminology.
 
-## Compatibility names and future renames
+## Implemented names and possible future renames
 
 These changes are intentionally deferred until their code, schemas, CLI compatibility, migrations, and documentation can be handled together.
 

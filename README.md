@@ -39,6 +39,25 @@ mise run doctor
 mise run check
 ```
 
+## Process a recording directory
+
+Copy one or more `.mov` or `.mp4` source videos into a meaningfully named directory, then run:
+
+```sh
+mise run process -- ~/videos/tennis/2026-09-10
+```
+
+The command leaves source videos unchanged, writes detection and checkpoint data under `metadata/`, writes one compilation per source under `exports/`, and prints a `file://` link to `metadata/index.html`. Repeating the command skips complete artifacts and regenerates incomplete work.
+
+Preview without writing, or explicitly regenerate selected output:
+
+```sh
+mise run process -- TARGET --dry-run
+mise run process -- TARGET --force
+```
+
+A video path processes only that source; a directory processes its immediate MOV/MP4 children. Run `mise run help` for the primary and internal command inventory.
+
 Current development commands:
 
 | Command | Purpose |
@@ -47,9 +66,11 @@ Current development commands:
 | `mise run doctor` | Verify Python, FFmpeg, and ffprobe. |
 | `mise run test` | Run offline pipeline tests. |
 | `mise run check` | Run diagnostics and tests. |
-| `uv run --locked serve-review cut <video> --padding 1 --output <compilation\|clips\|both>` | Detect accepted attempts and export a compilation, clips, or both. |
+| `mise run help` | Show the repository command inventory. |
+| `mise run process -- TARGET [--dry-run] [--force]` | Process one source or a recording directory and publish its local summary. |
+| `uv run --locked serve-review cut <video> --padding 1 --output <compilation\|clips\|both> [--dry-run] [--force]` | Detect accepted attempts and export a compilation, clips, or both. |
 | `mise run analyze -- <video>` | Legacy attempt-based analysis; requires prior `cut` output or `--attempts`. |
-| `uv run --locked serve-review analyze-serve <video> [--start-seconds S --end-seconds E]` | Current one-attempt native-PTS 3D stage-checkpoint analysis; writes checkpoints, diagnostics, a review page, and a reusable world cache. |
+| `uv run --locked serve-review analyze-serve <video> [--start-seconds S --end-seconds E] [--dry-run] [--force]` | Current one-attempt native-PTS 3D stage-checkpoint analysis; writes checkpoints, diagnostics, a review page, and a reusable world cache. |
 | `mise run review-phases -- <video>` | Render labeled pose-overlay keyframes for manual checkpoint review. |
 | `mise run phase-annotate -- <video> --attempts <attempts.json> --labels <labels.json> --output <annotations.json>` | Convert zero-based decoded-frame labels to exact-PTS private annotations. |
 | `mise run phase-evaluate -- --checkpoints <checkpoints.json> --annotations <annotations.json> --output <report.json>` | Write the deterministic local checkpoint-evaluation report. |

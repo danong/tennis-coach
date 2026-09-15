@@ -1,6 +1,6 @@
 # Minimal local processing workflow
 
-> **Status:** Current · **State:** Accepted · **Work:** Next · **As of:** 2026-09-15
+> **Status:** Current · **State:** Implemented · **Work:** None · **As of:** 2026-09-15
 
 ## 1. Purpose
 
