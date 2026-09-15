@@ -81,6 +81,15 @@ def add_workflow_parsers(subparsers: Any) -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.set_defaults(handler=process_command)
 
+    clean = subparsers.add_parser("clean", help="inventory cleanup candidates (read-only)")
+    clean.add_argument("--dry-run", action="store_true")
+    clean.add_argument("--workspace", type=Path, default=None)
+    clean.add_argument("--source", action="append", default=[])
+    clean.add_argument("--stale", action="store_true")
+    clean.add_argument("--failed-runs", action="store_true")
+    clean.add_argument("--temporary", action="store_true")
+    clean.set_defaults(handler=cleanup_command)
+
     status = subparsers.add_parser("status", help="show read-only workflow status")
     status.add_argument("source", nargs="?", metavar="SOURCE")
     status.add_argument("--workspace", type=Path, default=None)
@@ -120,6 +129,40 @@ def add_workflow_parsers(subparsers: Any) -> None:
     collection = subparsers.add_parser("collection", help="organize explicit collections")
     collection_parsers = collection.add_subparsers(dest="collection_command", required=True)
     _add_organization_parsers(collection_parsers, "collection")
+
+
+def cleanup_command(
+    args: argparse.Namespace,
+    *,
+    services: dict[str, Any] | None = None,
+) -> int:
+    """Print a cleanup inventory.  Dry-run is intentionally mandatory."""
+    if not args.dry_run:
+        print("ERROR: clean requires --dry-run", file=sys.stderr)
+        return 2
+    try:
+        from serve_review.workflow.cleanup import inventory_cleanup
+        services = {} if services is None else services
+        inventory = services.get("inventory_cleanup", inventory_cleanup)
+        result = inventory(
+            resolve_workspace(args.workspace),
+            source=args.source,
+            stale=args.stale,
+            failed_runs=args.failed_runs,
+            temporary=args.temporary,
+        )
+        for item in result.items:
+            state = "CANDIDATE" if item in result.candidates else "PROTECTED"
+            print(f"{state} {item.classification} {item.path} -- {item.reason}")
+        print("Totals:")
+        for kind, count in result.totals.items():
+            print(f"{kind}: {count}")
+        print(f"candidates: {len(result.candidates)}")
+        print(f"protected/excluded: {len(result.protected)}")
+        return 0
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
 
 def status_command(args: argparse.Namespace) -> int:
