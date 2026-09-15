@@ -1867,3 +1867,166 @@ def test_analyze_serve_dry_run_reports_without_writes(tmp_path: Path, capsys, mo
     assert _handler(args) == 0
     assert "dry-run" in capsys.readouterr().out.lower()
     assert not (tmp_path / "metadata").exists()
+
+
+def test_process_options_map_to_snake_case_and_reject_aliases() -> None:
+    args = build_parser().parse_args(["process", "session.mov"])
+    assert args.target == Path("session.mov")
+    assert args.dry_run is False
+    assert args.force is False
+    assert not hasattr(args, "overwrite")
+    assert not hasattr(args, "rebuild")
+    assert not hasattr(args, "open")
+    assert not hasattr(args, "workspace")
+    explicit = build_parser().parse_args(
+        ["process", "session.mov", "--dry-run", "--force"]
+    )
+    assert explicit.dry_run is True
+    assert explicit.force is True
+    for flag in ("--overwrite", "--rebuild", "--open", "--workspace"):
+        try:
+            build_parser().parse_args(["process", "session.mov", flag])
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError(f"process must not accept {flag}")
+
+
+def test_process_invalid_target_returns_two(tmp_path: Path, capsys) -> None:
+    from serve_review.cli import process_cmd
+
+    args = build_parser().parse_args(["process", str(tmp_path / "missing.mov")])
+    assert process_cmd(args) == 2
+    assert "ERROR" in capsys.readouterr().err
+
+
+def test_process_fingerprint_mismatch_returns_two(tmp_path: Path, capsys, monkeypatch) -> None:
+    import serve_review.process as process_module
+    from serve_review.cli import process_cmd
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake")
+
+    def _mismatch(target, **kwargs):
+        raise process_module.FingerprintMismatch("clip.mov: mismatch; pass --force")
+
+    monkeypatch.setattr(process_module, "process", _mismatch)
+    args = build_parser().parse_args(["process", str(source)])
+    assert process_cmd(args) == 2
+    assert "ERROR" in capsys.readouterr().err
+
+
+def test_process_empty_returns_zero_with_review_uri(tmp_path: Path, capsys, monkeypatch) -> None:
+    import serve_review.process as process_module
+    from serve_review.cli import process_cmd
+    from serve_review.process import Action, ProcessResult
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake")
+    summary = tmp_path / "metadata" / "index.html"
+    summary.parent.mkdir(parents=True)
+    summary.write_text("<html></html>", encoding="utf-8")
+    result = ProcessResult(
+        (source,),
+        (Action(source.name, None, "skip"),),
+        (),
+        summary_path=summary,
+        complete_sources=1,
+        complete_attempts=0,
+    )
+    monkeypatch.setattr(process_module, "process", lambda target, **k: result)
+    args = build_parser().parse_args(["process", str(source)])
+    assert process_cmd(args) == 0
+    out = capsys.readouterr().out
+    assert "Complete: 1 videos, 0 attempts" in out
+    assert "Review: file://" in out
+    assert str(summary.resolve().as_uri()) in out
+
+
+def test_process_failure_returns_one_with_review_uri(tmp_path: Path, capsys, monkeypatch) -> None:
+    import serve_review.process as process_module
+    from serve_review.cli import process_cmd
+    from serve_review.process import Action, Failure, ProcessResult
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake")
+    summary = tmp_path / "metadata" / "index.html"
+    summary.parent.mkdir(parents=True)
+    summary.write_text("<html></html>", encoding="utf-8")
+    result = ProcessResult(
+        (source,),
+        (Action(source.name, None, "run"),),
+        (Failure(source.name, "serve-001", "analysis", "boom <x>"),),
+        summary_path=summary,
+        complete_sources=0,
+        complete_attempts=0,
+    )
+    monkeypatch.setattr(process_module, "process", lambda target, **k: result)
+    args = build_parser().parse_args(["process", str(source)])
+    assert process_cmd(args) == 1
+    out = capsys.readouterr().out
+    assert "Complete:" in out
+    assert "Failed:" in out
+    assert "Review: file://" in out
+
+
+def test_process_hides_model_stdout_but_keeps_progress(
+    tmp_path: Path, capfd, monkeypatch
+) -> None:
+    import os
+
+    import serve_review.process as process_module
+    from serve_review.cli import process_cmd
+    from serve_review.process import ProcessResult
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake")
+
+    def _noisy(target, **kwargs):
+        print("python model noise")
+        os.write(1, b"native model noise\n")
+        kwargs["progress_callback"]("useful progress")
+        return ProcessResult((source,), (), (), complete_sources=1)
+
+    monkeypatch.setattr(process_module, "process", _noisy)
+    args = build_parser().parse_args(["process", str(source)])
+    assert process_cmd(args) == 0
+    captured = capfd.readouterr()
+    assert "model noise" not in captured.out
+    assert "useful progress" in captured.err
+    assert "Complete: 1 videos" in captured.out
+
+
+def test_process_dry_run_reports_plan_without_summary_or_producers(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    import serve_review.process as process_module
+    from serve_review.cli import process_cmd
+    from serve_review.domain import SourceMetadata
+
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"fake")
+
+    def _probe(path):
+        return SourceMetadata(
+            fingerprint="sha256:test",
+            duration_seconds=10,
+            width=1,
+            height=1,
+            frame_rate_num=1,
+            frame_rate_den=1,
+            video_codec="test",
+        )
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("producer must not run")
+
+    monkeypatch.setattr(process_module, "probe_source", _probe)
+    monkeypatch.setattr(process_module, "run_cut", _boom)
+    monkeypatch.setattr(process_module, "run_analyze_serve", _boom)
+    args = build_parser().parse_args(["process", str(source), "--dry-run"])
+    assert process_cmd(args) == 0
+    out = capsys.readouterr().out
+    assert "dry-run" in out.lower()
+    assert "run" in out.lower()
+    assert not (tmp_path / "metadata" / "index.html").exists()

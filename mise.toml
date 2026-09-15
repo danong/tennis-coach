@@ -20,6 +20,30 @@ run = "uv run --locked pytest"
 description = "Run diagnostics and tests"
 depends = ["doctor", "test"]
 
+[tasks.process]
+description = "Process a recording directory or single video beside its sources"
+run = "uv run --locked serve-review process \"$@\""
+
+[tasks.help]
+description = "Show the repository command inventory"
+run = """
+echo "process: mise run process -- TARGET [--dry-run] [--force]"
+echo "cut: uv run --locked serve-review cut VIDEO --padding 1 --output compilation [--dry-run] [--force]"
+echo "analyze-serve: uv run --locked serve-review analyze-serve VIDEO --start-seconds S --end-seconds E [--dry-run] [--force]"
+echo "probe: uv run --locked serve-review probe VIDEO"
+echo "export: uv run --locked serve-review export VIDEO --ranges RANGES.json"
+echo "extract-poses: uv run --locked serve-review extract-poses VIDEO"
+echo "analyze: uv run --locked serve-review analyze VIDEO"
+echo "review-phases: uv run --locked serve-review review-phases VIDEO"
+echo "phase-debug: uv run --locked serve-review phase-debug ..."
+echo "phase-debug-dev: uv run --locked serve-review phase-debug-dev ..."
+echo "extract-world: uv run --locked serve-review extract-world VIDEO ..."
+echo "phase-annotate: mise run phase-annotate -- ..."
+echo "phase-evaluate: mise run phase-evaluate -- ..."
+echo "doctor: mise run doctor"
+echo "setup/test/check: mise run setup | mise run test | mise run check"
+"""
+
 [tasks.cut]
 description = "Detect serves and export clips or a compilation"
 run = "uv run --locked serve-review cut \"$@\""

@@ -1,11 +1,29 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import Sequence
+
+
+@contextmanager
+def _silence_stdout():
+    """Hide noisy in-process/native model output during the primary workflow."""
+    with open(os.devnull, "w", encoding="utf-8") as sink:
+        sys.stdout.flush()
+        saved_stdout = os.dup(1)
+        try:
+            os.dup2(sink.fileno(), 1)
+            with redirect_stdout(sink):
+                yield
+        finally:
+            sys.stdout.flush()
+            os.dup2(saved_stdout, 1)
+            os.close(saved_stdout)
 
 
 def _tool_version(executable: str) -> str | None:
@@ -693,6 +711,54 @@ def extract_world_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def process_cmd(args: argparse.Namespace) -> int:
+    from serve_review.process import FingerprintMismatch, ProcessError
+    from serve_review.process import process as run_process
+
+    target = args.target.expanduser()
+
+    def _progress(message: str) -> None:
+        print(message, file=sys.stderr)
+
+    try:
+        with _silence_stdout():
+            result = run_process(
+                target,
+                force=args.force,
+                dry_run=args.dry_run,
+                progress_callback=_progress,
+            )
+    except FingerprintMismatch as exc:
+        print(f"ERROR: {exc}.", file=sys.stderr)
+        return 2
+    except ProcessError as exc:
+        print(f"ERROR: {exc}.", file=sys.stderr)
+        return 2
+    if args.dry_run:
+        for action in result.actions:
+            detail = action.filename
+            if action.attempt is not None:
+                detail += f" {action.attempt}"
+            print(f"dry-run {action.action}: {detail}")
+        for failure in result.failures:
+            detail = failure.filename
+            if failure.attempt is not None:
+                detail += f" {failure.attempt}"
+            print(f"dry-run failed: {detail}: {failure.step}: {failure.error}")
+        return 1 if result.failures else 0
+    print(f"Complete: {result.complete_sources} videos, {result.complete_attempts} attempts")
+    if result.failures:
+        print(f"Failed: {len(result.failures)} failure(s)")
+        for failure in result.failures:
+            detail = failure.filename
+            if failure.attempt is not None:
+                detail += f" {failure.attempt}"
+            print(f"failed: {detail}: {failure.step}: {failure.error}")
+    if result.summary_path is not None:
+        print(f"Review: {result.summary_path.resolve().as_uri()}")
+    return 1 if result.failures else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="serve-review",
@@ -1372,6 +1438,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="ffprobe executable (default: ffprobe)",
     )
     world_parser.set_defaults(handler=extract_world_cmd)
+
+    process_parser = subparsers.add_parser(
+        "process",
+        help="process a recording directory or single video beside its sources",
+    )
+    process_parser.add_argument("target", type=Path, help="recording directory or MOV/MP4 video")
+    process_parser.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=False,
+        help="report planned skip/clear/run actions without writes (default: off)",
+    )
+    process_parser.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        default=False,
+        help="replace selected generated trees before processing (default: off)",
+    )
+    process_parser.set_defaults(handler=process_cmd)
 
     return parser
 

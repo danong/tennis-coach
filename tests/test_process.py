@@ -218,3 +218,124 @@ def test_failures_keep_stage_and_do_not_stop_later_sources(tmp_path: Path) -> No
 
 def _actions(result, attempt: str) -> list[str]:
     return [action.action for action in result.actions if action.attempt == attempt]
+
+
+def test_summary_links_raw_compilation_and_checkpoint(tmp_path: Path) -> None:
+    video = tmp_path / "court 1&2.mov"
+    video.write_bytes(b"video")
+    document = attempts(count=1)
+    write_cut(video, document)
+    write_analysis(tmp_path / "metadata" / video.stem / "attempts" / "serve-001")
+    result = process(video, probe_fn=lambda path: metadata(), cut_fn=_boom, analyze_fn=_boom)
+    summary = tmp_path / "metadata" / "index.html"
+    assert result.summary_path == summary
+    text = summary.read_text(encoding="utf-8")
+    assert "court 1&amp;2.mov" in text
+    assert "complete" in text
+    assert "../court%201%262.mov" in text
+    assert "../exports/court%201%262/serves.mov" in text
+    assert "court%201%262/attempts/serve-001/review-serve-3d/index.html" in text
+    assert "00:01.0" in text
+    assert "review-serve-3d" in text
+    assert "<script" not in text.lower()
+
+
+def _boom(*args, **kwargs):
+    raise AssertionError("producer must not run")
+
+
+def test_summary_empty_and_failed_sources(tmp_path: Path) -> None:
+    empty_video = tmp_path / "empty.mov"
+    empty_video.write_bytes(b"e")
+    write_cut(empty_video, attempts(count=0))
+    bad_video = tmp_path / "bad.mov"
+    bad_video.write_bytes(b"b")
+
+    def cut(video: Path, **kwargs):
+        if video == bad_video:
+            raise ValueError("sampling returned 7 of 8 requested frames")
+        return _boom(video, **kwargs)
+
+    result = process(
+        tmp_path,
+        probe_fn=lambda path: metadata(),
+        cut_fn=cut,
+        analyze_fn=_boom,
+    )
+    text = (tmp_path / "metadata" / "index.html").read_text(encoding="utf-8")
+    assert "empty.mov" in text and "empty" in text
+    assert "bad.mov" in text and "failed" in text
+    assert "sampling returned 7 of 8" in text
+    assert result.summary_path is not None and result.summary_path.is_file()
+    assert result.complete_sources == 1
+    assert result.complete_attempts == 0
+
+
+def test_summary_regenerated_when_all_skipped(tmp_path: Path) -> None:
+    video = tmp_path / "serve.mov"
+    video.write_bytes(b"video")
+    write_cut(video, attempts(count=0))
+    first = process(video, probe_fn=lambda path: metadata(), cut_fn=_boom, analyze_fn=_boom)
+    assert first.summary_path is not None
+    first.summary_path.write_text("damaged", encoding="utf-8")
+    second = process(video, probe_fn=lambda path: metadata(), cut_fn=_boom, analyze_fn=_boom)
+    text = second.summary_path.read_text(encoding="utf-8")  # type: ignore[union-attr]
+    assert "damaged" not in text
+    assert "serve.mov" in text
+
+
+def test_progress_messages_without_estimates(tmp_path: Path) -> None:
+    video = tmp_path / "serve.mov"
+    video.write_bytes(b"video")
+    document = attempts(count=1)
+    messages: list[str] = []
+
+    def cut(video_path: Path, **kwargs):
+        write_cut(video_path, document)
+        return SimpleNamespace(attempts_document=document)
+
+    def analyze(video_path: Path, **kwargs):
+        write_analysis(kwargs["output_dir"])
+
+    process(
+        video,
+        probe_fn=lambda path: metadata(),
+        cut_fn=cut,
+        analyze_fn=analyze,
+        progress_callback=messages.append,
+    )
+    assert messages[0] == "[1/1 videos] serve.mov"
+    assert any("detecting serves" in message for message in messages)
+    assert any("found 1 serves" in message for message in messages)
+    assert any("analyzing" in message for message in messages)
+    assert not any("%" in message for message in messages)
+    assert not any("eta" in message.lower() for message in messages)
+
+
+def test_dry_run_writes_no_summary_and_runs_no_producers(tmp_path: Path) -> None:
+    video = tmp_path / "serve.mov"
+    video.write_bytes(b"video")
+    result = process(
+        video,
+        probe_fn=lambda path: metadata(),
+        cut_fn=_boom,
+        analyze_fn=_boom,
+        dry_run=True,
+    )
+    assert result.summary_path is None
+    assert not (tmp_path / "metadata" / "index.html").exists()
+    assert result.actions[0].action == "run"
+
+
+def test_mise_inventory_lists_process_first() -> None:
+    from pathlib import Path as _Path
+
+    text = (_Path(__file__).resolve().parent.parent / "mise.toml").read_text(
+        encoding="utf-8"
+    )
+    assert 'run = "uv run --locked serve-review process' in text
+    assert "[tasks.process]" in text
+    assert "[tasks.help]" in text
+    help_run = text.split("[tasks.help]", 1)[1]
+    assert help_run.index("process") < help_run.index("cut")
+    assert "uv run --locked serve-review" in help_run

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import html
 import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 from serve_review.analyze_serve import (
     DIAGNOSTICS_FILENAME,
@@ -42,6 +44,9 @@ class ProcessResult:
     sources: tuple[Path, ...]
     actions: tuple[Action, ...]
     failures: tuple[Failure, ...]
+    summary_path: Path | None = None
+    complete_sources: int = 0
+    complete_attempts: int = 0
 
 
 class ProcessError(ValueError):
@@ -162,6 +167,138 @@ def _failure(video: Path, attempt: str | None, fallback: str, error: Exception) 
     return Failure(video.name, attempt, str(getattr(error, "stage", fallback)), str(error))
 
 
+def _format_moment(value: float) -> str:
+    total = max(0.0, float(value))
+    minutes = int(total // 60)
+    seconds = total - minutes * 60
+    return f"{minutes:02d}:{seconds:04.1f}"
+
+
+def _format_range(start: float, end: float) -> str:
+    return f"{_format_moment(start)}\u2013{_format_moment(end)}"
+
+
+def _quote(name: str) -> str:
+    return quote(name, safe="/")
+
+
+def _source_status(
+    video: Path,
+    attempts: AttemptDocument | None,
+    source_failures: list[Failure],
+    attempt_failures: dict[str, list[Failure]],
+) -> str:
+    if source_failures or attempts is None:
+        return "failed"
+    if any(attempt_failures.values()):
+        return "failed"
+    if not attempts.attempts:
+        return "empty"
+    metadata_dir, _ = generated_paths(video)
+    for attempt in attempts.attempts:
+        if not _analysis_complete(metadata_dir / "attempts" / attempt.attempt_id):
+            return "incomplete"
+    return "complete"
+
+
+def _render_index(
+    recording_dir: Path,
+    videos: tuple[Path, ...],
+    documents: dict[Path, AttemptDocument],
+    failures: tuple[Failure, ...],
+) -> str:
+    lines = [
+        "<!doctype html>",
+        "<html lang=\"en\">",
+        "<head><meta charset=\"utf-8\">",
+        f"<title>{html.escape(recording_dir.name)} \u2014 serve review</title>",
+        "</head>",
+        "<body>",
+        f"<h1>{html.escape(recording_dir.name)}</h1>",
+    ]
+    by_source: dict[str, list[Failure]] = {}
+    for failure in failures:
+        by_source.setdefault(failure.filename, []).append(failure)
+    for video in videos:
+        metadata_dir, export_dir = generated_paths(video)
+        attempts = documents.get(video)
+        if attempts is None:
+            attempts = _attempt_document(metadata_dir / "attempts.json")
+        source_failures = [
+            item for item in by_source.get(video.name, []) if item.attempt is None
+        ]
+        attempt_failures: dict[str, list[Failure]] = {}
+        for item in by_source.get(video.name, []):
+            if item.attempt is not None:
+                attempt_failures.setdefault(item.attempt, []).append(item)
+        status = _source_status(video, attempts, source_failures, attempt_failures)
+        count = len(attempts.attempts) if attempts is not None else 0
+        lines.append("<section>")
+        lines.append(
+            f"<h2>{html.escape(video.name)} \u2014 {count} serves \u2014 {status}</h2>"
+        )
+        lines.append(f"<p><a href=\"{_quote('../' + video.name)}\">[Source]</a>")
+        if (export_dir / "serves.mov").is_file():
+            link = _quote(f"../exports/{video.stem}/serves.mov")
+            lines[-1] += f" <a href=\"{link}\">[Compilation]</a>"
+        lines[-1] += "</p>"
+        if attempts is not None:
+            lines.append("<ul>")
+            for attempt in attempts.attempts:
+                destination = metadata_dir / "attempts" / attempt.attempt_id
+                done = _analysis_complete(destination)
+                span = _format_range(
+                    attempt.detected_range.start_seconds,
+                    attempt.detected_range.end_seconds,
+                )
+                row = (
+                    f"<li>{html.escape(attempt.attempt_id)} \u2014 "
+                    f"{html.escape(span)} \u2014 "
+                )
+                if done:
+                    link = _quote(
+                        f"{video.stem}/attempts/{attempt.attempt_id}/"
+                        f"{REVIEW_DIRNAME}/{INDEX_HTML_FILENAME}"
+                    )
+                    row += f"<a href=\"{link}\">[Checkpoint review]</a>"
+                else:
+                    details = attempt_failures.get(attempt.attempt_id, [])
+                    if details:
+                        row += "failed: " + "; ".join(
+                            html.escape(f"{item.step}: {item.error}")
+                            for item in details
+                        )
+                    else:
+                        row += "incomplete"
+                row += "</li>"
+                lines.append(row)
+            lines.append("</ul>")
+        for item in source_failures:
+            lines.append(
+                f"<p>failed: {html.escape(item.step)}: {html.escape(item.error)}</p>"
+            )
+        lines.append("</section>")
+    lines.extend(["</body>", "</html>", ""])
+    return "\n".join(lines)
+
+
+def _write_index(
+    recording_dir: Path,
+    videos: tuple[Path, ...],
+    documents: dict[Path, AttemptDocument],
+    failures: tuple[Failure, ...],
+) -> Path:
+    target = recording_dir / "metadata" / "index.html"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            _render_index(recording_dir, videos, documents, failures), encoding="utf-8"
+        )
+    except OSError as error:
+        raise ProcessError(f"could not write summary {target}: {error}") from error
+    return target
+
+
 def process(
     target: Path | str,
     *,
@@ -170,6 +307,7 @@ def process(
     probe_fn: Callable[[Path], SourceMetadata] | None = None,
     cut_fn: Callable[..., Any] | None = None,
     analyze_fn: Callable[..., Any] | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> ProcessResult:
     """Process one video or each immediate video in its directory."""
     videos = discover(target)
@@ -180,6 +318,11 @@ def process(
     failures: list[Failure] = []
     current_sources: dict[Path, SourceMetadata] = {}
 
+    def _emit(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
+
+    total = len(videos)
     for video in videos:
         try:
             current_sources[video] = probe(video)
@@ -196,7 +339,8 @@ def process(
             failures.append(_failure(video, None, "probe", error))
 
     documents: dict[Path, AttemptDocument] = {}
-    for video in videos:
+    for index, video in enumerate(videos, start=1):
+        _emit(f"[{index}/{total} videos] {video.name}")
         if video not in current_sources:
             continue
         metadata_dir, export_dir = generated_paths(video)
@@ -215,6 +359,8 @@ def process(
             continue
         try:
             if needs_cut:
+                if not dry_run:
+                    _emit("  detecting serves\u2026")
                 _clear(metadata_dir, export_dir)
                 result = cut(
                     video,
@@ -230,12 +376,15 @@ def process(
             if attempts is None:
                 raise ProcessError("cut did not produce a readable attempts document")
             documents[video] = attempts
+            if needs_cut and not dry_run and attempts is not None:
+                _emit(f"  found {len(attempts.attempts)} serves")
         except Exception as error:
             failures.append(_failure(video, None, "cut", error))
 
     for video, attempts in documents.items():
         metadata_dir, _ = generated_paths(video)
-        for attempt in attempts.attempts:
+        total_attempts = len(attempts.attempts)
+        for position, attempt in enumerate(attempts.attempts, start=1):
             destination = metadata_dir / "attempts" / attempt.attempt_id
             complete = _analysis_complete(destination)
             if complete:
@@ -250,6 +399,10 @@ def process(
             )
             if dry_run:
                 continue
+            _emit(
+                f"  [{position}/{total_attempts} attempts] analyzing "
+                f"{_format_range(attempt.detected_range.start_seconds, attempt.detected_range.end_seconds)}\u2026"
+            )
             try:
                 _clear(destination)
                 analyze(
@@ -264,4 +417,29 @@ def process(
                     _failure(video, attempt.attempt_id, "analysis", error)
                 )
 
-    return ProcessResult(videos, tuple(actions), tuple(failures))
+    if dry_run:
+        return ProcessResult(videos, tuple(actions), tuple(failures))
+    recording_dir = videos[0].parent
+    summary_path = _write_index(recording_dir, videos, documents, tuple(failures))
+    complete_sources = 0
+    complete_attempts = 0
+    failed_names = {item.filename for item in failures}
+    for video in videos:
+        if video.name not in failed_names:
+            metadata_dir, _ = generated_paths(video)
+            known = documents.get(video) or _attempt_document(
+                metadata_dir / "attempts.json"
+            )
+            if known is not None:
+                complete_sources += 1
+                for attempt in known.attempts:
+                    if _analysis_complete(metadata_dir / "attempts" / attempt.attempt_id):
+                        complete_attempts += 1
+    return ProcessResult(
+        videos,
+        tuple(actions),
+        tuple(failures),
+        summary_path=summary_path,
+        complete_sources=complete_sources,
+        complete_attempts=complete_attempts,
+    )
