@@ -107,6 +107,11 @@ def render_batch_index(entries: object, destination: object) -> Path:
         ) from exc
 
 
+def render_multi_source_landing(entries: object, destination: object) -> Path:
+    """Publish a deterministic index for explicitly supplied source pages."""
+    return render_batch_index(entries, destination)
+
+
 def render_landing_page(page: LandingPage, destination: object) -> Path:
     """Render explicit records without inspecting any source or artifact path."""
 

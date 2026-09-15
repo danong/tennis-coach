@@ -12,7 +12,7 @@ from typing import Any
 
 from serve_review.domain import MediaRange
 from serve_review.media.probe import fingerprint_for_path
-from serve_review.workflow.landing import render_batch_index, render_landing_page
+from serve_review.workflow.landing import LandingRenderError, render_batch_index, render_landing_page
 from serve_review.workflow.planning import PlanningError, build_process_plan
 from serve_review.workflow.processing import process_registered_source
 from serve_review.workflow.records import (
@@ -89,6 +89,26 @@ def add_workflow_parsers(subparsers: Any) -> None:
     selectors.add_argument("--collection", metavar="SELECTOR")
     status.add_argument("--json", action="store_true", dest="json_output")
     status.set_defaults(handler=status_command)
+
+    review = subparsers.add_parser("review", help="publish an existing review")
+    review.add_argument("source", nargs="?", metavar="SOURCE")
+    review.add_argument("--session", metavar="SELECTOR")
+    review.add_argument("--collection", metavar="SELECTOR")
+    review.add_argument("--workspace", type=Path, default=None)
+    review.add_argument("--open", dest="open_page", action="store_true")
+    review.set_defaults(handler=review_command)
+
+    compare = subparsers.add_parser("compare", help="compare existing workflow results")
+    compare.add_argument("sources", nargs="*", metavar="SOURCE_PATH_OR_ID")
+    compare.add_argument("--session", action="append", default=[])
+    compare.add_argument("--collection", action="append", default=[])
+    compare.add_argument("--source", action="append", default=[])
+    compare.add_argument("--stage", action="append", default=[])
+    compare.add_argument("--stages", default=None)
+    compare.add_argument("--workspace", type=Path, default=None)
+    compare.add_argument("--open", dest="open_page", action="store_true")
+    compare.add_argument("--save-as", metavar="NAME")
+    compare.set_defaults(handler=compare_command)
 
     # Organization commands deliberately remain thin wrappers around the
     # already-tested manifest stores.  They do not know anything about media
@@ -533,3 +553,164 @@ def process_command(
     if has_success:
         return 3
     return 1
+
+
+# Read-only review/compare helpers. They consume only registered records and
+# paths named by workflow run records; no media discovery or producer is used.
+def _contained_review(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False)); return True
+    except (OSError, RuntimeError, ValueError): return False
+
+
+def _review_sources(workspace: WorkspacePaths) -> list[SourceRecord]:
+    from serve_review.workflow.status import _load_sources
+    records, errors = _load_sources(workspace)
+    if errors: raise ValueError("; ".join(errors))
+    return records
+
+
+def _workflow_runs(workspace: WorkspacePaths, source: SourceRecord) -> list[Any]:
+    from serve_review.workflow.status import _runs
+
+    records, errors = _runs(workspace, source)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return records
+
+
+def _resolve_source(value: str, sources: list[SourceRecord]) -> set[str]:
+    try: path = str(Path(value).expanduser().resolve(strict=False))
+    except (OSError, RuntimeError, ValueError): path = ""
+    return {s.source_id for s in sources if s.source_id == value or path in s.known_paths}
+
+
+def _selector_sources(workspace: WorkspacePaths, kind: str, value: str, sources: list[SourceRecord]) -> set[str]:
+    if kind == "session":
+        from serve_review.workflow.sessions import resolve_session
+        return set(resolve_session(workspace, value).source_ids)
+    from serve_review.workflow.collections import resolve_collection
+    record = resolve_collection(workspace, value); ids = set(record.source_ids)
+    for source in sources:
+        if any(a.attempt_id in record.attempt_ids for r in _workflow_runs(workspace, source) for a in r.attempts): ids.add(source.source_id)
+    return ids
+
+
+def _stage_names(path: Path, workspace: WorkspacePaths) -> set[str]:
+    if (
+        not _contained_review(path, workspace.root)
+        or path.name != "checkpoints.json"
+        or not path.is_file()
+    ):
+        return set()
+    try:
+        from serve_review.domain import PhaseDocument
+        document = PhaseDocument.from_json(path.read_bytes())
+        return {key for attempt in document.attempts for key, stage in attempt.stages.items() if stage.availability in {"available", "partial"}}
+    except Exception: return set()
+
+
+def _page_for_runs(source: SourceRecord, runs: list[Any], stages: set[str], workspace: WorkspacePaths) -> LandingPage:
+    remediation = f"serve-review process {source.known_paths[0]} --workspace {workspace.root}"
+    attempts = []
+    for run in runs:
+        for outcome in run.attempts:
+            artifacts = []
+            evidence = set()
+            for value in outcome.artifacts:
+                path = Path(value)
+                if not _contained_review(path, workspace.root): continue
+                evidence |= _stage_names(path, workspace)
+                if not stages or path.name != "checkpoints.json" or evidence & stages:
+                    artifacts.append(ArtifactRecord(path.name, str(path), _kind(str(path)), "available" if path.is_file() else "missing", None if path.is_file() else remediation))
+            if not stages or evidence & stages:
+                attempts.append(AttemptRecord(outcome.attempt_id, outcome.attempt_id, "available" if outcome.status == "complete" else "failed", outcome.error, tuple(artifacts)))
+    source_artifacts = ()
+    if not attempts:
+        remediation_path = workspace.sources / source.source_id / "analysis-unavailable"
+        source_artifacts = (
+            ArtifactRecord(
+                "Analysis unavailable",
+                str(remediation_path.resolve(strict=False)),
+                "other",
+                "missing",
+                remediation,
+            ),
+        )
+    return LandingPage(source, source_artifacts, tuple(attempts))
+
+
+def _publish_review_pages(workspace: WorkspacePaths, sources: list[SourceRecord], stages: set[str], services: dict[str, Any], label: str) -> Path:
+    render = services.get("render", render_landing_page); pages = []
+    for source in sorted(sources, key=lambda s: s.source_id):
+        try:
+            rendered = render(_page_for_runs(source, _workflow_runs(workspace, source), stages, workspace), workspace.temporary / f"{source.source_id}.html")
+        except Exception as exc:
+            raise LandingRenderError(f"could not publish review landing: {exc}") from exc
+        pages.append((source.source_id, Path(rendered)))
+    if len(pages) == 1: return pages[0][1]
+    try:
+        return Path(services.get("render_batch", render_batch_index)(pages, workspace.temporary / f"{label}.html"))
+    except Exception as exc:
+        raise LandingRenderError(f"could not publish comparison landing: {exc}") from exc
+
+
+def review_command(args: argparse.Namespace, *, services: dict[str, Any] | None = None) -> int:
+    services = {} if services is None else services
+    try:
+        if sum(x is not None for x in (args.source, args.session, args.collection)) != 1: raise ValueError("review requires exactly one SOURCE, --session, or --collection selector")
+        workspace = resolve_workspace(args.workspace); sources = _review_sources(workspace)
+        if args.source is not None: ids = _resolve_source(args.source, sources)
+        else: ids = _selector_sources(workspace, "session" if args.session else "collection", args.session or args.collection, sources)
+        selected = [s for s in sources if s.source_id in ids]
+        if not selected: raise ValueError("review selector did not match a registered source")
+        primary = _publish_review_pages(workspace, selected, set(), services, "review"); print(f"Primary landing: {primary}")
+        for source in selected:
+            for run in _workflow_runs(workspace, source):
+                for outcome in run.attempts:
+                    for artifact in outcome.artifacts: print(f"Artifact: {artifact}")
+        if args.open_page:
+            try:
+                services.get("opener", lambda p: webbrowser.open(p.as_uri()))(
+                    primary.resolve()
+                )
+            except Exception as exc:
+                raise LandingRenderError(f"could not open review page: {exc}") from exc
+        return 0
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr); return 1 if isinstance(exc, (OSError, LandingRenderError)) else 2
+
+
+def compare_command(args: argparse.Namespace, *, services: dict[str, Any] | None = None) -> int:
+    services = {} if services is None else services
+    try:
+        workspace = resolve_workspace(args.workspace); sources = _review_sources(workspace)
+        if not (args.sources or args.source or args.session or args.collection):
+            raise ValueError("compare requires at least one source, session, or collection selector")
+        values = list(args.sources) + list(args.source); candidate = None
+        if values: candidate = set().union(*(_resolve_source(v, sources) for v in values))
+        for kind, vals in (("session", args.session), ("collection", args.collection)):
+            if vals:
+                group = set().union(*(_selector_sources(workspace, kind, v, sources) for v in vals)); candidate = group if candidate is None else candidate & group
+        selected = [s for s in sources if candidate is None or s.source_id in candidate]
+        if not selected: raise ValueError("compare selectors did not match a registered source")
+        stages = set(args.stage); stages.update(x.strip() for x in (args.stages or "").split(",") if x.strip())
+        if stages and not any(_stage_names(Path(p), workspace) & stages for s in selected for r in _workflow_runs(workspace, s) for a in r.attempts for p in a.artifacts):
+            raise ValueError("compare stage selector did not match recorded checkpoint metadata")
+        primary = _publish_review_pages(workspace, selected, stages, services, "compare")
+        if args.save_as is not None:
+            from serve_review.workflow.collections import create_collection
+            attempt_ids = tuple(sorted({a.attempt_id for s in selected for r in _workflow_runs(workspace, s) for a in r.attempts if not stages or any(stages & _stage_names(Path(p), workspace) for p in a.artifacts)}))
+            record = services.get("create_collection", create_collection)(workspace, args.save_as, id_factory=services.get("collection_id_factory", lambda: _id("collection-")), source_ids=tuple(s.source_id for s in selected), attempt_ids=attempt_ids)
+            print(f"Collection: {record.collection_id}\nManifest: {workspace.collections / (record.collection_id + '.json')}")
+        print(f"Primary landing: {primary}")
+        if args.open_page:
+            try:
+                services.get("opener", lambda p: webbrowser.open(p.as_uri()))(
+                    primary.resolve()
+                )
+            except Exception as exc:
+                raise LandingRenderError(f"could not open comparison page: {exc}") from exc
+        return 0
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr); return 1 if isinstance(exc, (OSError, LandingRenderError)) else 2
