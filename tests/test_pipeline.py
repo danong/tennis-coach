@@ -143,15 +143,18 @@ def run_faked(
     padding: float = 1.0,
     mode: str = "compilation",
     cache_hit: bool = False,
+    name: str | None = None,
     **overrides,
 ):
-    video = make_source(tmp_path)
+    if name is None:
+        existing = sorted(tmp_path.glob("session*.mov"))
+        name = "session.mov" if not existing else f"session-{len(existing)}.mov"
+    video = make_source(tmp_path, name)
     metadata = make_metadata(duration=duration)
     probe, extract, load, feats, cands, export, seen = fake_stages(
         metadata, candidates=tuple(candidates), cache_hit=cache_hit
     )
     params = dict(
-        output_dir=tmp_path / "output",
         padding_seconds=padding,
         mode=mode,
         probe_fn=probe,
@@ -171,7 +174,7 @@ def run_faked(
 
 def test_run_cut_compilation_layout_and_deterministic_json(tmp_path: Path) -> None:
     video, metadata, result, seen = run_faked(tmp_path)
-    session = tmp_path / "output" / video.stem
+    session = tmp_path / "metadata" / video.stem
     assert result.session_dir == session
     assert (session / "source.json").is_file()
     assert (session / "attempts.json").is_file()
@@ -200,7 +203,8 @@ def test_run_cut_compilation_layout_and_deterministic_json(tmp_path: Path) -> No
     )
     run_cut(
         video_b,
-        output_dir=tmp_path / "output-b",
+        metadata_dir=tmp_path / "metadata-b" / "session-b",
+        export_dir=tmp_path / "exports-b" / "session-b",
         padding_seconds=1.0,
         mode="compilation",
         probe_fn=probe,
@@ -210,7 +214,7 @@ def test_run_cut_compilation_layout_and_deterministic_json(tmp_path: Path) -> No
         candidates_fn=cands,
         export_fn=export,
     )
-    second_doc = (tmp_path / "output-b" / video_b.stem / "attempts.json").read_text(
+    second_doc = (tmp_path / "metadata-b" / "session-b" / "attempts.json").read_text(
         encoding="utf-8"
     )
     assert AttemptDocument.from_json(second_doc) == stored
@@ -258,13 +262,13 @@ def test_run_cut_padding_zero_and_clamped(tmp_path: Path) -> None:
 
 def test_run_cut_empty_yields_honest_empty_and_no_media(tmp_path: Path) -> None:
     video, _, result, seen = run_faked(tmp_path, candidates=())
-    session = tmp_path / "output" / video.stem
+    session = tmp_path / "metadata" / video.stem
     assert result.empty is True
     assert result.compilation is None
     assert result.clips == ()
     assert seen["export_calls"] == []
-    assert not (session / export_module.COMPILATION_FILENAME).exists()
-    assert not (session / export_module.CLIPS_SUBDIR).exists()
+    assert not (tmp_path / "exports" / video.stem / export_module.COMPILATION_FILENAME).exists()
+    assert not (tmp_path / "exports" / video.stem / export_module.CLIPS_SUBDIR).exists()
     stored = AttemptDocument.from_json(
         (session / "attempts.json").read_text(encoding="utf-8")
     )
@@ -296,7 +300,6 @@ def test_run_cut_stage_failure_cleans_partial_media(tmp_path: Path) -> None:
     with pytest.raises(CutError) as excinfo:
         run_cut(
             video,
-            output_dir=tmp_path / "output",
             padding_seconds=1.0,
             mode="both",
             probe_fn=probe,
@@ -307,12 +310,12 @@ def test_run_cut_stage_failure_cleans_partial_media(tmp_path: Path) -> None:
             export_fn=_failing_export,
         )
     assert excinfo.value.stage == "export"
-    session = tmp_path / "output" / video.stem
-    assert not (session / export_module.COMPILATION_FILENAME).exists()
+    session = tmp_path / "metadata" / video.stem
+    assert not (tmp_path / "exports" / video.stem / export_module.COMPILATION_FILENAME).exists()
     assert not (session / export_module.CLIPS_SUBDIR / "serve-001.mov").exists()
     leftovers = list(session.glob("*.tmp-*")) + list(
-        (session / export_module.CLIPS_SUBDIR).glob("*.tmp-*")
-    ) if (session / export_module.CLIPS_SUBDIR).exists() else list(session.glob("*.tmp-*"))
+        (tmp_path / "exports" / video.stem / export_module.CLIPS_SUBDIR).glob("*.tmp-*")
+    ) if (tmp_path / "exports" / video.stem / export_module.CLIPS_SUBDIR).exists() else list(session.glob("*.tmp-*"))
     assert leftovers == []
 
 
@@ -325,7 +328,6 @@ def test_run_cut_probe_failure_stage_and_no_source_json(tmp_path: Path) -> None:
     with pytest.raises(CutError) as excinfo:
         run_cut(
             video,
-            output_dir=tmp_path / "output",
             probe_fn=_boom,
         )
     assert excinfo.value.stage == "probe"
@@ -343,7 +345,8 @@ def test_run_cut_pose_and_detect_failures_are_stage_specific(tmp_path: Path) -> 
     with pytest.raises(CutError) as excinfo:
         run_cut(
             video,
-            output_dir=tmp_path / "o1",
+            metadata_dir=tmp_path / "m1" / "session",
+            export_dir=tmp_path / "e1" / "session",
             probe_fn=probe,
             extract_fn=_pose_boom,
             load_cache_fn=load,
@@ -359,7 +362,8 @@ def test_run_cut_pose_and_detect_failures_are_stage_specific(tmp_path: Path) -> 
     with pytest.raises(CutError) as excinfo2:
         run_cut(
             video,
-            output_dir=tmp_path / "o2",
+            metadata_dir=tmp_path / "m2" / "session",
+            export_dir=tmp_path / "e2" / "session",
             probe_fn=probe,
             extract_fn=extract,
             load_cache_fn=load,
@@ -381,7 +385,6 @@ def test_run_cut_export_collision_is_stage_error(tmp_path: Path) -> None:
     with pytest.raises(CutError) as excinfo:
         run_cut(
             video,
-            output_dir=tmp_path / "output",
             probe_fn=probe,
             extract_fn=extract,
             load_cache_fn=load,
@@ -405,11 +408,13 @@ def test_run_cut_cache_hit_propagates_and_reuses(tmp_path: Path) -> None:
 def test_run_cut_invalid_inputs(tmp_path: Path) -> None:
     video = make_source(tmp_path)
     with pytest.raises(CutError):
-        run_cut(video, output_dir=tmp_path / "o", padding_seconds=-1.0)
+        run_cut(video, metadata_dir=tmp_path / "m" / "session",
+            export_dir=tmp_path / "e" / "session", padding_seconds=-1.0)
     with pytest.raises(CutError):
-        run_cut(video, output_dir=tmp_path / "o", mode="everything")
+        run_cut(video, metadata_dir=tmp_path / "m" / "session",
+            export_dir=tmp_path / "e" / "session", mode="everything")
     with pytest.raises(CutError):
-        run_cut(tmp_path / "missing.mov", output_dir=tmp_path / "o")
+        run_cut(tmp_path / "missing.mov")
 
 
 def test_run_cut_cancellation_cleans_media(tmp_path: Path) -> None:
@@ -425,7 +430,6 @@ def test_run_cut_cancellation_cleans_media(tmp_path: Path) -> None:
     with pytest.raises(CutError):
         run_cut(
             video,
-            output_dir=tmp_path / "output",
             probe_fn=probe,
             extract_fn=extract,
             load_cache_fn=load,
@@ -495,7 +499,6 @@ def test_cut_integration_compilation_media(tmp_path: Path) -> None:
     extract, load, feats, cands = _integration_fakes(CandidateRange(0.2, 0.7))
     result = run_cut(
         video,
-        output_dir=tmp_path / "output",
         padding_seconds=0.5,
         mode="compilation",
         extract_fn=extract,
@@ -523,7 +526,6 @@ def test_cut_integration_both_modes_media(tmp_path: Path) -> None:
     extract, load, feats, cands = _integration_fakes(CandidateRange(0.2, 0.7))
     result = run_cut(
         video,
-        output_dir=tmp_path / "output",
         padding_seconds=0.0,
         mode="both",
         extract_fn=extract,
@@ -541,7 +543,6 @@ def test_cut_integration_clips_mode_media(tmp_path: Path) -> None:
     extract, load, feats, cands = _integration_fakes(CandidateRange(0.2, 0.7))
     result = run_cut(
         video,
-        output_dir=tmp_path / "output",
         padding_seconds=0.0,
         mode="clips",
         extract_fn=extract,
@@ -561,7 +562,6 @@ def test_cut_integration_empty_writes_no_media(tmp_path: Path) -> None:
     extract, load, feats, cands = _integration_fakes(None)
     result = run_cut(
         video,
-        output_dir=tmp_path / "output",
         padding_seconds=1.0,
         mode="both",
         extract_fn=extract,
@@ -583,7 +583,8 @@ def test_cut_integration_deterministic_attempts(tmp_path: Path) -> None:
     extract, load, feats, cands = _integration_fakes(CandidateRange(0.2, 0.7))
     first = run_cut(
         video,
-        output_dir=tmp_path / "o1",
+        metadata_dir=tmp_path / "m1" / "session",
+            export_dir=tmp_path / "e1" / "session",
         padding_seconds=0.25,
         mode="clips",
         extract_fn=extract,
@@ -594,7 +595,8 @@ def test_cut_integration_deterministic_attempts(tmp_path: Path) -> None:
     extract2, load2, feats2, cands2 = _integration_fakes(CandidateRange(0.2, 0.7))
     second = run_cut(
         video,
-        output_dir=tmp_path / "o2",
+        metadata_dir=tmp_path / "m2" / "session",
+            export_dir=tmp_path / "e2" / "session",
         padding_seconds=0.25,
         mode="clips",
         extract_fn=extract2,
@@ -720,7 +722,6 @@ def run_av_faked(tmp_path: Path, **overrides):
         return _spiked_dense_audio(tuple(schedule))
 
     params = dict(
-        output_dir=tmp_path / "output",
         padding_seconds=0.0,
         mode="clips",
         probe_fn=probe,
@@ -751,7 +752,7 @@ def test_av_shadow_tail_logged_separately_attempts_schema_unchanged(
     tmp_path: Path,
 ) -> None:
     video, _, result, _ = run_av_faked(tmp_path)
-    session = tmp_path / "output" / video.stem
+    session = tmp_path / "metadata" / video.stem
     shadows_path = session / "shadows.json"
     assert result.shadows_path == shadows_path
     assert shadows_path.is_file()
@@ -788,7 +789,6 @@ def test_av_silent_session_stays_honest_empty(tmp_path: Path) -> None:
 
     result = run_cut(
         video,
-        output_dir=tmp_path / "output",
         padding_seconds=0.0,
         mode="both",
         probe_fn=probe,
@@ -802,7 +802,7 @@ def test_av_silent_session_stays_honest_empty(tmp_path: Path) -> None:
     assert result.compilation is None
     assert result.clips == ()
     assert seen["export_calls"] == []
-    session = tmp_path / "output" / video.stem
+    session = tmp_path / "metadata" / video.stem
     assert (session / "shadows.json").is_file()
     stored = AttemptDocument.from_json(
         (session / "attempts.json").read_text(encoding="utf-8")
@@ -826,7 +826,6 @@ def test_av_audio_failure_is_stage_error(tmp_path: Path) -> None:
     with pytest.raises(CutError) as excinfo:
         run_cut(
             video,
-            output_dir=tmp_path / "output",
             probe_fn=probe,
             extract_fn=extract,
             load_cache_fn=load,
@@ -884,7 +883,6 @@ def test_pipeline_both_mode_joins_clips_with_single_lossy_generation(
     try:
         result = run_cut(
             video,
-            output_dir=tmp_path / "output",
             padding_seconds=0.0,
             mode="both",
             extract_fn=extract,
@@ -910,3 +908,137 @@ def test_pipeline_both_mode_joins_clips_with_single_lossy_generation(
     count = min(len(comp_frame), len(clip_frame))
     mad = sum(abs(a - b) for a, b in zip(comp_frame[:count], clip_frame[:count])) / count
     assert mad < 1.0
+
+
+def test_cut_local_defaults_and_truthful_paths(tmp_path: Path) -> None:
+    video, _, result, _ = run_faked(tmp_path)
+    assert result is not None
+    assert result.session_dir == tmp_path / "metadata" / video.stem
+    assert result.export_dir == tmp_path / "exports" / video.stem
+    assert result.attempts_path == result.session_dir / "attempts.json"
+    assert result.source_path == result.session_dir / "source.json"
+    assert result.run_path == result.session_dir / "run.json"
+    assert result.cache_path == result.session_dir / "cache" / "pose-v1.jsonl"
+    assert result.compilation == result.export_dir / export_module.COMPILATION_FILENAME
+    payload = json.loads(result.run_path.read_text(encoding="utf-8"))
+    assert payload["metadata_dir"] == str(result.session_dir)
+    assert payload["export_dir"] == str(result.export_dir)
+    assert payload["cache_path"] == str(result.cache_path)
+    assert payload["compilation"] == str(result.compilation)
+
+
+def test_cut_explicit_destinations_are_exact(tmp_path: Path) -> None:
+    video = make_source(tmp_path, "exact.mov")
+    metadata = make_metadata()
+    probe, extract, load, feats, cands, export, seen = fake_stages(metadata)
+    meta = tmp_path / "custom-meta"
+    media = tmp_path / "custom-media"
+    result = run_cut(
+        video,
+        metadata_dir=meta,
+        export_dir=media,
+        probe_fn=probe,
+        extract_fn=extract,
+        load_cache_fn=load,
+        features_fn=feats,
+        candidates_fn=cands,
+        export_fn=export,
+    )
+    assert result is not None
+    assert result.session_dir == meta
+    assert result.export_dir == media
+    assert result.attempts_path.parent == meta
+    assert result.compilation is not None and result.compilation.parent == media
+    assert seen["export_calls"][0]["out_dir"] == media
+
+
+def test_cut_dry_run_writes_nothing(tmp_path: Path) -> None:
+    video = make_source(tmp_path, "preview.mov")
+    metadata = make_metadata()
+    calls: list[str] = []
+
+    def _boom(name):
+        def _fn(*a, **k):
+            calls.append(name)
+            raise AssertionError(f"{name} must not run during dry-run")
+        return _fn
+
+    messages: list[str] = []
+    out = run_cut(
+        video,
+        probe_fn=_boom("probe"),
+        extract_fn=_boom("extract"),
+        load_cache_fn=_boom("load"),
+        features_fn=_boom("features"),
+        candidates_fn=_boom("candidates"),
+        export_fn=_boom("export"),
+        progress_callback=messages.append,
+        dry_run=True,
+    )
+    assert out is None
+    assert calls == []
+    assert not (tmp_path / "metadata").exists()
+    assert not (tmp_path / "exports").exists()
+    joined = "\n".join(messages)
+    assert str(tmp_path / "metadata" / "preview") in joined
+    assert str(tmp_path / "exports" / "preview") in joined
+
+
+def test_cut_collision_refuses_and_force_replaces_only_own(tmp_path: Path) -> None:
+    import inspect
+
+    assert "overwrite" not in inspect.signature(run_cut).parameters
+    assert "dry_run" in inspect.signature(run_cut).parameters
+    assert "force" in inspect.signature(run_cut).parameters
+    video, _, first, _ = run_faked(tmp_path)
+    assert first is not None
+    sibling_meta = tmp_path / "metadata" / "sibling"
+    sibling_meta.mkdir(parents=True)
+    marker = sibling_meta / "keep.json"
+    marker.write_text("{}", encoding="utf-8")
+    sibling_media = tmp_path / "exports" / "sibling"
+    sibling_media.mkdir(parents=True)
+    sibling_clip = sibling_media / "serves.mov"
+    sibling_clip.write_bytes(b"keep")
+    with pytest.raises(CutError, match="collision"):
+        run_faked(tmp_path, name=video.name)
+    video2 = tmp_path / video.name
+    metadata = make_metadata()
+    probe, extract, load, feats, cands, export, _ = fake_stages(metadata)
+    second = run_cut(
+        video2,
+        probe_fn=probe,
+        extract_fn=extract,
+        load_cache_fn=load,
+        features_fn=feats,
+        candidates_fn=cands,
+        export_fn=export,
+        force=True,
+    )
+    assert second is not None and second.compilation is not None
+    assert marker.read_text(encoding="utf-8") == "{}"
+    assert sibling_clip.read_bytes() == b"keep"
+
+
+def test_cut_rejects_destructive_destination_boundaries(tmp_path: Path) -> None:
+    video = make_source(tmp_path)
+    outside = tmp_path / "generated"
+    nested = outside / "media"
+    nested.mkdir(parents=True)
+    marker = nested / "keep"
+    marker.write_bytes(b"keep")
+
+    separate_export = tmp_path.parent / f"{tmp_path.name}-exports"
+    with pytest.raises(CutError, match="source video"):
+        run_cut(video, metadata_dir=tmp_path, export_dir=separate_export, force=True)
+    assert video.is_file()
+    assert marker.read_bytes() == b"keep"
+
+    with pytest.raises(CutError, match="disjoint"):
+        run_cut(video, metadata_dir=outside, export_dir=nested, force=True)
+    assert video.is_file()
+    assert marker.read_bytes() == b"keep"
+
+    with pytest.raises(CutError, match="non-blank"):
+        run_cut(video, metadata_dir="", export_dir=outside, force=True)
+    assert video.is_file()

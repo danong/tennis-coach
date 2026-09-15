@@ -186,7 +186,7 @@ def _run(
     missing: tuple[str, ...] = (),
     start: float | None = None,
     end: float | None = None,
-    overwrite: bool = False,
+    force: bool = False,
     backend_holder: list | None = None,
     sampled_holder: list | None = None,
     encoded_holder: list | None = None,
@@ -228,8 +228,7 @@ def _run(
         video,
         start_seconds=start,
         end_seconds=end,
-        output_dir=tmp_path / "output",
-        overwrite=overwrite,
+        force=force,
         probe_fn=lambda path: _metadata(),
         native_times_fn=lambda _v, s, e: tuple(
             t for t in TIMES if t >= s - 1e-9 and t < e
@@ -263,10 +262,11 @@ def test_cli_defaults() -> None:
     assert args.video == Path("session.mov")
     assert args.start_seconds is None
     assert args.end_seconds is None
-    assert args.output_dir == Path("output")
+    assert args.output_dir is None
     assert args.cache is None
     assert args.model == Path("models/pose_landmarker_heavy.task")
-    assert args.overwrite is False
+    assert args.dry_run is False
+    assert args.force is False
     assert args.ffmpeg == "ffmpeg"
     assert args.ffprobe == "ffprobe"
 
@@ -346,7 +346,6 @@ def test_range_validation_rejects_bad_ranges(
             video,
             start_seconds=start,
             end_seconds=end,
-            output_dir=tmp_path / "output",
             probe_fn=lambda path: _metadata(),
         )
     assert excinfo.value.stage == "validate"
@@ -561,7 +560,7 @@ def test_outputs_are_deterministic(tmp_path: Path, no_legacy_sparse: None) -> No
     first, _ = _run(tmp_path)
     before_checkpoints = first.checkpoints_path.read_bytes()
     before_diagnostics = first.diagnostics_path.read_bytes()
-    second, _ = _run(tmp_path, overwrite=True)
+    second, _ = _run(tmp_path, force=True)
     assert second.checkpoints_path.read_bytes() == before_checkpoints
     assert second.diagnostics_path.read_bytes() == before_diagnostics
 
@@ -576,7 +575,6 @@ def test_outputs_collide_without_overwrite(
     with pytest.raises(AnalyzeServeError) as excinfo:
         run_analyze_serve(
             video,
-            output_dir=tmp_path / "output",
             probe_fn=lambda path: _metadata(),
             native_times_fn=lambda _v, s, e: tuple(
                 t for t in TIMES if t >= s - 1e-9 and t < e
@@ -812,7 +810,6 @@ def test_anchor2_rejects_other_basename(tmp_path: Path) -> None:
     with pytest.raises(AnalyzeServeError) as excinfo:
         run_analyze_serve(
             video,
-            output_dir=tmp_path / "output",
             probe_fn=lambda path: _metadata(),
             anchor2comparison=True,
         )
@@ -861,7 +858,6 @@ def _run_anchor2(
 
     result = _run_fn(
         video,
-        output_dir=tmp_path / "output",
         probe_fn=lambda path: _metadata(),
         native_times_fn=lambda _v, s, e: tuple(t for t in TIMES if t >= s - 1e-9 and t < e),
         native_frame_factory=lambda remaining, _meta: _native_frames(tuple(remaining)),
@@ -1035,7 +1031,6 @@ def _run_with_audio_hook(
 
     return _run_fn(
         video,
-        output_dir=tmp_path / "output",
         probe_fn=lambda path: _metadata(),
         native_times_fn=lambda _v, s, e: tuple(
             t for t in TIMES if t >= s - 1e-9 and t < e
@@ -1201,3 +1196,105 @@ def test_audio_cue_zero_gives_body_pose_while_one_gives_body_pose_audio(
     )
     loud_contact = loud_doc[0].stages["contact"]
     assert loud_contact.provenance == "body_pose_audio"
+
+
+def test_local_default_without_nested_stem(tmp_path: Path, no_legacy_sparse: None) -> None:
+    import inspect as _inspect
+
+    assert "overwrite" not in _inspect.signature(run_analyze_serve).parameters
+    assert "dry_run" in _inspect.signature(run_analyze_serve).parameters
+    assert "force" in _inspect.signature(run_analyze_serve).parameters
+    result, _ = _run(tmp_path)
+    assert result is not None
+    expected = tmp_path / "metadata" / "serve" / "manual-analysis"
+    assert result.session_dir == expected
+    assert result.checkpoints_path == expected / "checkpoints.json"
+    assert result.cache_path == expected / "cache" / "kinematic-track-v1.jsonl"
+    assert result.cache_path.parent.parent == expected
+
+
+def test_explicit_output_is_exact(tmp_path: Path, no_legacy_sparse: None) -> None:
+    from serve_review.analyze_serve import run_analyze_serve as _run_fn
+
+    video = tmp_path / "serve.mov"
+    video.write_bytes(b"fake-video-bytes")
+    backend = _FakeBackend()
+    exact = tmp_path / "custom" / "serve-001"
+    result = _run_fn(
+        video,
+        output_dir=exact,
+        probe_fn=lambda path: _metadata(),
+        native_times_fn=lambda _v, s, e: tuple(t for t in TIMES if t >= s - 1e-9 and t < e),
+        native_frame_factory=lambda remaining, _meta: _native_frames(tuple(remaining)),
+        backend_factory=lambda: backend,
+        sample_frame_fn=lambda vp, m, md: SampledFrame(
+            time_seconds=float(m),
+            timestamp_ms=int(round(float(m) * 1000)),
+            width=16,
+            height=16,
+            image=__import__("numpy").zeros((16, 16, 3), dtype=__import__("numpy").uint8),
+        ),
+        encode_jpeg_fn=lambda image, dest: (dest.parent.mkdir(parents=True, exist_ok=True), dest.write_bytes(b"fake-jpeg-bytes")),
+        audio_energies_fn=_absent_audio_energies,
+    )
+    assert result is not None
+    assert result.session_dir == exact
+    assert result.checkpoints_path.parent == exact
+    assert result.cache_path == exact / "cache" / "kinematic-track-v1.jsonl"
+
+
+def test_dry_run_writes_nothing(tmp_path: Path) -> None:
+    from serve_review.analyze_serve import run_analyze_serve as _run_fn
+
+    video = tmp_path / "serve.mov"
+    video.write_bytes(b"fake-video-bytes")
+    messages: list[str] = []
+
+    def _boom(*a, **k):
+        raise AssertionError("producer work must not run during dry-run")
+
+    out = _run_fn(
+        video,
+        start_seconds=0.0,
+        end_seconds=1.0,
+        probe_fn=_boom,
+        native_times_fn=_boom,
+        backend_factory=_boom,
+        sample_frame_fn=_boom,
+        encode_jpeg_fn=_boom,
+        audio_energies_fn=_boom,
+        progress_callback=messages.append,
+        dry_run=True,
+    )
+    assert out is None
+    assert not (tmp_path / "metadata").exists()
+    joined = "\n".join(messages)
+    assert str(tmp_path / "metadata" / "serve" / "manual-analysis") in joined
+
+
+def test_force_boundary_for_existing_output(tmp_path: Path, no_legacy_sparse: None) -> None:
+    from serve_review.analyze_serve import AnalyzeServeError
+    from serve_review.analyze_serve import run_analyze_serve as _run_fn
+
+    _run(tmp_path)
+    video = tmp_path / "serve.mov"
+    with pytest.raises(AnalyzeServeError, match="collision"):
+        _run_fn(
+            video,
+            probe_fn=lambda path: _metadata(),
+            native_times_fn=lambda _v, s, e: tuple(t for t in TIMES if t >= s - 1e-9 and t < e),
+            native_frame_factory=lambda remaining, _meta: _native_frames(tuple(remaining)),
+            backend_factory=_FakeBackend,
+            sample_frame_fn=lambda vp, m, md: SampledFrame(
+                time_seconds=float(m),
+                timestamp_ms=int(round(float(m) * 1000)),
+                width=16,
+                height=16,
+                image=__import__("numpy").zeros((16, 16, 3), dtype=__import__("numpy").uint8),
+            ),
+            encode_jpeg_fn=lambda image, dest: dest.write_bytes(b"x"),
+            audio_energies_fn=_absent_audio_energies,
+        )
+    result2, backend2 = _run(tmp_path, force=True)
+    assert result2 is not None
+    assert result2.checkpoints_path.is_file()

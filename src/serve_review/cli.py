@@ -299,10 +299,12 @@ def cut(args: argparse.Namespace) -> int:
     try:
         result = run_cut(
             source,
-            output_dir=args.output_dir,
+            metadata_dir=args.metadata_dir,
+            export_dir=args.export_dir,
             padding_seconds=padding,
             mode=args.output,
-            overwrite=args.overwrite,
+            dry_run=args.dry_run,
+            force=args.force,
             ffmpeg=args.ffmpeg,
             ffprobe=args.ffprobe,
             progress_callback=_progress,
@@ -313,6 +315,9 @@ def cut(args: argparse.Namespace) -> int:
     except CutError as exc:
         print(f"ERROR: cut failed at {exc.stage}: {exc.message}.", file=sys.stderr)
         return 1
+    if result is None:
+        print("cut dry-run: validated request; no writes performed.")
+        return 0
     print(str(result.attempts_path))
     if result.shadows_path is not None:
         print(str(result.shadows_path))
@@ -409,7 +414,8 @@ def analyze_serve(args: argparse.Namespace) -> int:
             output_dir=args.output_dir,
             cache_path=args.cache,
             model_path=args.model,
-            overwrite=args.overwrite,
+            dry_run=args.dry_run,
+            force=args.force,
             ffmpeg=args.ffmpeg,
             ffprobe=args.ffprobe,
             anchor2comparison=args.anchor2comparison,
@@ -430,6 +436,9 @@ def analyze_serve(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    if result is None:
+        print("analyze-serve dry-run: validated request; no writes performed.")
+        return 0
     print(str(result.checkpoints_path))
     print(str(result.diagnostics_path))
     print(str(result.index_html))
@@ -735,15 +744,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="output form (default: compilation)",
     )
     cut_parser.add_argument(
-        "--output-dir",
+        "--metadata-dir",
         type=Path,
-        default=Path("output"),
-        help="generated output directory (default: output)",
+        default=None,
+        metavar="PATH",
+        dest="metadata_dir",
+        help=(
+            "exact metadata/cache destination override "
+            "(default: VIDEO.parent/metadata/VIDEO.stem)"
+        ),
     )
     cut_parser.add_argument(
-        "--overwrite",
+        "--export-dir",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        dest="export_dir",
+        help=(
+            "exact media destination override "
+            "(default: VIDEO.parent/exports/VIDEO.stem)"
+        ),
+    )
+    cut_parser.add_argument(
+        "--dry-run",
+        dest="dry_run",
         action="store_true",
-        help="replace existing outputs (default: fail on collision)",
+        default=False,
+        help="validate and report destinations without writes (default: off)",
+    )
+    cut_parser.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        default=False,
+        help="replace only this command's exact destinations (default: fail on collision)",
     )
     cut_parser.add_argument(
         "--ffmpeg",
@@ -966,8 +1000,13 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("output"),
-        help="generated output directory (default: output)",
+        default=None,
+        metavar="PATH",
+        dest="output_dir",
+        help=(
+            "exact output destination override "
+            "(default: VIDEO.parent/metadata/VIDEO.stem/manual-analysis)"
+        ),
     )
     serve_parser.add_argument(
         "--cache",
@@ -976,7 +1015,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help=(
             "reusable kinematic-track cache file (default: "
-            "<output-dir>/<source-stem>/cache/kinematic-track-v1.jsonl)"
+            "<exact-output>/cache/kinematic-track-v1.jsonl)"
         ),
     )
     serve_parser.add_argument(
@@ -987,9 +1026,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="approved Pose Landmarker .task artifact (default: models/pose_landmarker_heavy.task)",
     )
     serve_parser.add_argument(
-        "--overwrite",
+        "--dry-run",
+        dest="dry_run",
         action="store_true",
-        help="replace existing outputs/cache (default: fail on collision)",
+        default=False,
+        help="validate and report destinations without writes (default: off)",
+    )
+    serve_parser.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        default=False,
+        help="replace only this command's exact destination (default: fail on collision)",
     )
     serve_parser.add_argument(
         "--anchor2comparison",

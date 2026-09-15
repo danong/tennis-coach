@@ -226,8 +226,8 @@ def default_kinematic_cache_path_for(
 ) -> Path:
     """Return the default reusable kinematic-track cache path for ``video``.
 
-    The layout follows the session convention:
-    ``<output_dir>/<source-stem>/cache/kinematic-track-v1.jsonl``. The
+    The file lives beneath the exact output directory:
+    ``<output_dir>/cache/kinematic-track-v1.jsonl``. The
     file uses the accepted ``dense-world-v1`` envelope so repeated runs
     over the same range reuse inference-free rows.
     """
@@ -238,7 +238,6 @@ def default_kinematic_cache_path_for(
         )
     return (
         Path(output_dir).expanduser()
-        / stem
         / "cache"
         / KINEMATIC_CACHE_FILENAME
     )
@@ -747,10 +746,11 @@ def run_analyze_serve(
     *,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
-    output_dir: Path | str = "output",
+    output_dir: Path | str | None = None,
     cache_path: Path | str | None = None,
     model_path: Path | str = mediapipe_module.DEFAULT_MODEL_PATH,
-    overwrite: bool = False,
+    dry_run: bool = False,
+    force: bool = False,
     ffmpeg: str = "ffmpeg",
     ffprobe: str = "ffprobe",
     filter_config: WorldFilterConfig | None = None,
@@ -767,20 +767,25 @@ def run_analyze_serve(
     progress_callback: Callable[[str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
     anchor2comparison: bool = False,
-) -> AnalyzeServeResult:
+) -> AnalyzeServeResult | None:
     """Analyze one explicit serve range through the 3D path with audio cue.
 
     Args:
         video: Source video path; read only, never modified.
         start_seconds/end_seconds: Half-open ``[start, end)`` serve
             range in source seconds (default: the entire source).
-        output_dir: Generated output base directory.
+        output_dir: Exact output directory. Defaults to
+            ``VIDEO.parent/metadata/VIDEO.stem/manual-analysis``; an
+            explicit value is used exactly with no stem appended.
         cache_path: Explicit reusable kinematic-track cache file
             (dense-world envelope); defaults to
-            ``<output_dir>/<source-stem>/cache/kinematic-track-v1.jsonl``.
+            ``<output_dir>/cache/kinematic-track-v1.jsonl``.
         model_path: Approved Pose Landmarker ``.task`` artifact.
-        overwrite: Replace existing checkpoints/diagnostics/review
-            outputs and any existing cache.
+        dry_run: Validate the request and report intended destinations
+            without directory creation, cache/model work, media export,
+            or artifact writes; returns None.
+        force: Replace only this command's exact output destination
+            when True; refuse on collision when False.
         ffmpeg/ffprobe: Tool executables (argument arrays only).
         filter_config/waveforms_config/composite_config/solver_config:
             Versioned M4 configs (defaults are the modules' defaults;
@@ -797,7 +802,7 @@ def run_analyze_serve(
             :class:`AnalyzeServeCancelled` and writes no final file.
 
     Returns:
-        An :class:`AnalyzeServeResult`.
+        An :class:`AnalyzeServeResult`, or None when ``dry_run`` is True.
 
     Raises:
         AnalyzeServeError: Stage-specific failure (``.stage`` names
@@ -831,7 +836,8 @@ def run_analyze_serve(
         raise _fail("validate", "invalid video: expected a non-blank path.")
     if not video_path.is_file():
         raise _fail("validate", f"input video does not exist: {video_path}.")
-    overwrite_flag = _check_bool(overwrite, "overwrite")
+    dry_run_flag = _check_bool(dry_run, "dry_run")
+    force_flag = _check_bool(force, "force")
     anchor2_flag = _check_bool(anchor2comparison, "anchor2comparison")
     if anchor2_flag and video_path.name != ANCHOR2_VIDEO_BASENAME:
         raise _fail(
@@ -927,15 +933,21 @@ def run_analyze_serve(
             f"invalid model path: {model_path!r}; expected a path.",
         )
 
-    out_base = Path(output_dir).expanduser()
-    session_dir = out_base / video_path.stem
+    if output_dir is None:
+        session_dir = (
+            video_path.parent / "metadata" / video_path.stem / "manual-analysis"
+        )
+    else:
+        session_dir = Path(output_dir).expanduser()
+        if not str(session_dir):
+            raise _fail("validate", "invalid output directory: expected a non-blank path.")
     checkpoints_out = session_dir / CHECKPOINTS_FILENAME
     diagnostics_out = session_dir / DIAGNOSTICS_FILENAME
     review_dir = session_dir / REVIEW_DIRNAME
     if cache_path is not None:
         cache_target = Path(cache_path).expanduser()
     else:
-        cache_target = default_kinematic_cache_path_for(video_path, out_base)
+        cache_target = session_dir / "cache" / KINEMATIC_CACHE_FILENAME
     if not str(cache_target):
         raise _fail("validate", "invalid cache path: expected a non-blank path.")
     if cache_target.exists() and cache_target.is_dir():
@@ -957,6 +969,16 @@ def run_analyze_serve(
             pass
     except AnalyzeServeError:
         raise
+
+    if dry_run_flag:
+        _progress(f"analyze-serve dry-run: video {video_path}")
+        _progress(f"analyze-serve dry-run: output {session_dir}")
+        _progress(f"analyze-serve dry-run: cache {cache_target}")
+        if start_opt is not None or end_opt is not None:
+            _progress(
+                f"analyze-serve dry-run: range {start_opt} {end_opt}"
+            )
+        return None
 
     try:
         # --- probe ---
@@ -1114,7 +1136,7 @@ def run_analyze_serve(
 
             cached: list[WorldFrameObservation] = []
             cache_hit = False
-            if cache_target.is_file() and not overwrite_flag:
+            if cache_target.is_file() and not force_flag:
                 try:
                     snapshot = world_module.load_world_cache(cache_target)
                 except world_module.CacheStaleError:
@@ -1152,7 +1174,7 @@ def run_analyze_serve(
                                     "complete but does not exactly match the "
                                     f"{total} native frame(s) in "
                                     f"[{req_start!r}, {req_end!r}); pass "
-                                    "--overwrite to replace it or choose a "
+                                    "--force to replace it or choose a "
                                     "distinct --cache path.",
                                 )
                         else:
@@ -1163,12 +1185,12 @@ def run_analyze_serve(
                                     f"kinematic-track cache {cache_target} "
                                     f"holds {len(stored_times)} resumable "
                                     "frame(s) that do not exactly match the "
-                                    "native PTS prefix; pass --overwrite to "
+                                    "native PTS prefix; pass --force to "
                                     "restart or choose a distinct --cache "
                                     "path.",
                                 )
                             cached = list(snapshot.frames)
-            elif cache_target.is_file() and overwrite_flag:
+            elif cache_target.is_file() and force_flag:
                 try:
                     world_module.load_world_cache(cache_target)
                 except (
@@ -2013,24 +2035,38 @@ def run_analyze_serve(
             raise AnalyzeServeCancelled(
                 "review", "analyze-serve was cancelled before review rendering."
             )
-        if checkpoints_out.exists() and not overwrite_flag:
+        if checkpoints_out.exists() and not force_flag:
             raise _fail(
                 "write",
                 f"output collision: {checkpoints_out} already exists. Pass "
-                f"--overwrite to replace outputs in {session_dir}.",
+                f"--force to replace outputs in {session_dir}. ",
             )
-        if diagnostics_out.exists() and not overwrite_flag:
+        if diagnostics_out.exists() and not force_flag:
             raise _fail(
                 "write",
                 f"output collision: {diagnostics_out} already exists. Pass "
-                f"--overwrite to replace outputs in {session_dir}.",
+                f"--force to replace outputs in {session_dir}. ",
             )
-        if review_dir.exists() and not overwrite_flag:
+        if review_dir.exists() and not force_flag:
             raise _fail(
                 "review",
                 f"output collision: {review_dir} already exists. Pass "
-                "--overwrite to replace the review directory.",
+                "--force to replace the review directory. ",
             )
+        if force_flag:
+            for path in (checkpoints_out, diagnostics_out):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                if review_dir.exists():
+                    shutil.rmtree(review_dir)
+            except OSError as exc:
+                raise _fail(
+                    "review",
+                    f"could not replace review directory {review_dir}: {exc}. ",
+                ) from exc
 
         # --- source-frame review (label/time caption; no overlay) ---
         _progress("analyze-serve: rendering review frames")
@@ -2454,11 +2490,11 @@ def run_analyze_serve(
                 ) from exc
             _progress("analyze-serve: publishing")
             if review_dir.exists():
-                if not overwrite_flag:
+                if not force_flag:
                     raise _fail(
                         "review",
                         f"output collision: {review_dir} already exists. "
-                        "Pass --overwrite to replace the review directory.",
+                        "Pass --force to replace the review directory. ",
                     )
                 try:
                     shutil.rmtree(review_dir)

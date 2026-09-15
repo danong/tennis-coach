@@ -12,8 +12,10 @@ def test_cut_defaults() -> None:
     assert args.video == Path("session.mov")
     assert args.padding == 1.0
     assert args.output == "compilation"
-    assert args.output_dir == Path("output")
-    assert args.overwrite is False
+    assert args.metadata_dir is None
+    assert args.export_dir is None
+    assert args.dry_run is False
+    assert args.force is False
     assert args.ffmpeg == "ffmpeg"
     assert args.ffprobe == "ffprobe"
 
@@ -50,13 +52,15 @@ def test_cut_success_reports_attempts_and_outputs(tmp_path: Path, capsys, monkey
         attempts=(),
         export_ranges=(),
     )
-    session = tmp_path / "output" / source.stem
+    session = tmp_path / "metadata" / source.stem
     session.mkdir(parents=True)
     attempts_path = session / "attempts.json"
     attempts_path.write_text(document.to_json(), encoding="utf-8")
-    comp = session / "serves.mov"
+    media = tmp_path / "exports" / source.stem
+    media.mkdir(parents=True)
+    comp = media / "serves.mov"
     comp.write_bytes(b"fake")
-    clip = session / "clips" / "serve-001.mov"
+    clip = media / "clips" / "serve-001.mov"
     clip.parent.mkdir(parents=True, exist_ok=True)
     clip.write_bytes(b"fake")
     result = CutResult(
@@ -83,8 +87,7 @@ def test_cut_success_reports_attempts_and_outputs(tmp_path: Path, capsys, monkey
 
     monkeypatch.setattr(pipeline_module, "run_cut", _fake_run_cut)
     args = build_parser().parse_args(
-        ["cut", str(source), "--padding", "1.5", "--output", "both",
-         "--output-dir", str(tmp_path / "output")]
+        ["cut", str(source), "--padding", "1.5", "--output", "both"]
     )
     assert cut(args) == 0
     out = capsys.readouterr().out
@@ -93,7 +96,8 @@ def test_cut_success_reports_attempts_and_outputs(tmp_path: Path, capsys, monkey
     assert str(clip) in out
     assert seen["padding_seconds"] == 1.5
     assert seen["mode"] == "both"
-    assert seen["overwrite"] is False
+    assert seen["dry_run"] is False
+    assert seen["force"] is False
 
 
 def test_cut_empty_result_reports_no_media(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -111,7 +115,7 @@ def test_cut_empty_result_reports_no_media(tmp_path: Path, capsys, monkeypatch) 
         attempts=(),
         export_ranges=(),
     )
-    session = tmp_path / "output" / source.stem
+    session = tmp_path / "metadata" / source.stem
     session.mkdir(parents=True)
     attempts_path = session / "attempts.json"
     attempts_path.write_text(document.to_json(), encoding="utf-8")
@@ -131,12 +135,12 @@ def test_cut_empty_result_reports_no_media(tmp_path: Path, capsys, monkeypatch) 
         empty=True,
     )
     monkeypatch.setattr(pipeline_module, "run_cut", lambda video, **k: result)
-    args = build_parser().parse_args(["cut", str(source), "--output-dir", str(tmp_path / "output")])
+    args = build_parser().parse_args(["cut", str(source)])
     assert cut(args) == 0
     out = capsys.readouterr().out
     assert str(attempts_path) in out
     assert "no serves detected" in out.lower()
-    assert not (session / "serves.mov").exists()
+    assert not (tmp_path / "exports" / source.stem / "serves.mov").exists()
 
 
 def test_cut_reports_stage_failure(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -157,7 +161,7 @@ def test_cut_reports_stage_failure(tmp_path: Path, capsys, monkeypatch) -> None:
     assert "ERROR" in err
 
 
-def test_cut_forwards_overwrite_and_tools(tmp_path: Path, capsys, monkeypatch) -> None:
+def test_cut_forwards_force_and_tools(tmp_path: Path, capsys, monkeypatch) -> None:
     from serve_review import pipeline as pipeline_module
 
     source = tmp_path / "source.mov"
@@ -170,11 +174,11 @@ def test_cut_forwards_overwrite_and_tools(tmp_path: Path, capsys, monkeypatch) -
 
     monkeypatch.setattr(pipeline_module, "run_cut", _fake)
     args = build_parser().parse_args(
-        ["cut", str(source), "--overwrite", "--ffmpeg", "/bin/ffmpeg", "--ffprobe", "/bin/ffprobe"]
+        ["cut", str(source), "--force", "--ffmpeg", "/bin/ffmpeg", "--ffprobe", "/bin/ffprobe"]
     )
     with __import__("pytest").raises(SystemExit):
         cut(args)
-    assert seen["overwrite"] is True
+    assert seen["force"] is True
     assert seen["ffmpeg"] == "/bin/ffmpeg"
     assert seen["ffprobe"] == "/bin/ffprobe"
 
@@ -249,16 +253,15 @@ def test_cut_integration_generated_media(tmp_path: Path, capsys, monkeypatch) ->
     monkeypatch.setattr(cache_module, "load_cache", _fake_load)
     monkeypatch.setattr(features_module, "extract_features", _fake_features)
     args = build_parser().parse_args(
-        ["cut", str(video), "--padding", "0", "--output", "compilation",
-         "--output-dir", str(tmp_path / "output")]
+        ["cut", str(video), "--padding", "0", "--output", "compilation"]
     )
     assert cut(args) == 0
-    session = tmp_path / "output" / video.stem
+    session = tmp_path / "metadata" / video.stem
     assert (session / "attempts.json").is_file()
     assert (session / "source.json").is_file()
     assert (session / "run.json").is_file()
     assert (session / "shadows.json").is_file()
-    assert (session / "serves.mov").is_file()
+    assert (tmp_path / "exports" / video.stem / "serves.mov").is_file()
     assert video.read_bytes() == before
     out = capsys.readouterr().out
     assert "serves.mov" in out
@@ -296,13 +299,13 @@ def test_cut_integration_empty_detection_no_media(tmp_path: Path, capsys, monkey
     monkeypatch.setattr(cache_module, "load_cache", _fake_load)
     monkeypatch.setattr(features_module, "extract_features", _fake_features)
     args = build_parser().parse_args(
-        ["cut", str(video), "--output", "both", "--output-dir", str(tmp_path / "output")]
+        ["cut", str(video), "--output", "both"]
     )
     assert cut(args) == 0
-    session = tmp_path / "output" / video.stem
+    session = tmp_path / "metadata" / video.stem
     assert "no serves detected" in capsys.readouterr().out.lower()
-    assert not (session / "serves.mov").exists()
-    assert not (session / "clips").exists()
+    assert not (tmp_path / "exports" / video.stem / "serves.mov").exists()
+    assert not (tmp_path / "exports" / video.stem / "clips").exists()
 
 
 def test_probe_help_documents_command(capsys) -> None:
@@ -1775,3 +1778,92 @@ def test_extract_world_maps_input_collision_and_cancel_errors(
     monkeypatch.setattr(world_extract_module, "extract_attempt_world", _boom_cancelled)
     assert extract_world_cmd(_args()) == 1
     assert "cancelled" in capsys.readouterr().err
+
+
+def test_cut_local_options_and_no_overwrite() -> None:
+    args = build_parser().parse_args(["cut", "session.mov"])
+    assert args.metadata_dir is None
+    assert args.export_dir is None
+    assert args.dry_run is False
+    assert args.force is False
+    assert not hasattr(args, "overwrite")
+    assert not hasattr(args, "rebuild")
+    explicit = build_parser().parse_args(
+        ["cut", "session.mov", "--metadata-dir", "m", "--export-dir", "e",
+         "--dry-run", "--force"]
+    )
+    assert explicit.metadata_dir == Path("m")
+    assert explicit.export_dir == Path("e")
+    assert explicit.dry_run is True
+    assert explicit.force is True
+    for flag in ("--overwrite", "--rebuild"):
+        try:
+            build_parser().parse_args(["cut", "session.mov", flag])
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError(f"cut must not accept {flag}")
+
+
+def test_cut_dry_run_reports_without_writes(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review import pipeline as pipeline_module
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"fake-source")
+    messages: list[str] = []
+
+    def _fake(video, **kwargs):
+        messages.append(str(kwargs.get("metadata_dir")) + str(kwargs.get("export_dir")))
+        assert kwargs.get("dry_run") is True
+        return None
+
+    monkeypatch.setattr(pipeline_module, "run_cut", _fake)
+    args = build_parser().parse_args(["cut", str(source), "--dry-run"])
+    assert cut(args) == 0
+    assert "dry-run" in capsys.readouterr().out.lower()
+    assert not (tmp_path / "metadata").exists()
+    assert not (tmp_path / "exports").exists()
+
+
+def test_analyze_serve_local_options_and_no_overwrite() -> None:
+    from serve_review.cli import build_parser as _build
+
+    args = _build().parse_args(["analyze-serve", "session.mov"])
+    assert args.output_dir is None
+    assert args.dry_run is False
+    assert args.force is False
+    assert not hasattr(args, "overwrite")
+    assert not hasattr(args, "rebuild")
+    explicit = _build().parse_args(
+        ["analyze-serve", "session.mov", "--output-dir", "m",
+         "--dry-run", "--force"]
+    )
+    assert explicit.output_dir == Path("m")
+    assert explicit.dry_run is True
+    assert explicit.force is True
+    for flag in ("--overwrite", "--rebuild"):
+        try:
+            _build().parse_args(["analyze-serve", "session.mov", flag])
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError(f"analyze-serve must not accept {flag}")
+
+
+def test_analyze_serve_dry_run_reports_without_writes(tmp_path: Path, capsys, monkeypatch) -> None:
+    from serve_review.cli import analyze_serve as _handler
+    from serve_review.cli import build_parser as _build
+    import serve_review.analyze_serve as serve_module
+
+    source = tmp_path / "serve.mov"
+    source.write_bytes(b"fake")
+
+    def _fake(video, **kwargs):
+        assert kwargs.get("dry_run") is True
+        return None
+
+    monkeypatch.setattr(serve_module, "run_analyze_serve", _fake)
+    args = _build().parse_args(["analyze-serve", str(source), "--dry-run"])
+    assert _handler(args) == 0
+    assert "dry-run" in capsys.readouterr().out.lower()
+    assert not (tmp_path / "metadata").exists()

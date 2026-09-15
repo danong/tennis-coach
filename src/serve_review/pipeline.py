@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass
@@ -115,6 +116,7 @@ class CutResult:
     empty: bool = False
     shadows: tuple[Any, ...] = ()
     shadows_path: Path | None = None
+    export_dir: Path | None = None
 
 
 def _check_padding(value: object) -> float:
@@ -214,13 +216,48 @@ def _remove_tmp_siblings(directory: Path, stems: tuple[str, ...]) -> None:
                 break
 
 
+def _validate_destination_boundaries(
+    video: Path, metadata_dir: Path, export_dir: Path
+) -> None:
+    """Reject destructive destination overlap before any generated-tree removal."""
+
+    def _forms(path: Path) -> tuple[Path, Path]:
+        return path.absolute(), path.resolve(strict=False)
+
+    def _contains(parent: Path, child: Path) -> bool:
+        return parent == child or parent in child.parents
+
+    metadata_forms = _forms(metadata_dir)
+    export_forms = _forms(export_dir)
+    if any(
+        _contains(metadata, export) or _contains(export, metadata)
+        for metadata in metadata_forms
+        for export in export_forms
+    ):
+        raise CutError(
+            "validate", "metadata_dir and export_dir must be disjoint directories."
+        )
+
+    if any(
+        _contains(destination, source)
+        for destination in (*metadata_forms, *export_forms)
+        for source in _forms(video)
+    ):
+        raise CutError(
+            "validate",
+            "generated destinations must not contain the source video.",
+        )
+
+
 def run_cut(
     video: Path | str,
     *,
-    output_dir: Path | str = "output",
+    metadata_dir: Path | str | None = None,
+    export_dir: Path | str | None = None,
     padding_seconds: float = 1.0,
     mode: str = "compilation",
-    overwrite: bool = False,
+    dry_run: bool = False,
+    force: bool = False,
     ffmpeg: str = "ffmpeg",
     ffprobe: str = "ffprobe",
     model_path: Path | str | None = None,
@@ -241,7 +278,7 @@ def run_cut(
     export_fn: Callable[..., dict[str, Any]] | None = None,
     progress_callback: Callable[[str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
-) -> CutResult:
+) -> CutResult | None:
     """Run probe, cached pose extraction, AV detection, JSON, and export.
 
     The default detection path is audio-visual: v2 pose features plus
@@ -253,10 +290,17 @@ def run_cut(
 
     Args:
         video: Source video path; read only, never modified.
-        output_dir: Generated output base directory.
+        metadata_dir: Exact metadata/cache destination. Defaults to
+            ``VIDEO.parent/metadata/VIDEO.stem``.
+        export_dir: Exact media destination. Defaults to
+            ``VIDEO.parent/exports/VIDEO.stem``.
         padding_seconds: Symmetric context padding in seconds (>= 0).
         mode: ``compilation``/``clips``/``both``.
-        overwrite: Replace existing media outputs explicitly.
+        dry_run: Validate the request and report intended destinations
+            without directory creation, cache/model work, media export,
+            or artifact writes; returns None.
+        force: Replace only this command's exact metadata and media
+            destinations when True; refuse on collision when False.
         ffmpeg/ffprobe: Tool executables (argument arrays only).
         model_path: Pose model artifact (default approved Heavy path).
         sample_rate_hz: Pose sampling rate in ``(0, 120]``.
@@ -277,8 +321,9 @@ def run_cut(
             :class:`CutCancelled` and removes partial media outputs.
 
     Returns:
-        A :class:`CutResult`. When detection is empty, ``empty`` is
-        True, no export runs, and ``compilation``/``clips`` are empty.
+        A :class:`CutResult`, or None when ``dry_run`` is True. When
+        detection is empty, ``empty`` is True, no export runs, and
+        ``compilation``/``clips`` are empty.
 
     Raises:
         CutError: Stage-specific failure (``.stage`` names the stage).
@@ -310,13 +355,28 @@ def run_cut(
         raise CutError("validate", f"input video does not exist: {video_path}.")
     padding = _check_padding(padding_seconds)
     mode_name = _check_mode(mode)
-    if not isinstance(overwrite, bool):
+    if not isinstance(dry_run, bool):
         raise CutError(
-            "validate", f"invalid overwrite: {overwrite!r}; expected True or False."
+            "validate", f"invalid dry_run: {dry_run!r}; expected True or False."
         )
-    out_base = Path(output_dir).expanduser()
-    session_dir = out_base / video_path.stem
-    session_label = f"output/{video_path.stem}"
+    if not isinstance(force, bool):
+        raise CutError(
+            "validate", f"invalid force: {force!r}; expected True or False."
+        )
+    if metadata_dir is None:
+        session_dir = video_path.parent / "metadata" / video_path.stem
+    else:
+        if isinstance(metadata_dir, str) and not metadata_dir.strip():
+            raise CutError("validate", "invalid metadata_dir: expected a non-blank path.")
+        session_dir = Path(metadata_dir).expanduser()
+    if export_dir is None:
+        export_base = video_path.parent / "exports" / video_path.stem
+    else:
+        if isinstance(export_dir, str) and not export_dir.strip():
+            raise CutError("validate", "invalid export_dir: expected a non-blank path.")
+        export_base = Path(export_dir).expanduser()
+    _validate_destination_boundaries(video_path, session_dir, export_base)
+    session_label = str(session_dir)
 
     if feature_config is None:
         feature_config = FeatureConfig()
@@ -346,19 +406,62 @@ def run_cut(
     audio_step = float(audio_step_seconds)
     plan_config = PlanConfig(padding_seconds=padding)
 
+    cache_path = session_dir / "cache" / "pose-v1.jsonl"
+    source_out = session_dir / "source.json"
+    attempts_out = session_dir / "attempts.json"
+    shadows_out = session_dir / SHADOWS_FILENAME
+    run_out = session_dir / "run.json"
+    compilation_path = export_base / export_module.COMPILATION_FILENAME
+    clips_dir = export_base / export_module.CLIPS_SUBDIR
+
+    if dry_run:
+        _progress(f"cut dry-run: video {video_path}")
+        _progress(f"cut dry-run: metadata {session_dir}")
+        _progress(f"cut dry-run: export {export_base}")
+        _progress(f"cut dry-run: mode {mode_name} padding {padding}")
+        return None
+
+    if force:
+        for tree in (session_dir, export_base):
+            try:
+                if tree.exists():
+                    shutil.rmtree(tree)
+            except OSError as exc:
+                raise CutError(
+                    "validate",
+                    f"could not clear destination {tree}: {exc}. ",
+                ) from exc
+    else:
+        for existing in (source_out, attempts_out, shadows_out, run_out):
+            if existing.exists():
+                raise CutError(
+                    "validate",
+                    f"output collision: {existing} already exists. "
+                    f"Pass --force to replace outputs in {session_label}. ",
+                )
+        if mode_name in ("compilation", "both") and compilation_path.exists():
+            raise CutError(
+                "export",
+                f"output collision: {compilation_path} already exists. "
+                f"Pass --force to replace outputs in {session_label}. ",
+            )
+        if mode_name in ("clips", "both"):
+            try:
+                if clips_dir.is_dir() and any(
+                    entry.is_file() for entry in clips_dir.iterdir()
+                ):
+                    raise CutError(
+                        "export",
+                        f"output collision: {clips_dir} already holds clips. "
+                        f"Pass --force to replace outputs in {session_label}. ",
+                    )
+            except CutError:
+                raise
+            except OSError:
+                pass
+
     created_media: list[Path] = []
-    compilation_path = session_dir / export_module.COMPILATION_FILENAME
-    clips_dir = session_dir / export_module.CLIPS_SUBDIR
     pre_existing: set[Path] = set()
-    if compilation_path.exists():
-        pre_existing.add(compilation_path)
-    try:
-        if clips_dir.is_dir():
-            for entry in clips_dir.iterdir():
-                if entry.is_file():
-                    pre_existing.add(entry)
-    except OSError:
-        pass
 
     def _cleanup_created_media() -> None:
         for path in created_media:
@@ -375,7 +478,7 @@ def run_cut(
                         _remove_quietly(entry)
         except OSError:
             pass
-        _remove_tmp_siblings(session_dir, (export_module.COMPILATION_FILENAME,))
+        _remove_tmp_siblings(export_base, (export_module.COMPILATION_FILENAME,))
         _remove_tmp_siblings(clips_dir, ("serve-",))
 
     def _fail(stage: str, message: str) -> CutError:
@@ -387,15 +490,10 @@ def run_cut(
     status = "ok"
     metadata: SourceMetadata | None = None
     document: AttemptDocument | None = None
-    cache_path = extract_module.default_cache_path_for(video_path, out_base)
     cache_hit = False
     compilation: Path | None = None
     clips: list[Path] = []
     shadows: tuple[Any, ...] = ()
-    source_out = session_dir / "source.json"
-    attempts_out = session_dir / "attempts.json"
-    shadows_out = session_dir / SHADOWS_FILENAME
-    run_out = session_dir / "run.json"
 
     def _write_run(status_value: str) -> Path:
         elapsed = time.monotonic() - started
@@ -413,6 +511,8 @@ def run_cut(
             "feature_config": feature_config.to_dict(),
             "method_version": DEFAULT_METHOD_VERSION,
             "mode": mode_name,
+            "metadata_dir": str(session_dir),
+            "export_dir": str(export_base),
             "output_dir": str(session_dir),
             "padding_seconds": padding,
             "pipeline_version": PIPELINE_VERSION,
@@ -732,6 +832,7 @@ def run_cut(
                 empty=True,
                 shadows=shadows,
                 shadows_path=shadows_out,
+                export_dir=export_base,
             )
 
         # --- export ---
@@ -748,23 +849,23 @@ def run_cut(
                 results = export_fn(
                     video_path,
                     export_plan,
-                    session_dir,
+                    export_base,
                     mode=mode_name,
                     source=metadata,
                     ffmpeg=ffmpeg,
                     ffprobe=ffprobe,
-                    overwrite=overwrite,
+                    overwrite=force,
                 )
             else:
                 results = export_module.export_outputs(
                     video_path,
                     export_plan,
-                    session_dir,
+                    export_base,
                     mode=mode_name,
                     source=metadata,
                     ffmpeg=ffmpeg,
                     ffprobe=ffprobe,
-                    overwrite=overwrite,
+                    overwrite=force,
                     is_cancelled=is_cancelled,
                 )
         except CutCancelled:
@@ -775,7 +876,7 @@ def run_cut(
             raise _fail(
                 "export",
                 f"output collision: {exc} "
-                f"Pass --overwrite to replace outputs in {session_label}.",
+                f"Pass --force to replace outputs in {session_label}. ",
             ) from exc
         except export_module.ExportCancelled as exc:
             raise CutCancelled("export", f"export was cancelled: {exc}.") from exc
@@ -811,6 +912,7 @@ def run_cut(
             empty=False,
             shadows=shadows,
             shadows_path=shadows_out,
+            export_dir=export_base,
         )
     except CutCancelled as exc:
         error_stage = exc.stage
