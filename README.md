@@ -2,7 +2,7 @@
 
 A local command-line tool for finding and reviewing tennis serve attempts in source videos, ideally slow-motion recordings. See the [glossary](docs/reference/glossary.md) for canonical terminology.
 
-**Status:** Local offline workflow, with delivery-stage-2 compatibility support.
+**Status:** Local offline workflow.
 
 ## What we are building
 
@@ -21,10 +21,6 @@ A local command-line tool for finding and reviewing tennis serve attempts in sou
 ## Documents
 
 - [Design](docs/architecture/offline-pipeline.md): offline behavior, media rules, architecture, detection, checkpoints, and evaluation.
-- [UX and workflow design](docs/plans/ux-workflow-design.md): accepted/current source, session, collection, workspace, command, status, cleanup, and review-discovery contracts.
-- [Getting started](docs/user-guide/getting-started.md): install, setup, and first workflow.
-- [CLI reference](docs/reference/cli.md): exact workflow grammar, selectors, and exit codes.
-- [Workspace and artifacts](docs/reference/workspace-and-artifacts.md): managed private layout and artifact boundaries.
 - [Deferred roadmap](docs/plans/offline-roadmap.md): earlier single-run leaves, dependencies, allowed scope, checks, and milestone gates.
 - [Serve stage-checkpoint analysis](docs/reference/serve-phase-analysis.md): current native-PTS 3D checkpoint pipeline, cues, weights, filtering, artifacts, limitations, and code pointers.
 - [Archive](docs/archive/): superseded M4 remediation and iOS-first planning documents.
@@ -43,7 +39,7 @@ mise run doctor
 mise run check
 ```
 
-Workflow commands are available as installed `serve-review ...`, or from this checkout as `uv run --locked serve-review ...`. The optional `mise run process -- ...` alias delegates to the same process command. Current commands:
+Current development commands:
 
 | Command | Purpose |
 | --- | --- |
@@ -51,8 +47,6 @@ Workflow commands are available as installed `serve-review ...`, or from this ch
 | `mise run doctor` | Verify Python, FFmpeg, and ffprobe. |
 | `mise run test` | Run offline pipeline tests. |
 | `mise run check` | Run diagnostics and tests. |
-| `uv run --locked serve-review process <video> [--dry-run] [--open]` | Managed stage-2 workflow; registers, processes, and publishes a landing page. |
-| `mise run process -- <video> [--dry-run] [--open]` | Optional alias for the same managed workflow. |
 | `uv run --locked serve-review cut <video> --padding 1 --output <compilation\|clips\|both>` | Detect accepted attempts and export a compilation, clips, or both. |
 | `mise run analyze -- <video>` | Legacy attempt-based analysis; requires prior `cut` output or `--attempts`. |
 | `uv run --locked serve-review analyze-serve <video> [--start-seconds S --end-seconds E]` | Current one-attempt native-PTS 3D stage-checkpoint analysis; writes checkpoints, diagnostics, a review page, and a reusable world cache. |
