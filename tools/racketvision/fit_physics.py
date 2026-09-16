@@ -50,6 +50,43 @@ def constrained_pose(data):
     return data
 
 
+def constrained_racket(data):
+    """Fit one fixed-size 2D racket template with translation and rotation only."""
+    names = RACKET_NAMES
+    observations = np.array([[[row[f"Smooth{name}X"], row[f"Smooth{name}Y"]]
+                              for name in names] for _, row in data.iterrows()], float)
+    valid = np.all(np.isfinite(observations), axis=(1, 2))
+    if not valid.any():
+        return data
+    confidence = np.array([[data.iloc[k].get(f"{name}Confidence", 0.1)
+                             for name in names] for k in range(len(data))], float)
+    confidence = np.nan_to_num(confidence, nan=0.1).clip(0.1, 1.0) ** 2
+    weights = confidence[valid]
+    centers = (observations[valid] * weights[:, :, None]).sum(axis=1) / weights.sum(axis=1)[:, None]
+    centered = observations[valid] - centers[:, None, :]
+    template = (centered * weights[:, :, None]).sum(axis=0) / weights.sum(axis=0)[:, None]
+    for frame_index, frame in enumerate(observations):
+        good = np.all(np.isfinite(frame), axis=1)
+        if good.sum() < 2:
+            continue
+        weights = confidence[frame_index, good]
+        source = template[good]
+        target = frame[good]
+        source_center = np.average(source, axis=0, weights=weights)
+        target_center = np.average(target, axis=0, weights=weights)
+        covariance = ((source - source_center) * weights[:, None]).T @ (target - target_center)
+        u, _, vt = np.linalg.svd(covariance)
+        rotation = vt.T @ u.T
+        if np.linalg.det(rotation) < 0:
+            vt[-1] *= -1
+            rotation = vt.T @ u.T
+        frame[:] = (template - source_center) @ rotation.T + target_center
+    for i, name in enumerate(names):
+        data[f"PhysicsRacket{name}X"] = observations[:, i, 0]
+        data[f"PhysicsRacket{name}Y"] = observations[:, i, 1]
+    return data
+
+
 def robust_parabola(frames, values):
     """Fit a quadratic while repeatedly rejecting large candidate jumps."""
     frames = np.asarray(frames, float)
@@ -191,7 +228,8 @@ def render(video, data, impact, output):
                 if np.all(np.isfinite(p)):
                     cv2.circle(overlay, tuple(p.round().astype(int)), 7, (0, 165, 255), -1)
 
-            racket = [xy(row, n) for n in RACKET_NAMES]
+            racket = [np.array([row[f"PhysicsRacket{n}X"], row[f"PhysicsRacket{n}Y"]])
+                      for n in RACKET_NAMES]
             for a, b in RACKET_EDGES:
                 if np.all(np.isfinite(racket[a])) and np.all(np.isfinite(racket[b])):
                     cv2.line(overlay, tuple(racket[a].round().astype(int)),
@@ -210,7 +248,7 @@ def render(video, data, impact, output):
                 cv2.circle(overlay, tuple(ball.round().astype(int)), 20, (0, 255, 255), 4)
             cv2.putText(overlay, f"physics frame {frame_index} ({row['BallPhase']})",
                         (30, 55), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 3)
-            writer.write(cv2.addWeighted(frame, 0.75, overlay, 0.25, 0))
+            writer.write(overlay)
     finally:
         cap.release()
         writer.release()
@@ -233,6 +271,7 @@ def main():
     output_video = output_csv.with_suffix(".mp4")
     data = pd.read_csv(args.csv)
     data = constrained_pose(data)
+    data = constrained_racket(data)
     impact = args.impact_frame
     data, release = fit_ball(data, args.toss_start, args.release_frame,
                              impact, args.bounce_frame, args.peak_frame)

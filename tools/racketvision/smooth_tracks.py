@@ -91,13 +91,22 @@ def render(video_path, data, output_video):
             ok, frame = cap.read()
             if not ok:
                 raise RuntimeError(f"Video ended before CSV at frame {frame_index}")
-            if np.isfinite(row["SmoothX"]) and np.isfinite(row["SmoothY"]):
-                center = (round(row["SmoothX"]), round(row["SmoothY"]))
-                cv2.circle(frame, center, 14, (0, 255, 255), 3)
-                cv2.putText(frame, "ball smooth", (center[0] + 16, center[1] - 16),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            # Raw detections are drawn on the transparent layer below; the
+            # smoothed coordinates are drawn opaque on top.
+            raw_overlay = frame.copy()
+            if row.get("Visibility", 0) > 0:
+                cv2.circle(raw_overlay, (round(row["X"]), round(row["Y"])), 14, (0, 255, 255), 3)
+            raw_pose = [(row.get(f"Pose{i}X"), row.get(f"Pose{i}Y")) for i in range(33)]
+            for a, b in ((11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
+                         (11, 23), (12, 24), (23, 24), (23, 25), (25, 27),
+                         (24, 26), (26, 28), (27, 29), (29, 31), (28, 30), (30, 32)):
+                if all(v is not None and np.isfinite(v) for v in (*raw_pose[a], *raw_pose[b])):
+                    cv2.line(raw_overlay, tuple(map(round, raw_pose[a])), tuple(map(round, raw_pose[b])), (0, 165, 255), 2)
             pose = [(row.get(f"SmoothPose{i}X"), row.get(f"SmoothPose{i}Y"))
                     for i in range(33)]
+            for name in ("Top", "Bottom", "Handle", "Left", "Right"):
+                if np.isfinite(row.get(f"{name}X", np.nan)):
+                    cv2.circle(raw_overlay, (round(row[f"{name}X"]), round(row[f"{name}Y"])), 6, (255, 0, 255), -1)
             pose_ok = [np.isfinite(x) and np.isfinite(y) for x, y in pose]
             for a, b in POSE_CONNECTIONS:
                 if pose_ok[a] and pose_ok[b]:
@@ -120,6 +129,7 @@ def render(video_path, data, output_video):
             for point, valid in zip(racket, racket_ok):
                 if valid:
                     cv2.circle(frame, tuple(map(round, point)), 7, (255, 0, 255), -1)
+            frame = cv2.addWeighted(frame, 0.75, raw_overlay, 0.25, 0)
             writer.write(frame)
     finally:
         cap.release()

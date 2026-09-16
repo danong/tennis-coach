@@ -77,8 +77,9 @@ tools/racketvision/.venv/bin/python tools/racketvision/smooth_tracks.py \
 
 This writes `-smoothed.csv` and `-smoothed.mp4`. Internal gaps are linearly
 interpolated, then coordinates are filtered with a Savitzky-Golay filter
-(default window 11, polynomial order 2). Adjust with `--window` and
-`--polyorder`.
+(default window 11, polynomial order 2). The smoothed video draws the raw
+tracking layer at 25% alpha underneath the fully opaque smoothed layer, with
+no tracking text. Adjust with `--window` and `--polyorder`.
 
 Find and render an impact candidate from the smoothed metadata:
 
@@ -89,8 +90,7 @@ tools/racketvision/.venv/bin/python tools/racketvision/find_impact.py \
 
 The heuristic favors the frame where the ball is closest to, or inside, the
 four racket hoop points, while the MediaPipe right wrist (`Pose16`) and racket
-hoop center are near their maximum upward elevation. It writes a single
-`-impact.png` frame for inspection.
+hoop center are near their maximum upward elevation. It writes a clean, unannotated `-impact.png` source frame for inspection.
 
 ## Physics-fitting experiment
 
@@ -108,55 +108,148 @@ original, unannotated video as its base. For the current clip, the supplied
 phase hints are toss start 283, release 339, peak 382, impact 439, and bounce
 560. Use the script options to change these assumptions.
 
-## What we are testing
+## Four-stage experiment and observations
 
-This directory is an intentionally disposable research prototype. The goal is
-to compare simple approaches visually before deciding what, if anything, should
-be incorporated into the main project.
+The experiment is organized around four numbered stages. The numbering reflects
+artifact lineage rather than a perfectly contiguous sequence:
 
-### Stage 1: model detections
+### 00 — Raw ball and racket tracking
 
-`track_video.py` runs TrackNet/BallTrack for the ball and RacketPose for the
-racket. It writes the original per-frame detections. BallTrack is single-ball
-and can jump between tennis balls or lose the ball entirely.
+`00-X-raw.mp4` shows the direct BallTrack/RacketPose observations.
 
-### Stage 2: cached body pose
+Regenerate the raw overlays:
 
-The MediaPipe overlay reads existing `kinematic-track-v1.jsonl` coordinates
-when `--mediapipe-cache` is provided. It does not run MediaPipe. Cache frames
-must match the video frame order and count.
+```bash
+tools/racketvision/.venv/bin/python tools/racketvision/render_raw.py \
+  refs/anchors/single-serve-01.mov output/racketvision/cache/single-serve-01-raw.csv \
+  --output output/racketvision/00-single-serve-01-raw.mp4
 
-### Stage 3: baseline smoothing
+tools/racketvision/.venv/bin/python tools/racketvision/render_raw.py \
+  /Users/danielong/Documents/Tennis/Serves/2026-09-15/cropped.MOV \
+  output/racketvision/cache/cropped-raw.csv \
+  --output output/racketvision/00-cropped-raw.mp4
+```
 
-`smooth_tracks.py` fills internal gaps with linear interpolation, then applies
-a Savitzky-Golay filter (default window 11, polynomial order 2). It processes
-ball coordinates, pose landmarks, racket keypoints, and racket boxes. This is a
-visual baseline only: interpolation can connect unrelated BallTrack candidates.
-The original columns remain in the CSV beside `Smooth*` columns.
+Observations:
 
-### Stage 4: contact heuristic
+- **Ball:** largely useless before toss release; generally accurate from
+  release to contact with a couple of missed observations; generally accurate
+  after contact but with substantially more missed observations and jitter.
+- **Racket:** quite jittery, but it locks onto the racket perfectly every now
+  and then.
 
-`find_impact.py` searches for a frame where the ball is near the four racket
-hoop points (preferably inside them), while the right wrist and racket are near
-their maximum upward image elevation. This is a heuristic, not a classifier.
-It currently identifies frame 439 for the sample clip.
+### 01 — Interpolation and smoothing
 
-### Stage 5: physics-fitting experiment
+`01-X-smoothed.mp4` fills internal gaps and applies a Savitzky-Golay filter.
+The raw layer is shown underneath at 25% opacity and the smoothed layer is
+opaque.
 
-`fit_physics.py` is a second post-processing experiment. It:
+The smoothed ball and racket have generally the same strengths and weaknesses
+as the raw tracks, but are a little better visually. Smoothing can also hide
+whether a point came from a real observation or an interpolation.
 
-- projects pose landmarks toward fixed median bone lengths;
-- treats frames 283–338 as a ball/left-wrist coupled toss;
-- fits a robust quadratic to the pre-impact flight from release 339 to impact
-  439, with a supplied peak at 382;
-- fits a separate robust quadratic from impact 439 to bounce 560; and
-- leaves the post-bounce phase unmodeled.
+Regenerate the smoothed outputs:
 
-Only original `Visibility > 0` ball observations are used as fitting samples in
-the two flight phases. Large residuals are rejected iteratively. The generated
-`FitBall*` columns are the modeled trajectory; `Smooth*` columns remain
-available for comparison. The fitted arcs are anchored at the release hand
-and racket-contact position to avoid visible discontinuities.
+```bash
+tools/racketvision/.venv/bin/python tools/racketvision/smooth_tracks.py \
+  output/racketvision/cache/single-serve-01-raw.csv \
+  --video output/racketvision/00-single-serve-01-raw.mp4 \
+  --output output/racketvision/01-single-serve-01-smoothed.csv
+
+tools/racketvision/.venv/bin/python tools/racketvision/smooth_tracks.py \
+  output/racketvision/cache/cropped-raw.csv \
+  --video output/racketvision/00-cropped-raw.mp4 \
+  --output output/racketvision/01-cropped-smoothed.csv
+```
+
+### 02 — Stage/contact detection
+
+`02-X-00-start.png`, `02-X-01-release.png`,
+`02-X-02-peak.png`, and `02-X-03-impact.png` are clean source frames selected
+from cached stage metadata and the experiment’s heuristics.
+
+Detection is generally strong. However, `02-cropped-01-release.png` is totally
+wrong: the ball is nowhere near the hand. The likely failure is that the
+existing stage detector uses body-pose signals such as left-arm elevation and
+extension, not direct ball/hand distance, so an arm-motion event can be labeled
+as release even when the ball is elsewhere.
+
+Regenerate the stage frames:
+
+```bash
+tools/racketvision/.venv/bin/python tools/racketvision/find_stages.py \
+  output/racketvision/cache/single-serve-01-smoothed.csv \
+  refs/anchors/single-serve-01.mov \
+  output/racketvision/cache/single-serve-01-stages.json \
+  --prefix output/racketvision/02-single-serve-01
+
+tools/racketvision/.venv/bin/python tools/racketvision/find_stages.py \
+  output/racketvision/cache/cropped-smoothed.csv \
+  /Users/danielong/Documents/Tennis/Serves/2026-09-15/cropped.MOV \
+  output/racketvision/cache/cropped-stages.json \
+  --prefix output/racketvision/02-cropped
+```
+
+### 03 — Physics fitting
+
+`03-X-physics.mp4` adds the experimental rigid-body and trajectory models.
+
+Regenerate the physics videos:
+
+```bash
+tools/racketvision/.venv/bin/python tools/racketvision/fit_physics.py \
+  output/racketvision/cache/single-serve-01-smoothed.csv \
+  --video refs/anchors/single-serve-01.mov \
+  --toss-start 272 --release-frame 327 --impact-frame 439 --peak-frame 380 \
+  --output output/racketvision/03-single-serve-01-physics.csv
+
+tools/racketvision/.venv/bin/python tools/racketvision/fit_physics.py \
+  output/racketvision/cache/cropped-smoothed.csv \
+  --video /Users/danielong/Documents/Tennis/Serves/2026-09-15/cropped.MOV \
+  --toss-start 107 --release-frame 141 --impact-frame 170 --peak-frame 153 \
+  --bounce-frame 314 --output output/racketvision/03-cropped-physics.csv
+```
+
+Observations:
+
+- **Physics ball:** the general shape is right but the trajectory is very
+  inaccurate; the smoothed ball matches the real ball better.
+- **Physics racket:** the points align with the racket location better, but do
+  not match the actual hoop/handle landmarks. They are scaled down toward the
+  center of mass.
+- **Physics body:** generally looks quite good.
+
+These results suggest that rigid pose constraints may be worth exploring for
+body landmarks, while the current physics ball and racket models should not
+replace the smoothed observations yet.
+
+### Why is there no 02?
+
+Yes—this was effectively a specification/naming omission. Stage `02` was never
+assigned a separate artifact-producing operation. The current useful sequence
+is therefore `00` raw, `01` smoothed, `02` detected stages, and `03` physics.
+A future diagnostic stage can be added after the physics output if needed.
+
+## Experiment cache
+
+Reusable metadata for the current two exemplars is kept in
+`output/racketvision/cache/` so the rendered artifacts can be regenerated
+without searching through older output files:
+
+```text
+cache/single-serve-01-raw.csv
+cache/single-serve-01-smoothed.csv
+cache/single-serve-01-pose.jsonl
+cache/cropped-raw.csv
+cache/cropped-smoothed.csv
+cache/cropped-pose.jsonl
+cache/single-serve-01-stages.json
+cache/cropped-stages.json
+```
+
+The impact PNG must be rendered from the original source video, not from a
+smoothed/annotated MP4. The source MOV rotation is normalized before frame
+extraction.
 
 ## Prototype notes
 

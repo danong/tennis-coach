@@ -2,6 +2,8 @@
 """Find and render a likely racket/ball impact frame from smoothed metadata."""
 
 import argparse
+import subprocess
+import tempfile
 from pathlib import Path
 
 import cv2
@@ -68,6 +70,9 @@ def choose_frame(data):
 
 
 def render(frame, row, output):
+    # Impact output is intentionally a clean source frame for inspection.
+    cv2.imwrite(str(output), frame)
+    return
     # Draw into a separate layer so the annotations remain visible but do not
     # obscure the underlying racket and ball. Alpha is intentionally subtle.
     overlay = frame.copy()
@@ -110,11 +115,21 @@ def main():
     data = pd.read_csv(args.csv)
     selected, wrist_max, racket_max = choose_frame(data)
     _, frame_number, proximity, inside = selected
-    cap = cv2.VideoCapture(str(video))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-    ok, frame = cap.read()
-    cap.release()
-    if not ok:
+    # Use ffmpeg's timestamps/autorotation instead of OpenCV frame seeking;
+    # these MOVs have variable timestamps and more decoded frames than the
+    # normalized tracking CSVs.
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", str(video)],
+        check=True, capture_output=True, text=True).stdout.strip()
+    numerator, denominator = map(float, probe.rstrip(",").split("/"))
+    timestamp = frame_number / (numerator / denominator)
+    with tempfile.NamedTemporaryFile(suffix=".png") as temp:
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                        "-ss", str(timestamp), "-i", str(video), "-frames:v", "1",
+                        temp.name], check=True)
+        frame = cv2.imread(temp.name)
+    if frame is None:
         raise RuntimeError(f"Could not read frame {frame_number} from {video}")
     output.parent.mkdir(parents=True, exist_ok=True)
     render(frame, data.loc[data["Frame"] == frame_number].iloc[0], output)
