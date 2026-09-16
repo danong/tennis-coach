@@ -39,6 +39,19 @@ tools/racketvision/.venv/bin/python tools/racketvision/track_video.py \
   --threshold 0.10
 ```
 
+To overlay the existing MediaPipe 2D pose cache for `single-serve-01`:
+
+```bash
+tools/racketvision/.venv/bin/python tools/racketvision/track_video.py \
+  refs/anchors/single-serve-01.mov \
+  --output output/racketvision/single-serve-01-mediapipe.mp4 \
+  --threshold 0.10 \
+  --mediapipe-cache output/m4-frozen-confirmation/single-serve-01/cache/kinematic-track-v1.jsonl
+```
+
+The cache is reused directly; MediaPipe is not run by the prototype. It must
+match the input video’s decoded frame count and order.
+
 Optional `--crop-top N` removes `N` native pixels from the top before model
 inference. Outputs include:
 
@@ -52,6 +65,32 @@ tracked-model-median.png
 The CSV contains ball coordinates/confidence and, when detected, one racket
 bounding box plus five racket keypoints (`Top`, `Bottom`, `Handle`, `Left`,
 `Right`) and their confidences.
+
+## Baseline smoothing
+
+Post-process an existing run without re-running any models:
+
+```bash
+tools/racketvision/.venv/bin/python tools/racketvision/smooth_tracks.py \
+  output/racketvision/single-serve-01-mediapipe.csv
+```
+
+This writes `-smoothed.csv` and `-smoothed.mp4`. Internal gaps are linearly
+interpolated, then coordinates are filtered with a Savitzky-Golay filter
+(default window 11, polynomial order 2). Adjust with `--window` and
+`--polyorder`.
+
+Find and render an impact candidate from the smoothed metadata:
+
+```bash
+tools/racketvision/.venv/bin/python tools/racketvision/find_impact.py \
+  output/racketvision/single-serve-01-mediapipe-smoothed.csv
+```
+
+The heuristic favors the frame where the ball is closest to, or inside, the
+four racket hoop points, while the MediaPipe right wrist (`Pose16`) and racket
+hoop center are near their maximum upward elevation. It writes a single
+`-impact.png` frame.
 
 ## Prototype notes
 

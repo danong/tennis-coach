@@ -3,6 +3,7 @@
 
 import argparse
 import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,28 @@ DEFAULT_DET_CFG = RACKETPOSE / "configs" / "detection" / "rtmdet_m_racket_infer.
 DEFAULT_DET_CKPT = RACKETVISION / "RacketPose" / "checkpoints" / "epoch_300.pth"
 DEFAULT_POSE_CFG = RACKETPOSE / "configs" / "pose" / "rtmpose_m_racket_infer.py"
 DEFAULT_POSE_CKPT = RACKETVISION / "RacketPose" / "checkpoints" / "best_PCK_epoch_90.pth"
+POSE_CONNECTIONS = ((11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
+                    (11, 23), (12, 24), (23, 24), (23, 25), (25, 27),
+                    (24, 26), (26, 28), (27, 29), (29, 31), (28, 30),
+                    (30, 32), (23, 24))
+POSE_LANDMARK_COUNT = 33
+
+
+def load_mediapipe_cache(path, frame_count):
+    """Load normalized 2D landmarks from the existing JSONL cache."""
+    frames = []
+    with path.open() as handle:
+        for line in handle:
+            record = json.loads(line)
+            if record.get("type") != "dense-world-frame":
+                continue
+            persons = record["observation"]["frame_2d"]["persons"]
+            frames.append(persons[0]["keypoints"] if persons else None)
+    if len(frames) != frame_count:
+        raise RuntimeError(
+            f"MediaPipe cache has {len(frames)} frames, expected {frame_count}"
+        )
+    return frames
 
 
 def make_sdr_video(input_path, output_path):
@@ -122,6 +145,8 @@ def main():
     parser.add_argument("--det-ckpt", type=Path, default=DEFAULT_DET_CKPT)
     parser.add_argument("--pose-cfg", type=Path, default=DEFAULT_POSE_CFG)
     parser.add_argument("--pose-ckpt", type=Path, default=DEFAULT_POSE_CKPT)
+    parser.add_argument("--mediapipe-cache", type=Path, default=None,
+                        help="Existing MediaPipe JSONL cache for 2D overlay")
     parser.add_argument("--bbox-threshold", type=float, default=0.3)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--samples", type=int, default=64)
@@ -138,6 +163,8 @@ def main():
     for path in (args.ckpt, args.det_cfg, args.det_ckpt, args.pose_cfg, args.pose_ckpt):
         if not path.exists():
             parser.error(f"Required file does not exist: {path}")
+    if args.mediapipe_cache and not args.mediapipe_cache.exists():
+        parser.error(f"MediaPipe cache does not exist: {args.mediapipe_cache}")
 
     sys.path.insert(0, str(BALLTRACK))
     from inference import BallInferencer
@@ -190,6 +217,10 @@ def main():
         pose_model = pose_module.init_pose_model(
             str(args.pose_cfg), str(args.pose_ckpt), device=args.device
         )
+        mediapipe_results = (
+            load_mediapipe_cache(args.mediapipe_cache, len(frame_paths))
+            if args.mediapipe_cache else [None] * len(frame_paths)
+        )
         racket_results = []
         for path in frame_paths:
             frame = cv2.imread(str(path))
@@ -207,24 +238,29 @@ def main():
                     result["Visibility"] = 0
         rows = []
         keypoint_names = ["Top", "Bottom", "Handle", "Left", "Right"]
-        for ball, rackets in zip(results, racket_results):
+        for ball, rackets, pose in zip(results, racket_results, mediapipe_results):
             rackets = rackets[:1]  # one racket is enough for this prototype
+            row = ball.copy()
+            if pose:
+                for pose_index, point in enumerate(pose[:POSE_LANDMARK_COUNT]):
+                    row[f"Pose{pose_index}X"] = point["x"] * width
+                    row[f"Pose{pose_index}Y"] = point["y"] * height
+                    row[f"Pose{pose_index}Confidence"] = point.get("visibility", 0.0)
             if not rackets:
-                rows.append(ball.copy())
-                continue
-            for racket_index, racket in enumerate(rackets):
-                row = ball.copy()
-                row["RacketIndex"] = racket_index
-                bbox = racket["bbox"][0]
-                for i, value in enumerate(bbox):
-                    row[f"BBox{i + 1}"] = value
-                row["BBoxConfidence"] = racket["bbox_score"]
-                for name, point, score in zip(
-                    keypoint_names, racket["keypoints"], racket["keypoint_scores"]
-                ):
-                    row[f"{name}X"], row[f"{name}Y"] = point
-                    row[f"{name}Confidence"] = score
                 rows.append(row)
+                continue
+            racket = rackets[0]
+            row["RacketIndex"] = 0
+            bbox = racket["bbox"][0]
+            for i, value in enumerate(bbox):
+                row[f"BBox{i + 1}"] = value
+            row["BBoxConfidence"] = racket["bbox_score"]
+            for name, point, score in zip(
+                keypoint_names, racket["keypoints"], racket["keypoint_scores"]
+            ):
+                row[f"{name}X"], row[f"{name}Y"] = point
+                row[f"{name}Confidence"] = score
+            rows.append(row)
         pd.DataFrame(rows).to_csv(csv_path, index=False)
 
         writer = cv2.VideoWriter(
@@ -233,8 +269,11 @@ def main():
         if not writer.isOpened():
             raise RuntimeError(f"Could not open output video: {args.output}")
         try:
-            for result, frame_path, rackets in zip(results, frame_paths, racket_results):
+            for frame_index, (result, frame_path, rackets) in enumerate(
+                zip(results, frame_paths, racket_results)
+            ):
                 frame = cv2.imread(str(frame_path))
+                pose = mediapipe_results[frame_index]
                 if result["Visibility"]:
                     center = (int(result["X"]), int(result["Y"]))
                     cv2.circle(frame, center, 14, (0, 255, 255), 3)
@@ -243,6 +282,17 @@ def main():
                         (center[0] + 16, center[1] - 16),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2,
                     )
+                if pose:
+                    points = []
+                    for point in pose[:POSE_LANDMARK_COUNT]:
+                        xy = (round(point["x"] * width), round(point["y"] * height))
+                        points.append(xy)
+                        if point.get("visibility", 0.0) >= 0.5:
+                            cv2.circle(frame, xy, 5, (0, 165, 255), -1)
+                    for a, b in POSE_CONNECTIONS:
+                        if (pose[a].get("visibility", 0.0) >= 0.5 and
+                                pose[b].get("visibility", 0.0) >= 0.5):
+                            cv2.line(frame, points[a], points[b], (0, 165, 255), 2)
                 for racket in rackets[:1]:
                     x1, y1, x2, y2 = map(int, racket["bbox"][0])
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
