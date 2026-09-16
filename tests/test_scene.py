@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+
 import pytest
 
 from serve_review.media.audio import AudioEnergy
@@ -21,6 +23,7 @@ from serve_review.scene import (
     SceneFrame,
     SceneTrack,
     build_scene_track,
+    build_scene_track_with_racketvision,
 )
 
 
@@ -109,6 +112,94 @@ def test_builder_rejects_audio_timestamp_mismatch_and_length_mismatch() -> None:
         )
     with pytest.raises(ValueError, match="exactly one"):
         build_scene_track(snapshot, audio=(AudioEnergy(0.0, 0.2),))
+
+
+def _write_racketvision_csv(path, rows, *, smoothed=False) -> None:
+    fields = ["Frame", "X", "Y", "Visibility", "Confidence"]
+    if smoothed:
+        fields += ["SmoothX", "SmoothY"]
+    fields += ["BBox1", "BBox2", "BBox3", "BBox4", "BBoxConfidence"]
+    fields += [
+        f"{name}{axis}"
+        for name in ("Top", "Bottom", "Handle", "Left", "Right")
+        for axis in ("X", "Y")
+    ]
+    fields += [
+        f"{name}Confidence" for name in ("Top", "Bottom", "Handle", "Left", "Right")
+    ]
+    if smoothed:
+        fields += [f"SmoothBBox{i}" for i in range(1, 5)]
+        fields += [
+            f"Smooth{name}{axis}"
+            for name in ("Top", "Bottom", "Handle", "Left", "Right")
+            for axis in ("X", "Y")
+        ]
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_racketvision_adapter_joins_raw_and_smoothed_rows_by_scene_order(
+    tmp_path,
+) -> None:
+    rows = [
+        {"Frame": 0, "X": 20, "Y": 30, "Visibility": 0, "Confidence": 0},
+        {
+            "Frame": 1,
+            "X": 40,
+            "Y": 50,
+            "Visibility": 1,
+            "Confidence": 0.8,
+            "BBox1": 10,
+            "BBox2": 20,
+            "BBox3": 50,
+            "BBox4": 80,
+            "BBoxConfidence": 0.7,
+            "TopX": 20,
+            "TopY": 20,
+            "TopConfidence": 0.6,
+        },
+    ]
+    raw_path = tmp_path / "raw.csv"
+    _write_racketvision_csv(raw_path, rows)
+    scene = build_scene_track_with_racketvision(
+        _snapshot(2.5, 2.6), raw_path, source_width=100, source_height=100
+    )
+    assert [frame.time_seconds for frame in scene.frames] == [2.5, 2.6]
+    assert scene.frames[0].ball_2d is None
+    assert scene.frames[1].ball_2d == Point2D(0.4, 0.5, 0.8)
+    assert scene.frames[1].racket_2d is not None
+    assert scene.frames[1].racket_2d.bbox == (0.1, 0.2, 0.5, 0.8)
+    assert scene.frames[1].racket_2d.keypoints["Top"] == Point2D(0.2, 0.2, 0.6)
+
+    smooth_rows = [{"Frame": 0, "SmoothX": 60, "SmoothY": 70}]
+    smooth_path = tmp_path / "smooth.csv"
+    _write_racketvision_csv(smooth_path, smooth_rows, smoothed=True)
+    smoothed = build_scene_track_with_racketvision(
+        _snapshot(9.0), smooth_path, source_width=100, source_height=100, smoothed=True
+    )
+    assert smoothed.frames[0].time_seconds == 9.0
+    assert smoothed.frames[0].ball_2d == Point2D(0.6, 0.7, 0.0)
+
+
+def test_racketvision_adapter_rejects_mismatch_malformed_data_and_crop(
+    tmp_path,
+) -> None:
+    path = tmp_path / "bad.csv"
+    _write_racketvision_csv(path, [{"Frame": 0, "X": 10, "Y": "bad", "Visibility": 1}])
+    with pytest.raises(ValueError, match="not numeric"):
+        build_scene_track_with_racketvision(
+            _snapshot(0.0), path, source_width=100, source_height=100
+        )
+    with pytest.raises(ValueError, match="expected 2"):
+        build_scene_track_with_racketvision(
+            _snapshot(0.0, 0.1), path, source_width=100, source_height=100
+        )
+    with pytest.raises(ValueError, match="crop_top.*unsupported"):
+        build_scene_track_with_racketvision(
+            _snapshot(0.0), path, source_width=100, source_height=100, crop_top=4
+        )
 
 
 def test_scene_rejects_invalid_audio_values() -> None:
