@@ -15,6 +15,7 @@ absent) so no FFmpeg/ffprobe subprocess runs here.
 
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ import pytest
 
 from serve_review.analyze_serve import (
     ANALYZE_SERVE_ATTEMPT_ID,
+    AnalyzeServeError,
     run_analyze_serve,
 )
 from serve_review.checkpoints import six_anchor_solver as six_module
@@ -191,6 +193,7 @@ def _run(
     sampled_holder: list | None = None,
     encoded_holder: list | None = None,
     audio: str = "absent",
+    racketvision_csv: Path | None = None,
 ):
     from serve_review.analyze_serve import run_analyze_serve as _run_fn
 
@@ -229,6 +232,7 @@ def _run(
         start_seconds=start,
         end_seconds=end,
         force=force,
+        racketvision_csv=racketvision_csv,
         probe_fn=lambda path: _metadata(),
         native_times_fn=lambda _v, s, e: tuple(
             t for t in TIMES if t >= s - 1e-9 and t < e
@@ -242,6 +246,24 @@ def _run(
         audio_energies_fn=audio_hook,
     )
     return result, backend
+
+
+def _write_racketvision_csv(path: Path, count: int) -> None:
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=["Frame", "X", "Y", "Visibility", "Confidence"]
+        )
+        writer.writeheader()
+        for index in range(count):
+            writer.writerow(
+                {
+                    "Frame": index,
+                    "X": 0.5 * 320,
+                    "Y": 0.5 * 240,
+                    "Visibility": 0,
+                    "Confidence": 0,
+                }
+            )
 
 
 def _available_keyframes(phase: AttemptPhase) -> dict[str, float]:
@@ -264,6 +286,7 @@ def test_cli_defaults() -> None:
     assert args.end_seconds is None
     assert args.output_dir is None
     assert args.cache is None
+    assert args.racketvision_csv is None
     assert args.model == Path("models/pose_landmarker_heavy.task")
     assert args.dry_run is False
     assert args.force is False
@@ -349,6 +372,29 @@ def test_range_validation_rejects_bad_ranges(
             probe_fn=lambda path: _metadata(),
         )
     assert excinfo.value.stage == "validate"
+
+
+def test_racketvision_diagnostics_are_added_without_changing_checkpoints(
+    tmp_path: Path, no_legacy_sparse: None
+) -> None:
+    csv_path = tmp_path / "tracks.csv"
+    _write_racketvision_csv(csv_path, N_FRAMES)
+    result, _ = _run(tmp_path, racketvision_csv=csv_path)
+
+    diagnostics = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
+    assert "visual_evidence" in diagnostics
+    visual = diagnostics["visual_evidence"]
+    assert visual["release"]["selected_time_seconds"] == diagnostics["selected"]["release"]["time_seconds"]
+    assert visual["contact"]["selected_time_seconds"] == diagnostics["selected"]["contact"]["time_seconds"]
+    assert visual["release"]["ball_to_left_wrist"]["available"] is False
+    assert visual["contact"]["ball_to_racket_hoop"]["available"] is False
+
+
+def test_invalid_racketvision_csv_is_actionable(tmp_path: Path, no_legacy_sparse: None) -> None:
+    missing = tmp_path / "missing.csv"
+    with pytest.raises(AnalyzeServeError) as excinfo:
+        _run(tmp_path, racketvision_csv=missing)
+    assert "RacketVision CSV does not exist" in str(excinfo.value)
 
 
 def test_default_range_covers_entire_source(tmp_path: Path, no_legacy_sparse: None) -> None:

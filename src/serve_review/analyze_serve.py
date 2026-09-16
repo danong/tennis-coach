@@ -113,6 +113,8 @@ from serve_review.phase_review import render_caption
 from serve_review.pose import mediapipe as mediapipe_module
 from serve_review.pose import world as world_module
 from serve_review.pose.world import WorldFrameObservation
+from serve_review.scene import build_scene_track_with_racketvision
+from serve_review.scene_diagnostics import build_scene_visual_diagnostics
 
 __all__ = [
     "ANALYZE_SERVE_VERSION",
@@ -748,6 +750,7 @@ def run_analyze_serve(
     end_seconds: float | None = None,
     output_dir: Path | str | None = None,
     cache_path: Path | str | None = None,
+    racketvision_csv: Path | str | None = None,
     model_path: Path | str = mediapipe_module.DEFAULT_MODEL_PATH,
     dry_run: bool = False,
     force: bool = False,
@@ -780,6 +783,9 @@ def run_analyze_serve(
         cache_path: Explicit reusable kinematic-track cache file
             (dense-world envelope); defaults to
             ``<output_dir>/cache/kinematic-track-v1.jsonl``.
+        racketvision_csv: Optional raw or smoothed RacketVision CSV. It must
+            cover the same native frame timeline as the dense-world cache.
+            It is diagnostic-only and never changes checkpoint selection.
         model_path: Approved Pose Landmarker ``.task`` artifact.
         dry_run: Validate the request and report intended destinations
             without directory creation, cache/model work, media export,
@@ -836,6 +842,14 @@ def run_analyze_serve(
         raise _fail("validate", "invalid video: expected a non-blank path.")
     if not video_path.is_file():
         raise _fail("validate", f"input video does not exist: {video_path}.")
+    racketvision_target: Path | None = None
+    if racketvision_csv is not None:
+        racketvision_target = Path(racketvision_csv).expanduser()
+        if not racketvision_target.is_file():
+            raise _fail(
+                "validate",
+                f"RacketVision CSV does not exist: {racketvision_target}.",
+            )
     dry_run_flag = _check_bool(dry_run, "dry_run")
     force_flag = _check_bool(force, "force")
     anchor2_flag = _check_bool(anchor2comparison, "anchor2comparison")
@@ -1528,6 +1542,34 @@ def run_analyze_serve(
                 except Exception:
                     pass
 
+        # --- optional RacketVision scene view (diagnostic-only) ---
+        scene_track = None
+        if racketvision_target is not None:
+            try:
+                scene_track = build_scene_track_with_racketvision(
+                    world_module.WorldCacheSnapshot(
+                        identity=identity,
+                        frames=tuple(observations),
+                        complete=True,
+                    ),
+                    racketvision_target,
+                    source_width=(
+                        metadata.height
+                        if metadata.rotation_degrees in (90, 270)
+                        else metadata.width
+                    ),
+                    source_height=(
+                        metadata.width
+                        if metadata.rotation_degrees in (90, 270)
+                        else metadata.height
+                    ),
+                )
+            except Exception as exc:
+                raise _fail(
+                    "visual",
+                    f"could not align RacketVision CSV {racketvision_target}: {exc}",
+                ) from exc
+
         # --- 3D waveform chain with optional audio cue (never 2D, never sparse) ---
         _progress("analyze-serve: building 3D waveforms")
         if _cancelled():
@@ -1938,6 +1980,14 @@ def run_analyze_serve(
                 "time_seconds": float(candidate.time_seconds),
             }
 
+        visual_diagnostics = None
+        if scene_track is not None:
+            visual_diagnostics = build_scene_visual_diagnostics(
+                scene_track,
+                selected_release_time_seconds=time_by_stage.get("release"),
+                selected_contact_time_seconds=time_by_stage.get("contact"),
+            )
+
         diagnostics = {
             "attempt_id": ANALYZE_SERVE_ATTEMPT_ID,
             "attempt_range": attempt_range.to_dict(),
@@ -2028,6 +2078,8 @@ def run_analyze_serve(
             "source_fingerprint": fingerprint,
             "total_score": float(solution.total_score),
         }
+        if visual_diagnostics is not None:
+            diagnostics["visual_evidence"] = visual_diagnostics
         diagnostics_text = json.dumps(diagnostics, sort_keys=True, indent=2) + "\n"
 
         # --- collision check before staging review outputs ---

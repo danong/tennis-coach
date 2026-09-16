@@ -437,6 +437,7 @@ def analyze_serve(args: argparse.Namespace) -> int:
             end_seconds=args.end_seconds,
             output_dir=args.output_dir,
             cache_path=args.cache,
+            racketvision_csv=args.racketvision_csv,
             model_path=args.model,
             dry_run=args.dry_run,
             force=args.force,
@@ -1090,6 +1091,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "reusable kinematic-track cache file (default: "
             "<exact-output>/cache/kinematic-track-v1.jsonl)"
+        ),
+    )
+    serve_parser.add_argument(
+        "--racketvision-csv",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        dest="racketvision_csv",
+        help=(
+            "optional raw or smoothed RacketVision CSV covering the same "
+            "native frame timeline; diagnostic-only"
         ),
     )
     serve_parser.add_argument(
