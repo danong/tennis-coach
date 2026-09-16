@@ -8,7 +8,7 @@ A local command-line tool for finding and reviewing tennis serve attempts in sou
 
 ### Complete
 
-**Serve cutting:** From a source containing multiple serve attempts, detect accepted attempts, remove the intermediate footage, and produce either one gap-free compilation, one clip per attempt, or both. Proven to work on 120 fps sources of my own serve filmed from the rear on a tripod.
+**Serve cutting:** From a source containing multiple serve attempts, detect accepted attempts, remove the intermediate footage, and produce either one gap-free compilation, one clip per attempt, or both. The initial development footage was 120 fps rear-tripod slow motion, but frame rate is not an input requirement: the pipeline also processes ordinary 30 fps video.
 
 **Stage-checkpoint analysis:** From a source containing one attempt, automatically estimate checkpoints for eight stages: start, release, loading, cocking, acceleration, contact, deceleration, and finish. While these stage names are taken from [An 8-Stage Model for Evaluating the Tennis Serve](https://pmc.ncbi.nlm.nih.gov/articles/PMC3445225/), the implemented definitions and heuristics differ slightly. On my manually labeled attempts, we achieved a mean absolute error (MAE) of about 70 ms, which is generally useful for review.
 

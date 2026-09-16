@@ -84,7 +84,7 @@ flowchart LR
 
 ### Frame sampling
 
-The default pose schedule is 30 Hz from source time 0 through the source duration, independent of nominal FPS (the CLI permits rates through 120 Hz in the lower-level extractor). Frames are decoded as upright RGB images and retain their canonical PTS. The sampler selects actual decoded frames; it does not invent frames when a requested schedule is denser than the source.
+The default pose schedule is 30 Hz from source time 0 through the source duration, independent of nominal FPS (the CLI permits rates through 120 Hz in the lower-level extractor). 120 fps slow motion is useful development footage, not an input requirement: ordinary 30 fps video is supported. Frames are decoded as upright RGB images and retain their canonical PTS. The sampler selects actual decoded frames; it does not invent frames when a requested schedule is denser than the source. If FFmpeg's uniform FPS filter ends one grid point before the source duration, that final filtered sample is omitted rather than duplicating an image.
 
 ### Pose extraction and cache reuse
 
@@ -185,7 +185,7 @@ Reserve at least one complete recording session before threshold changes. Run th
 ## Deferred work
 
 - Stage-checkpoint coherence between attempt detection and checkpoint analysis.
-- Uniform-time filtering and more efficient native-FPS processing for long sources containing multiple attempts.
+- Uniform-time filtering and further native-FPS processing improvements for long sources containing multiple attempts. Attempt-range decoding already seeks to the range start and reuses source PTS listings within one process.
 - Better camera/viewpoint/player tracking and multi-person handling.
 - Ball, racket, court, and ground-plane tracking.
 - Learned or corpus-trained range detection and broader stroke recognition.

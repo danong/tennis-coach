@@ -49,7 +49,7 @@ Live capture, iPhone UI, coaching advice, technique scoring, serve speed, cloud 
 
 ## 3. Source-media rules
 
-The supplied originals are 1080p HEVC MOV files containing 120 or 240 fps video according to ffprobe. The pipeline must still inspect every input rather than infer properties from its name.
+Development originals have included 1080p HEVC MOV files at 120 or 240 fps, as well as ordinary 30 fps video. The pipeline must inspect every input rather than infer properties or suitability from its name or nominal frame rate.
 
 - Source times are decimal seconds derived from integer media timestamps; never use a frame index divided by an assumed FPS as canonical time.
 - Analysis may sample frames sparsely, but export always reads the original source.

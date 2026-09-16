@@ -195,7 +195,7 @@ The latest configuration deliberately leaves these out of the current production
 2. 3D limb-length/depth consistency, angle-quality gating, and propagation of edge/quality metadata into scoring;
 3. arbitrary-time diagnostic inspection output;
 4. sparse, stage-specific event eligibility, including low-before-rise start and first meaningful post-contact-trough finish rules;
-5. configurable native-FPS processing/performance work for longer sources containing multiple attempts. The current one-attempt path already processes every native frame;
+5. broader native-FPS processing/performance work for longer sources containing multiple attempts. The current path seeks to the attempt range before decoding every native frame;
 6. ball and racket tracking, including explicit toss/release and racket-contact evidence;
 7. ground-plane or tennis-court grounding for foot contact, landing, and absolute body-height claims;
 8. a formally designed 3D--2D hybrid/observation-quality contract. At present, 2D remains overlay-only and cannot affect filtering, features, candidates, or DP;
