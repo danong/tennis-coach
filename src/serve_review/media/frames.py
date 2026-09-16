@@ -717,6 +717,8 @@ def _run_selected(
                 )
                 raw = _read_exact(proc.stdout, frame_size)
                 if len(raw) < frame_size:
+                    if position == len(selected) - 1:
+                        return
                     detail = b""
                     try:
                         assert proc.stderr is not None

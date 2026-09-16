@@ -340,6 +340,39 @@ def test_decode_args_use_stored_rgb_without_autorotate() -> None:
     assert "-ss" not in args
 
 
+def test_filtered_stream_may_omit_only_its_final_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+    from unittest.mock import Mock
+
+    monkeypatch.setattr(frames_module, "_ensure_tool", lambda *_args: None)
+
+    def _decode(payload: bytes) -> list[SampledFrame]:
+        proc = Mock()
+        proc.stdout = io.BytesIO(payload)
+        proc.stderr = io.BytesIO()
+        proc.poll.return_value = 0
+        monkeypatch.setattr(frames_module.subprocess, "Popen", lambda *_a, **_k: proc)
+        return list(
+            frames_module._run_selected(
+                Path("source.mov"),
+                1,
+                1,
+                0,
+                [0.0, 1 / 30, 2 / 30],
+                [0, 1, 2],
+                "ffmpeg",
+                None,
+                30.0,
+            )
+        )
+
+    assert len(_decode(b"\x00" * 6)) == 2
+    with pytest.raises(FrameError, match="only 1 of 3 expected"):
+        _decode(b"\x00" * 3)
+
+
 def test_sampler_upright_rgb_contract_accepted_by_pose_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
