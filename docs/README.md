@@ -6,6 +6,7 @@ See [Document status](document-status.md) for lifecycle, state, work-priority, a
 
 ## Work queue
 
+- **Next:** The [MVP multimodal scene track](proposals/multimodal-scene-track.md).
 - **Complete:** The [minimal local processing workflow](plans/minimal-local-workflow.md).
 - **Deferred:** The previous [offline roadmap](plans/offline-roadmap.md) and [M5 TCN proposal](proposals/m5-tcn-phase-detection.md).
 
