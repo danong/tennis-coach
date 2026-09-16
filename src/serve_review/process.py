@@ -241,11 +241,20 @@ def _render_index(
         lines.append(
             f"<h2>{html.escape(video.name)} \u2014 {count} serves \u2014 {status}</h2>"
         )
-        lines.append(f"<p><a href=\"{_quote('../' + video.name)}\">[Source]</a>")
+        source_link = _quote("../" + video.name)
+        lines.append(f"<p><a href=\"{source_link}\">[Source]</a>")
+        lines[-1] += "</p>"
+        lines.append(
+            f"<details><summary>Play source</summary><video controls "
+            f"preload=\"metadata\" src=\"{source_link}\"></video></details>"
+        )
         if (export_dir / "serves.mov").is_file():
             link = _quote(f"../exports/{video.stem}/serves.mov")
-            lines[-1] += f" <a href=\"{link}\">[Compilation]</a>"
-        lines[-1] += "</p>"
+            lines.append(f"<p><a href=\"{link}\">[Compilation]</a></p>")
+            lines.append(
+                f"<details><summary>Play compilation</summary><video controls "
+                f"preload=\"metadata\" src=\"{link}\"></video></details>"
+            )
         if attempts is not None:
             lines.append("<ul>")
             for attempt in attempts.attempts:
