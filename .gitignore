@@ -26,6 +26,9 @@ refs/
 NeuraSkill.html
 private-footage/
 
+# External prototype repositories
+/tools/racketvision/RacketVision/
+
 # Downloaded models, inference caches, and generated results
 models/*
 !models/.gitkeep
