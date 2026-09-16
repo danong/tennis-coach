@@ -90,7 +90,73 @@ tools/racketvision/.venv/bin/python tools/racketvision/find_impact.py \
 The heuristic favors the frame where the ball is closest to, or inside, the
 four racket hoop points, while the MediaPipe right wrist (`Pose16`) and racket
 hoop center are near their maximum upward elevation. It writes a single
-`-impact.png` frame.
+`-impact.png` frame for inspection.
+
+## Physics-fitting experiment
+
+Apply fixed median bone lengths and fit separate quadratic ball arcs after
+release and impact, without re-running inference:
+
+```bash
+tools/racketvision/.venv/bin/python tools/racketvision/fit_physics.py \
+  output/racketvision/single-serve-01-mediapipe-smoothed.csv \
+  --video refs/anchors/single-serve-01.mov
+```
+
+This writes `-physics.csv` and a full-length `-physics.mp4` overlay using the
+original, unannotated video as its base. For the current clip, the supplied
+phase hints are toss start 283, release 339, peak 382, impact 439, and bounce
+560. Use the script options to change these assumptions.
+
+## What we are testing
+
+This directory is an intentionally disposable research prototype. The goal is
+to compare simple approaches visually before deciding what, if anything, should
+be incorporated into the main project.
+
+### Stage 1: model detections
+
+`track_video.py` runs TrackNet/BallTrack for the ball and RacketPose for the
+racket. It writes the original per-frame detections. BallTrack is single-ball
+and can jump between tennis balls or lose the ball entirely.
+
+### Stage 2: cached body pose
+
+The MediaPipe overlay reads existing `kinematic-track-v1.jsonl` coordinates
+when `--mediapipe-cache` is provided. It does not run MediaPipe. Cache frames
+must match the video frame order and count.
+
+### Stage 3: baseline smoothing
+
+`smooth_tracks.py` fills internal gaps with linear interpolation, then applies
+a Savitzky-Golay filter (default window 11, polynomial order 2). It processes
+ball coordinates, pose landmarks, racket keypoints, and racket boxes. This is a
+visual baseline only: interpolation can connect unrelated BallTrack candidates.
+The original columns remain in the CSV beside `Smooth*` columns.
+
+### Stage 4: contact heuristic
+
+`find_impact.py` searches for a frame where the ball is near the four racket
+hoop points (preferably inside them), while the right wrist and racket are near
+their maximum upward image elevation. This is a heuristic, not a classifier.
+It currently identifies frame 439 for the sample clip.
+
+### Stage 5: physics-fitting experiment
+
+`fit_physics.py` is a second post-processing experiment. It:
+
+- projects pose landmarks toward fixed median bone lengths;
+- treats frames 283–338 as a ball/left-wrist coupled toss;
+- fits a robust quadratic to the pre-impact flight from release 339 to impact
+  439, with a supplied peak at 382;
+- fits a separate robust quadratic from impact 439 to bounce 560; and
+- leaves the post-bounce phase unmodeled.
+
+Only original `Visibility > 0` ball observations are used as fitting samples in
+the two flight phases. Large residuals are rejected iteratively. The generated
+`FitBall*` columns are the modeled trajectory; `Smooth*` columns remain
+available for comparison. The fitted arcs are anchored at the release hand
+and racket-contact position to avoid visible discontinuities.
 
 ## Prototype notes
 
