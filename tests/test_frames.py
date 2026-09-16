@@ -338,6 +338,9 @@ def test_decode_args_use_stored_rgb_without_autorotate() -> None:
     assert args[args.index("-pix_fmt") + 1] == "rgb24"
     assert args[args.index("-fps_mode") + 1] == "passthrough"
     assert "-ss" not in args
+    sought = build_rawvideo_decode_args("/tmp/src.mov", seek_seconds=12.5)
+    assert sought[sought.index("-ss") + 1] == "12.5"
+    assert sought.index("-ss") < sought.index("-i")
 
 
 def test_filtered_stream_may_omit_only_its_final_frame(
@@ -1137,6 +1140,7 @@ def test_native_iteration_yields_every_irregular_frame_with_exact_pts(
         assert np.array_equal(frame.image, stored_frames[index])
     # No rate-based downsampling: no fps filter stage was used.
     assert captured and "-vf" not in captured[0]
+    assert "-ss" not in captured[0]
     assert captured[0][captured[0].index("-fps_mode") + 1] == "passthrough"
     # Bounded streaming: one frame at a time.
     stream = iter_native_frames(video, 0.0, 0.3)
@@ -1144,6 +1148,44 @@ def test_native_iteration_yields_every_irregular_frame_with_exact_pts(
     assert first.time_seconds == 0.0
     rest = list(stream)
     assert len(rest) == 5
+
+
+def test_native_iteration_seeks_to_nonzero_range_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import subprocess as subprocess_module
+
+    video = _patch_native_listing(monkeypatch, tmp_path, [0.0, 0.5, 0.9])
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.stdout = io.BytesIO(b"\x00" * (8 * 8 * 3))
+            self.stderr = io.BytesIO()
+
+        def poll(self) -> int | None:
+            return 0
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    captured: list[list[str]] = []
+
+    def _popen(args: list[str], **_kwargs: object) -> _Proc:
+        captured.append(args)
+        return _Proc()
+
+    monkeypatch.setattr(subprocess_module, "Popen", _popen)
+    frames = list(frames_module.iter_native_frames(video, 0.5, 0.9))
+    assert [frame.time_seconds for frame in frames] == [0.5]
+    assert captured[0][captured[0].index("-ss") + 1] == "0.5"
+    assert captured[0].index("-ss") < captured[0].index("-i")
 
 
 def test_native_iteration_empty_range_and_cancellation(

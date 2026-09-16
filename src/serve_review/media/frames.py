@@ -104,6 +104,7 @@ SUPPORTED_ROTATIONS = (0, 90, 180, 270)
 SAMPLER_ORIENTATION_VERSION = 2
 
 _DURATION_EPS = 1e-9
+_FRAME_TIMES_CACHE: dict[tuple[Path, int, int, str], tuple[float, ...]] = {}
 
 
 class FrameError(Exception):
@@ -382,7 +383,11 @@ def build_ffprobe_frame_times_args(
 
 
 def build_rawvideo_decode_args(
-    video: Path | str, *, ffmpeg: str = "ffmpeg", rate_hz: float | None = None
+    video: Path | str,
+    *,
+    ffmpeg: str = "ffmpeg",
+    rate_hz: float | None = None,
+    seek_seconds: float | None = None,
 ) -> list[str]:
     """Build the FFmpeg argument array decoding stored frames to ``rgb24``.
 
@@ -404,8 +409,9 @@ def build_rawvideo_decode_args(
     neighbouring frame (up to half a source interval away) and breaks
     the 1 ms match tolerance on non-divisible grids. ``rate_hz`` must be
     a valid sampling rate; ``None`` keeps 1:1 passthrough for arbitrary
-    schedules. The same inputs always produce the same array; no shell
-    interpolation is used.
+    schedules. ``seek_seconds`` skips directly to a later range start.
+    The same inputs always produce the same array; no shell interpolation
+    is used.
     """
     executable = _check_executable("ffmpeg", ffmpeg)
     source = str(video)
@@ -415,6 +421,7 @@ def build_rawvideo_decode_args(
     if rate_hz is not None:
         rate = _check_rate(rate_hz)
         filt = ["-vf", f"fps={rate:g}:round=up"]
+    seek = [] if seek_seconds is None else ["-ss", f"{seek_seconds:.17g}"]
     return [
         executable,
         "-hide_banner",
@@ -423,6 +430,7 @@ def build_rawvideo_decode_args(
         "-hwaccel",
         "videotoolbox",
         "-noautorotate",
+        *seek,
         "-i",
         source,
         "-map",
@@ -468,6 +476,12 @@ def _resolve_metadata(
 
 
 def _decode_frame_times(video_path: Path, ffprobe: str) -> list[float]:
+    stat = video_path.stat()
+    key = (video_path.resolve(), stat.st_size, stat.st_mtime_ns, ffprobe)
+    cached = _FRAME_TIMES_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
+
     _ensure_tool(ffprobe)
     args = build_ffprobe_frame_times_args(video_path, ffprobe=ffprobe)
     try:
@@ -538,6 +552,7 @@ def _decode_frame_times(video_path: Path, ffprobe: str) -> list[float]:
                 f"ffprobe frame timestamps for {video_path} are not in "
                 "decode order."
             )
+    _FRAME_TIMES_CACHE[key] = tuple(times)
     return times
 
 
@@ -679,8 +694,16 @@ def _run_selected(
     filter_rate_hz: float | None = None,
 ) -> Iterator[SampledFrame]:
     _ensure_tool(ffmpeg)
+    first_wanted = selected[0]
     args = build_rawvideo_decode_args(
-        video_path, ffmpeg=ffmpeg, rate_hz=filter_rate_hz
+        video_path,
+        ffmpeg=ffmpeg,
+        rate_hz=filter_rate_hz,
+        seek_seconds=(
+            frame_times[first_wanted]
+            if filter_rate_hz is None and first_wanted > 0
+            else None
+        ),
     )
     frame_size = stored_width * stored_height * 3
     if rotation in (90, 270):
@@ -748,7 +771,7 @@ def _run_selected(
                     image=np.ascontiguousarray(upright, dtype=np.uint8),
                 )
             return
-        for index in range(len(frame_times)):
+        for index in range(first_wanted, len(frame_times)):
             _check_cancelled(
                 is_cancelled,
                 f"frame sampling was cancelled at source frame {index} "
@@ -1034,8 +1057,9 @@ def iter_native_frames(
 ) -> Iterator[SampledFrame]:
     """Yield every decoded source frame in ``[start_seconds, end_seconds)``.
 
-    Native decoding: each yielded :class:`SampledFrame` carries its exact
-    ffprobe canonical time (never a uniform assumed-FPS grid point), and
+    Native decoding seeks to the first requested frame, then each yielded
+    :class:`SampledFrame` carries its exact ffprobe canonical time (never a
+    uniform assumed-FPS grid point), and
     every decoded frame whose canonical time lies in the half-open range
     is yielded exactly once -- including variable-frame-rate sources
     where spacing is irregular. No ``fps`` filter stage is ever used, so
