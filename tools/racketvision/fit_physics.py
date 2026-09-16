@@ -124,7 +124,6 @@ def fit_ball(data, toss_start, release, impact, bounce, peak_frame):
     ball = data[["X", "Y"]].to_numpy(float)
     smooth = data[["SmoothX", "SmoothY"]].to_numpy(float)
     wrist = data[["SmoothPose15X", "SmoothPose15Y"]].to_numpy(float)
-    distance = np.linalg.norm(smooth - wrist, axis=1)
     bounce = min(bounce, len(data))
     data["BallPhase"] = "held"
     data.loc[toss_start:release - 1, "BallPhase"] = "toss (coupled)"
@@ -134,7 +133,6 @@ def fit_ball(data, toss_start, release, impact, bounce, peak_frame):
     data["FitBallX"] = np.nan
     data["FitBallY"] = np.nan
     # During the toss, use the smoothed left wrist as the coupled ball proxy.
-    toss = np.arange(toss_start, release)
     data.loc[toss_start:release - 1, "FitBallX"] = data.loc[toss_start:release - 1, "SmoothPose15X"]
     data.loc[toss_start:release - 1, "FitBallY"] = data.loc[toss_start:release - 1, "SmoothPose15Y"]
     for start, end, phase in ((release, impact, "pre-impact"), (impact, bounce, "post-impact")):
