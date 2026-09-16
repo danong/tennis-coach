@@ -103,7 +103,7 @@ def test_contact_evidence_selects_distance_and_inside_frames() -> None:
 def test_low_confidence_and_missing_visuals_do_not_fabricate_evidence() -> None:
     scene = _scene(
         (
-            _frame(1.0, ball=Point2D(0.3, 0.3, 0.2), wrist=(0.2, 0.2, 0.9)),
+            _frame(1.0, ball=Point2D(0.3, 0.3, 0.05), wrist=(0.2, 0.2, 0.9)),
             _frame(2.0, ball=None, racket=None, wrist=None),
         )
     )
