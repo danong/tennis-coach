@@ -33,8 +33,6 @@ echo "analyze-serve: uv run --locked serve-review analyze-serve VIDEO --start-se
 echo "probe: uv run --locked serve-review probe VIDEO"
 echo "export: uv run --locked serve-review export VIDEO --ranges RANGES.json"
 echo "extract-poses: uv run --locked serve-review extract-poses VIDEO"
-echo "phase-debug: uv run --locked serve-review phase-debug ..."
-echo "phase-debug-dev: uv run --locked serve-review phase-debug-dev ..."
 echo "extract-world: uv run --locked serve-review extract-world VIDEO ..."
 echo "phase-annotate: mise run phase-annotate -- ..."
 echo "phase-evaluate: mise run phase-evaluate -- ..."

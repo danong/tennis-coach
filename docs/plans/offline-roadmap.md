@@ -267,16 +267,6 @@ M3 improvement is out of scope for this M4 remediation. This remediation neither
 - **Focused check:** `uv run pytest tests/test_phase_solver.py`.
 - **Exit:** Hand-calculated paths verify global-over-local choices, ordering, ties, skip states, uncertainty propagation, contact anchoring, missing data, truncated attempts, and deterministic output.
 
-### M4.5 — Analyze command and phase report
-
-- **Objective:** Add `analyze` to load accepted attempts and cached pose/audio observations, run phase features/evidence/solver, and atomically emit `checkpoints.json`.
-- **Dependency:** M4.4 integrated.
-- **Allowed:** `src/serve_review/analysis_pipeline.py`, `src/serve_review/cli.py`, `tests/test_analysis_pipeline.py`, `tests/test_cli.py`.
-- **Forbidden:** detector threshold changes, suppression of attempts/exports, output-video overlays, dense re-inference, dependencies, private media.
-- **Behavior:** Accept explicit attempts or prior cut output; reuse compatible caches; retain cutting usability on analysis failure; emit honest full/partial/unavailable results and stage-derived metrics only when their required stages are available. Never modify `attempts.json`, clips, or compilation.
-- **Focused check:** `uv run pytest tests/test_analysis_pipeline.py tests/test_cli.py`.
-- **Exit:** Fake end-to-end tests cover full/partial/no phases, stale inputs, cancellation, malformed data, atomic output, deterministic reruns, and byte-unchanged serve exports.
-
 ### M4.6 — Phase evaluation and manual gate
 
 - **Objective:** Validate session-disjoint phase annotation manifests and report interval/keyframe quality without tuning on held-out footage.
