@@ -57,6 +57,9 @@ def write_analysis(destination: Path) -> None:
     (destination / "serve-3d-diagnostics.json").write_text("{}")
     (review / "review.json").write_text(json.dumps({"entries": []}))
     (review / "index.html").write_text("<html>review</html>")
+    cache = destination / "cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / "racketvision-track-v1.jsonl").write_text("")
 
 
 def test_discovery_is_immediate_sorted_and_rejects_duplicate_stems(tmp_path: Path) -> None:
@@ -158,6 +161,25 @@ def test_incomplete_cut_clears_source_tree_and_uses_unpadded_range(tmp_path: Pat
     assert analyze_call[1]["output_dir"] == old / "attempts" / "serve-001"
 
 
+def test_missing_racketvision_cache_reruns_analysis(tmp_path: Path) -> None:
+    video = tmp_path / "serve.mov"
+    video.write_bytes(b"video")
+    document = attempts()
+    write_cut(video, document)
+    destination = tmp_path / "metadata" / "serve" / "attempts" / "serve-001"
+    write_analysis(destination)
+    (destination / "cache" / "racketvision-track-v1.jsonl").unlink()
+    calls = []
+
+    def analyze(video_path: Path, **kwargs):
+        calls.append(kwargs)
+        write_analysis(kwargs["output_dir"])
+
+    result = process(video, probe_fn=lambda path: metadata(), cut_fn=_boom, analyze_fn=analyze)
+    assert _actions(result, "serve-001") == ["clear"]
+    assert len(calls) == 1
+
+
 def test_incomplete_attempt_preserves_complete_sibling(tmp_path: Path) -> None:
     video = tmp_path / "serve.mov"
     video.write_bytes(b"video")
@@ -185,6 +207,47 @@ def test_incomplete_attempt_preserves_complete_sibling(tmp_path: Path) -> None:
     assert not (second / "partial").exists()
     assert _actions(result, "serve-001") == ["skip"]
     assert _actions(result, "serve-002") == ["clear"]
+
+
+def test_tracker_factory_is_lazy_and_shared_across_attempts(tmp_path: Path, monkeypatch) -> None:
+    video = tmp_path / "serve.mov"
+    video.write_bytes(b"video")
+    document = attempts(count=2)
+    write_cut(video, document)
+    created = []
+
+    class FakeTracker:
+        def __init__(self, config):
+            created.append(self)
+
+    monkeypatch.setattr("serve_review.process.RacketVisionTracker", FakeTracker)
+    received = []
+
+    def analyze(video_path: Path, **kwargs):
+        received.append(kwargs["racketvision_tracker_factory"](object()))
+        write_analysis(kwargs["output_dir"])
+
+    process(video, probe_fn=lambda path: metadata(), cut_fn=_boom, analyze_fn=analyze)
+    assert len(created) == 1
+    assert received == [created[0], created[0]]
+
+
+def test_dry_run_and_complete_skip_do_not_create_tracker(tmp_path: Path, monkeypatch) -> None:
+    video = tmp_path / "serve.mov"
+    video.write_bytes(b"video")
+    document = attempts()
+    write_cut(video, document)
+    write_analysis(tmp_path / "metadata" / "serve" / "attempts" / "serve-001")
+    created = []
+
+    class FakeTracker:
+        def __init__(self, config):
+            created.append(self)
+
+    monkeypatch.setattr("serve_review.process.RacketVisionTracker", FakeTracker)
+    process(video, probe_fn=lambda path: metadata(), cut_fn=_boom, dry_run=True)
+    process(video, probe_fn=lambda path: metadata(), cut_fn=_boom, analyze_fn=_boom)
+    assert created == []
 
 
 def test_failures_keep_stage_and_do_not_stop_later_sources(tmp_path: Path) -> None:

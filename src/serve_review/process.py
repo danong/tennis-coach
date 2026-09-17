@@ -20,6 +20,7 @@ from serve_review.analyze_serve import (
 from serve_review.domain import AttemptDocument, SourceMetadata
 from serve_review.media.probe import probe_source
 from serve_review.pipeline import run_cut
+from serve_review.tracking.racketvision import RacketVisionConfig, RacketVisionTracker
 
 _VIDEO_SUFFIXES = {".mov", ".mp4"}
 
@@ -134,6 +135,8 @@ def _cut_complete(
 
 def _analysis_complete(directory: Path) -> bool:
     review_dir = directory / REVIEW_DIRNAME
+    if not (directory / "cache" / "racketvision-track-v1.jsonl").is_file():
+        return False
     checkpoints = _json_object(directory / "checkpoints.json")
     diagnostics = _json_object(directory / DIAGNOSTICS_FILENAME)
     review = _json_object(review_dir / REVIEW_JSON_FILENAME)
@@ -330,6 +333,13 @@ def process(
     actions: list[Action] = []
     failures: list[Failure] = []
     current_sources: dict[Path, SourceMetadata] = {}
+    tracker: RacketVisionTracker | None = None
+
+    def racketvision_tracker_factory(config: RacketVisionConfig) -> RacketVisionTracker:
+        nonlocal tracker
+        if tracker is None:
+            tracker = RacketVisionTracker(config)
+        return tracker
 
     def _emit(message: str) -> None:
         if progress_callback is not None:
@@ -424,6 +434,7 @@ def process(
                     end_seconds=attempt.detected_range.end_seconds,
                     output_dir=destination,
                     force=False,
+                    racketvision_tracker_factory=racketvision_tracker_factory,
                 )
             except Exception as error:
                 failures.append(
