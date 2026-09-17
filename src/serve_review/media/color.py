@@ -17,11 +17,15 @@ from serve_review.media.frames import FrameError
 
 __all__ = [
     "HLG_TO_SDR_FILTER",
+    "MODEL_INPUT_PREPROCESS_VERSION",
     "ColorMetadata",
     "build_color_probe_args",
     "parse_color_metadata",
     "probe_color_metadata",
 ]
+
+# Bump whenever model-input pixel preprocessing changes.
+MODEL_INPUT_PREPROCESS_VERSION = 2
 
 # Decode the exact tagged iPhone HLG format to linear light, apply a
 # deterministic SDR tone map, then encode BT.709 video-range pixels. The final

@@ -31,7 +31,7 @@ def test_hlg_metadata_selects_bt709_filter() -> None:
     )
 
     assert metadata.is_bt2020_hlg is True
-    assert metadata.racketvision_filter == RACKETVISION_HLG_FILTER
+    assert metadata.sdr_filter == RACKETVISION_HLG_FILTER
 
 
 @pytest.mark.parametrize(
@@ -49,7 +49,7 @@ def test_sdr_or_unspecified_metadata_does_not_transform(stream: dict) -> None:
     metadata = parse_color_metadata({"streams": [stream]})
 
     assert metadata.is_bt2020_hlg is False
-    assert metadata.racketvision_filter is None
+    assert metadata.sdr_filter is None
 
 
 def test_color_probe_command_selects_first_video_stream() -> None:

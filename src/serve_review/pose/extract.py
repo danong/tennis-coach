@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from serve_review.media import color as color_module
 from serve_review.media import frames as frames_module
 from serve_review.media import probe as probe_module
 from serve_review.pose import cache as cache_module
@@ -531,6 +532,16 @@ def extract_poses(
         raise ExtractionError(
             f"invalid source metadata for {video_path}: bad duration {duration!r}."
         )
+    color_filter = None
+    if frame_factory is None:
+        try:
+            color_filter = color_module.probe_color_metadata(
+                video_path, ffprobe=ffprobe
+            ).sdr_filter
+        except frames_module.FrameError as exc:
+            raise ExtractionError(
+                f"could not inspect source color metadata: {exc}."
+            ) from exc
     if not start < duration:
         raise ExtractionError(
             f"sampling start {start!r} lies outside the source timeline "
@@ -579,7 +590,10 @@ def extract_poses(
             identity = CacheIdentity(
                 source_fingerprint=fingerprint,
                 model_name=model_name,
-                model_version=model_version,
+                model_version=(
+                    f"{model_version}+input-"
+                    f"{color_module.MODEL_INPUT_PREPROCESS_VERSION}"
+                ),
                 sampling_rate_hz=rate,
                 sampling_start_seconds=start,
             )
@@ -721,6 +735,7 @@ def extract_poses(
                 ffmpeg=ffmpeg,
                 ffprobe=ffprobe,
                 is_cancelled=is_cancelled,
+                filter_expression=color_filter,
             )
 
         total = len(full_schedule)

@@ -43,6 +43,7 @@ from serve_review.domain import (
     SourceMetadata,
     StagePhase,
 )
+from serve_review.media.color import ColorMetadata
 from serve_review.media.frames import SampledFrame
 from serve_review.pose.schema import JOINT_INDEX, JOINT_NAMES, FrameObservation
 from serve_review.pose.world import WorldFrameObservation, WorldLandmark
@@ -161,6 +162,11 @@ def fake_racketvision(monkeypatch: pytest.MonkeyPatch) -> None:
         analyze_module,
         "RacketVisionTracker",
         _FakeRacketVisionTracker,
+    )
+    monkeypatch.setattr(
+        analyze_module.color_module,
+        "probe_color_metadata",
+        lambda video, *, ffprobe: ColorMetadata("bt709", "bt709", "bt709", "tv"),
     )
 
 

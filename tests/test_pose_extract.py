@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from serve_review.domain import SourceMetadata
+from serve_review.media.color import ColorMetadata
 from serve_review.media.frames import SampledFrame
 from serve_review.pose import cache as cache_module
 from serve_review.pose import extract as extract_module
@@ -33,6 +34,15 @@ from serve_review.pose.schema import (
     PersonBox,
     PersonObservation,
 )
+
+
+@pytest.fixture(autouse=True)
+def fake_color_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        extract_module.color_module,
+        "probe_color_metadata",
+        lambda video, *, ffprobe: ColorMetadata("bt709", "bt709", "bt709", "tv"),
+    )
 
 
 def make_metadata(duration: float = 1.0, fingerprint: str = "sha256:test-source") -> SourceMetadata:
@@ -303,7 +313,7 @@ def test_partial_resume_infers_only_remaining(tmp_path: Path) -> None:
     identity = CacheIdentity(
         source_fingerprint=meta.fingerprint,
         model_name=backend_a.model_name,
-        model_version=backend_a.model_version,
+        model_version="fake-v1+input-2",
         sampling_rate_hz=30.0,
         sampling_start_seconds=0.0,
     )
@@ -352,7 +362,7 @@ def test_overwrite_replaces_existing_cache(tmp_path: Path) -> None:
     assert result.cache_hit is False
     assert result.inferred_frames == 6
     snapshot = cache_module.load_cache(cache)
-    assert snapshot.identity.model_version == "fake-v2"
+    assert snapshot.identity.model_version == "fake-v2+input-2"
     assert snapshot.complete is True
 
 

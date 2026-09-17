@@ -1068,6 +1068,7 @@ def iter_native_frames(
     ffmpeg: str = "ffmpeg",
     ffprobe: str = "ffprobe",
     is_cancelled: Callable[[], bool] | None = None,
+    filter_expression: str | None = None,
 ) -> Iterator[SampledFrame]:
     """Yield every decoded source frame in ``[start_seconds, end_seconds)``.
 
@@ -1089,6 +1090,7 @@ def iter_native_frames(
         rotation_degrees: Optional display-rotation override.
         ffmpeg/ffprobe: Tool executables (argument arrays only).
         is_cancelled: Optional hook polled before each decoded frame.
+        filter_expression: Optional FFmpeg filter applied without changing PTS.
 
     Returns:
         A lazy iterator of :class:`SampledFrame` in strictly increasing
@@ -1133,4 +1135,5 @@ def iter_native_frames(
         ffmpeg_exe,
         is_cancelled,
         None,
+        filter_expression,
     )

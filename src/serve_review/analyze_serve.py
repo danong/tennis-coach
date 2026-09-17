@@ -107,6 +107,7 @@ from serve_review.domain import (
     StagePhase,
 )
 from serve_review.media import audio as audio_module
+from serve_review.media import color as color_module
 from serve_review.media import frames as frames_module
 from serve_review.media import probe as probe_module
 from serve_review.pose import mediapipe as mediapipe_module
@@ -1058,6 +1059,12 @@ def run_analyze_serve(
                 f"invalid source metadata for {video_path}: "
                 f"bad duration {duration!r}.",
             )
+        try:
+            color_filter = color_module.probe_color_metadata(
+                video_path, ffprobe=ffprobe_exe
+            ).sdr_filter
+        except frames_module.FrameError as exc:
+            raise _fail("probe", f"could not inspect source color metadata: {exc}.") from exc
 
         # --- requested range (default: entire source) ---
         req_start, req_end = _resolve_range(start_opt, end_opt, duration)
@@ -1161,7 +1168,9 @@ def run_analyze_serve(
                 identity = world_module.WorldCacheIdentity(
                     source_fingerprint=fingerprint,
                     model_name=model_name,
-                    model_version=model_version,
+                    model_version=(
+                        f"{model_version}+input-{color_module.MODEL_INPUT_PREPROCESS_VERSION}"
+                    ),
                 )
             except Exception as exc:
                 raise _fail(
@@ -1304,6 +1313,7 @@ def run_analyze_serve(
                                 ffmpeg=ffmpeg_exe,
                                 ffprobe=ffprobe_exe,
                                 is_cancelled=is_cancelled,
+                                filter_expression=color_filter,
                             )
                         except frames_module.FrameCancelled as exc:
                             raise AnalyzeServeCancelled(
@@ -1612,6 +1622,7 @@ def run_analyze_serve(
                         ffmpeg=ffmpeg_exe,
                         ffprobe=ffprobe_exe,
                         is_cancelled=is_cancelled,
+                        filter_expression=color_filter,
                     )
                 )
                 tracker = (
@@ -2238,6 +2249,7 @@ def run_analyze_serve(
                         ffmpeg=ffmpeg_exe,
                         ffprobe=ffprobe_exe,
                         is_cancelled=is_cancelled,
+                        filter_expression=color_filter,
                     )
                     sampled_list = list(iterator)
             except AnalyzeServeCancelled:
@@ -2320,6 +2332,7 @@ def run_analyze_serve(
                             ffmpeg=ffmpeg_exe,
                             ffprobe=ffprobe_exe,
                             is_cancelled=is_cancelled,
+                            filter_expression=color_filter,
                         )
                         manual_sampled = list(manual_iter)
                 except AnalyzeServeCancelled:

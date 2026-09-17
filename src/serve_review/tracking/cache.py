@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from serve_review.media.color import MODEL_INPUT_PREPROCESS_VERSION
 from serve_review.media.frames import SAMPLER_ORIENTATION_VERSION
 from serve_review.scene import Point2D, Racket2D
 from serve_review.tracking.racketvision import RacketVisionFrameObservation
@@ -31,7 +32,7 @@ __all__ = [
 ]
 
 RACKETVISION_CACHE_SCHEMA_VERSION = 1
-RACKETVISION_PREPROCESSING_VERSION = 1
+RACKETVISION_PREPROCESSING_VERSION = MODEL_INPUT_PREPROCESS_VERSION
 
 
 class RacketVisionCacheError(Exception):
