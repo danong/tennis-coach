@@ -18,6 +18,7 @@ from serve_review.checkpoints import kinematic_waveforms as kw
 from serve_review.checkpoints.kinematic_waveforms import KinematicWaveformsConfig
 from serve_review.pose.schema import BodyKeypoint, FrameObservation, PersonBox, PersonObservation
 from serve_review.pose.world import WorldFrameObservation, WorldLandmark
+from serve_review.scene import Point2D, Racket2D, SceneFrame, SceneTrack
 from serve_review.checkpoints import world_filter as wf
 
 DT = 1.0 / 30.0
@@ -83,6 +84,54 @@ def _make_track(
 
 def _times(count: int, dt: float = DT) -> list[float]:
     return [i * dt for i in range(count)]
+
+
+def test_scene_features_are_aligned_and_do_not_change_candidate_scores() -> None:
+    times = [0.0, 0.1]
+    keypoints = [BodyKeypoint(x=0.2, y=0.4, visibility=0.9) for _ in range(33)]
+    body = FrameObservation(
+        time_seconds=0.0,
+        timestamp_ms=0,
+        persons=(
+            PersonObservation(
+                box=PersonBox(0.1, 0.1, 0.9, 0.9),
+                keypoints=tuple(keypoints),
+                score=0.9,
+            ),
+        ),
+    )
+    racket = Racket2D(
+        (0.2, 0.2, 0.8, 0.8),
+        0.9,
+        {
+            "Top": Point2D(0.5, 0.3, 0.9),
+            "Right": Point2D(0.6, 0.5, 0.9),
+            "Bottom": Point2D(0.5, 0.7, 0.9),
+            "Left": Point2D(0.4, 0.5, 0.9),
+            "Handle": Point2D(0.5, 0.1, 0.9),
+        },
+    )
+    scene = SceneTrack(
+        "sha256:test",
+        (
+            SceneFrame(0.0, body, None, Point2D(0.3, 0.4, 0.9), racket),
+            SceneFrame(0.1, None, None),
+        ),
+        frozenset({"body_2d", "ball_2d", "racket_2d"}),
+    )
+
+    features = ca.build_scene_feature_series(scene, times)
+
+    assert features.left_wrist_ball_distance[0] == pytest.approx(0.1)
+    assert features.racket_hoop_ball_distance[0] == pytest.approx(math.sqrt(0.05))
+    assert features.racket_handle_hoop_vertical_orientation[0] == pytest.approx(1.0)
+    assert features.left_wrist_ball_distance[1] is None
+    assert features.racket_hoop_ball_distance[1] is None
+    assert features.racket_handle_hoop_vertical_orientation[1] is None
+    track = _make_track(times)
+    assert ca.build_composite_anchor_set(
+        track, scene_track=scene
+    ) == ca.build_composite_anchor_set(track)
 
 
 # --- config -------------------------------------------------------------------

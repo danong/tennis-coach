@@ -1758,7 +1758,7 @@ def run_analyze_serve(
                 ) from exc
         try:
             anchor_set = composite_module.build_composite_anchor_set(
-                track, cfg_composite
+                track, cfg_composite, scene_track=scene_track
             )
         except Exception as exc:
             raise _fail(

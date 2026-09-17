@@ -109,6 +109,8 @@ from serve_review.checkpoints.kinematic_waveforms import (
     CHANNEL_INDEX,
     KinematicWaveformTrack,
 )
+from serve_review.pose.schema import JOINT_INDEX
+from serve_review.scene import SceneFrame, SceneTrack
 
 __all__ = [
     "COMPOSITE_ANCHORS_SCHEMA_VERSION",
@@ -125,6 +127,8 @@ __all__ = [
     "CompositeAnchorConfig",
     "CompositeAnchorCandidate",
     "CompositeAnchorSet",
+    "SceneFeatureSeries",
+    "build_scene_feature_series",
     "quantile_normalize_series",
     "compute_composite_anchor_scores",
     "build_composite_anchor_set",
@@ -259,6 +263,24 @@ QUANTILE_LOW = 0.05
 QUANTILE_HIGH = 0.95
 #: Minimum quantile span carrying discriminative evidence.
 QUANTILE_MIN_SPAN = 1e-9
+
+
+_LEFT_WRIST_INDEX = JOINT_INDEX["left_wrist"]
+_HOOP_NAMES = ("Top", "Right", "Bottom", "Left")
+
+
+@dataclass(frozen=True, slots=True)
+class SceneFeatureSeries:
+    """Unweighted image-space features aligned to one waveform PTS grid.
+
+    These raw values are intentionally not candidate cues yet. They establish
+    the strict multimodal feature boundary before any stage weights change.
+    """
+
+    time_seconds: tuple[float, ...]
+    racket_handle_hoop_vertical_orientation: tuple[float | None, ...]
+    left_wrist_ball_distance: tuple[float | None, ...]
+    racket_hoop_ball_distance: tuple[float | None, ...]
 
 
 class CompositeAnchorsError(ValueError):
@@ -580,6 +602,100 @@ def quantile_normalize_series(
 
 
 # --- Raw cue extraction (availability-qualified, local) ----------------------
+
+
+def _left_wrist_xy(frame: SceneFrame) -> tuple[float, float] | None:
+    body = frame.body_2d
+    if body is None or not body.persons:
+        return None
+    point = body.persons[0].keypoints[_LEFT_WRIST_INDEX]
+    if point is None:
+        return None
+    return (float(point.x), float(point.y))
+
+
+def _hoop_center_xy(frame: SceneFrame) -> tuple[float, float] | None:
+    racket = frame.racket_2d
+    if racket is None:
+        return None
+    points = [racket.keypoints.get(name) for name in _HOOP_NAMES]
+    available = [point for point in points if point is not None]
+    if not available:
+        return None
+    return (
+        sum(point.x for point in available) / len(available),
+        sum(point.y for point in available) / len(available),
+    )
+
+
+def build_scene_feature_series(
+    scene_track: SceneTrack,
+    expected_times: Sequence[float],
+) -> SceneFeatureSeries:
+    """Derive unweighted ball/racket features on an exact waveform PTS grid.
+
+    ``racket_handle_hoop_vertical_orientation`` is the signed image-space
+    vertical component of the unit vector from handle to hoop center. With
+    upright image coordinates, ``1`` means the handle is directly above the
+    hoop, ``0`` is horizontal, and ``-1`` means it is below. Distances are
+    normalized-image Euclidean distances. Missing source observations stay
+    ``None`` independently per feature.
+    """
+    if not isinstance(scene_track, SceneTrack):
+        raise CompositeAnchorsError(
+            "build_scene_feature_series: 'scene_track' must be a SceneTrack, "
+            f"got {type(scene_track).__name__}."
+        )
+    times = tuple(float(time) for time in expected_times)
+    if len(scene_track.frames) != len(times):
+        raise CompositeAnchorsError(
+            "build_scene_feature_series: SceneTrack frame count must match "
+            "the waveform PTS grid."
+        )
+    if any(frame.time_seconds != time for frame, time in zip(scene_track.frames, times)):
+        raise CompositeAnchorsError(
+            "build_scene_feature_series: SceneTrack PTS must exactly match "
+            "the waveform PTS grid."
+        )
+
+    orientation: list[float | None] = []
+    hand_ball: list[float | None] = []
+    racket_ball: list[float | None] = []
+    for frame in scene_track.frames:
+        wrist = _left_wrist_xy(frame)
+        hoop = _hoop_center_xy(frame)
+        ball = frame.ball_2d
+        handle = (
+            frame.racket_2d.keypoints.get("Handle")
+            if frame.racket_2d is not None
+            else None
+        )
+
+        if handle is None or hoop is None:
+            orientation.append(None)
+        else:
+            dx = hoop[0] - handle.x
+            dy = hoop[1] - handle.y
+            length = math.hypot(dx, dy)
+            orientation.append(dy / length if length > 0.0 else None)
+
+        hand_ball.append(
+            math.hypot(ball.x - wrist[0], ball.y - wrist[1])
+            if ball is not None and wrist is not None
+            else None
+        )
+        racket_ball.append(
+            math.hypot(ball.x - hoop[0], ball.y - hoop[1])
+            if ball is not None and hoop is not None
+            else None
+        )
+
+    return SceneFeatureSeries(
+        time_seconds=times,
+        racket_handle_hoop_vertical_orientation=tuple(orientation),
+        left_wrist_ball_distance=tuple(hand_ball),
+        racket_hoop_ball_distance=tuple(racket_ball),
+    )
 
 
 def _series(track: KinematicWaveformTrack, channel: str) -> tuple[float | None, ...]:
@@ -1365,6 +1481,8 @@ def compute_composite_anchor_scores(
 def build_composite_anchor_set(
     track: KinematicWaveformTrack,
     config: CompositeAnchorConfig | None = None,
+    *,
+    scene_track: SceneTrack | None = None,
 ) -> CompositeAnchorSet:
     """Build the dense six-anchor candidate set for one waveform track.
 
@@ -1379,6 +1497,10 @@ def build_composite_anchor_set(
             f"got {type(config).__name__}."
         )
     _validate_track("build_composite_anchor_set", track)
+    if scene_track is not None:
+        build_scene_feature_series(
+            scene_track, tuple(sample.time_seconds for sample in track.samples)
+        )
     raw = _extract_raw_cues(track)
     normalized: dict[str, dict[str, tuple[float | None, ...]]] = {}
     for stage in COMPOSITE_ANCHOR_STAGES:
@@ -1454,6 +1576,8 @@ def build_composite_anchor_set(
 def generate_composite_anchor_candidates(
     track: KinematicWaveformTrack,
     config: CompositeAnchorConfig | None = None,
+    *,
+    scene_track: SceneTrack | None = None,
 ) -> CompositeAnchorSet:
     """Alias for :func:`build_composite_anchor_set` (dense, no selection)."""
-    return build_composite_anchor_set(track, config)
+    return build_composite_anchor_set(track, config, scene_track=scene_track)
