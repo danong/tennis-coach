@@ -51,8 +51,8 @@ Behavior:
   (:class:`PhaseDocument`), a compact deterministic 3D diagnostic
   JSON, and a review directory with source-frame JPEGs plus a
   self-contained ``index.html`` rendered directly from the selected
-  timestamps (label/time caption burned in; skeleton overlay is not
-  required and never substitutes for evidence).
+  timestamps. Review JPEGs are clean source frames; a skeleton overlay
+  is not required and never substitutes for evidence.
 - Atomic output/cache behavior: ``checkpoints.json`` and the
   diagnostic JSON are written to temporary siblings and atomically
   renamed; the review directory is staged in a temporary sibling and
@@ -109,7 +109,6 @@ from serve_review.domain import (
 from serve_review.media import audio as audio_module
 from serve_review.media import frames as frames_module
 from serve_review.media import probe as probe_module
-from serve_review.phase_review import render_caption
 from serve_review.pose import mediapipe as mediapipe_module
 from serve_review.pose import world as world_module
 from serve_review.pose.world import WorldFrameObservation
@@ -491,38 +490,6 @@ def _encode_jpeg_ffmpeg(image: np.ndarray, dest: Path, ffmpeg: str) -> None:
         ) from exc
 
 
-def _build_caption_lines(
-    attempt_id: str,
-    stage_key: str,
-    *,
-    requested_time: float,
-    actual_time: float,
-) -> list[str]:
-    """Build the label/time caption burned into each review JPEG."""
-    lines = [
-        f"{attempt_id} {stage_key} t={requested_time:.3f}s "
-        f"(frame t={actual_time:.3f}s)",
-    ]
-    if stage_key == "contact":
-        lines.append("contact estimate; not visual observation")
-    return lines
-
-
-def _build_anchor2_caption_lines(
-    attempt_id: str,
-    stage_key: str,
-    *,
-    requested_time: float,
-    actual_time: float,
-) -> list[str]:
-    """Build the labeled manual caption burned into each anchor2 JPEG."""
-    return [
-        f"{attempt_id} manual-{stage_key} t={requested_time:.3f}s "
-        f"(frame t={actual_time:.3f}s)",
-        "manual anchor2 comparison",
-    ]
-
-
 def _load_anchor2_manual() -> dict[str, float | None]:
     """Load the fixed minimal anchor2 manual PTS mapping.
 
@@ -659,8 +626,8 @@ def _build_index_html(
         f"<title>Serve review {attempt_id}</title></head><body>\n"
         f"<h1>Serve review {attempt_id} ({fingerprint})</h1>\n"
         f"<p>Serve range (source seconds): {range_text}. Timestamps are "
-        "canonical source times; every image carries its label and source "
-        "time burned into the frame.</p>\n"
+        "canonical source times; labels and frame times are recorded in "
+        "this index and review.json.</p>\n"
         "<table border=\"1\">\n"
         f"{header}"
         f"{body}\n</table>\n</body></html>\n"
@@ -2235,7 +2202,7 @@ def run_analyze_serve(
                     f"could not replace review directory {review_dir}: {exc}. ",
                 ) from exc
 
-        # --- source-frame review (label/time caption; no overlay) ---
+        # --- clean source-frame review (no caption or overlay) ---
         _progress("analyze-serve: rendering review frames")
         render_times = sorted(
             {
@@ -2470,30 +2437,14 @@ def run_analyze_serve(
                                 )
                             manual_actual = manual_actual_by_requested[manual_f]
                             manual_image = manual_frames_by_time[manual_f]
-                            manual_caption = _build_anchor2_caption_lines(
-                                ANALYZE_SERVE_ATTEMPT_ID,
-                                stage,
-                                requested_time=manual_f,
-                                actual_time=manual_actual,
-                            )
-                            try:
-                                manual_final = render_caption(
-                                    manual_image, manual_caption
-                                )
-                            except Exception as exc:
-                                raise _fail(
-                                    "review",
-                                    f"could not render manual caption for "
-                                    f"{stage}: {exc}.",
-                                ) from exc
                             manual_rel = f"manual-{_safe_component(stage)}.jpg"
                             manual_dest = staging / manual_rel
                             try:
                                 if encode_jpeg_fn is not None:
-                                    encode_jpeg_fn(manual_final, manual_dest)
+                                    encode_jpeg_fn(manual_image, manual_dest)
                                 else:
                                     _encode_jpeg_ffmpeg(
-                                        manual_final, manual_dest, ffmpeg_exe
+                                        manual_image, manual_dest, ffmpeg_exe
                                     )
                             except AnalyzeServeCancelled:
                                 raise
@@ -2520,26 +2471,13 @@ def run_analyze_serve(
                     )
                 actual = actual_by_requested[requested_f]
                 image = frames_by_time[requested_f]
-                caption = _build_caption_lines(
-                    ANALYZE_SERVE_ATTEMPT_ID,
-                    stage,
-                    requested_time=requested_f,
-                    actual_time=actual,
-                )
-                try:
-                    final = render_caption(image, caption)
-                except Exception as exc:
-                    raise _fail(
-                        "review",
-                        f"could not render caption for {stage}: {exc}.",
-                    ) from exc
                 rel = f"{_safe_component(stage)}.jpg"
                 dest = staging / rel
                 try:
                     if encode_jpeg_fn is not None:
-                        encode_jpeg_fn(final, dest)
+                        encode_jpeg_fn(image, dest)
                     else:
-                        _encode_jpeg_ffmpeg(final, dest, ffmpeg_exe)
+                        _encode_jpeg_ffmpeg(image, dest, ffmpeg_exe)
                 except AnalyzeServeCancelled:
                     raise
                 except AnalyzeServeError:
@@ -2575,30 +2513,14 @@ def run_analyze_serve(
                             )
                         manual_actual = manual_actual_by_requested[manual_f]
                         manual_image = manual_frames_by_time[manual_f]
-                        manual_caption = _build_anchor2_caption_lines(
-                            ANALYZE_SERVE_ATTEMPT_ID,
-                            stage,
-                            requested_time=manual_f,
-                            actual_time=manual_actual,
-                        )
-                        try:
-                            manual_final = render_caption(
-                                manual_image, manual_caption
-                            )
-                        except Exception as exc:
-                            raise _fail(
-                                "review",
-                                f"could not render manual caption for "
-                                f"{stage}: {exc}.",
-                            ) from exc
                         manual_rel = f"manual-{_safe_component(stage)}.jpg"
                         manual_dest = staging / manual_rel
                         try:
                             if encode_jpeg_fn is not None:
-                                encode_jpeg_fn(manual_final, manual_dest)
+                                encode_jpeg_fn(manual_image, manual_dest)
                             else:
                                 _encode_jpeg_ffmpeg(
-                                    manual_final, manual_dest, ffmpeg_exe
+                                    manual_image, manual_dest, ffmpeg_exe
                                 )
                         except AnalyzeServeCancelled:
                             raise

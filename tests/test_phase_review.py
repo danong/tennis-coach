@@ -32,11 +32,9 @@ from serve_review.phase_review import (
     REVIEW_JSON_FILENAME,
     ReviewCancelled,
     ReviewError,
-    build_caption_lines,
     default_checkpoints_path_for,
     default_review_dir_for,
     find_nearest_pose,
-    render_caption,
     run_review,
 )
 from serve_review.pose import cache as cache_module
@@ -189,7 +187,6 @@ def write_cache(path: Path, identity: CacheIdentity, moments: list[float]) -> Pa
 def fake_sampler_factory(images: dict[float, np.ndarray]):
     def _sample(video_path: Path, requested: float, metadata: SourceMetadata):
         # Deterministic gray image; actual time equals requested.
-        # Large enough that the caption banner covers only the top.
         img = np.full((240, 320, 3), 128, dtype=np.uint8)
         return SimpleNamespace(time_seconds=float(requested), image=img)
     return _sample
@@ -224,54 +221,7 @@ def run_ok(tmp_path: Path, metadata: SourceMetadata, document: PhaseDocument, mo
     return video, out_base, result, store
 
 
-# --- caption / support unit tests -------------------------------------------
-
-
-def test_caption_lines_label_all_required_fields() -> None:
-    lines = build_caption_lines(
-        "serve-001", "contact",
-        requested_time=1.234, actual_time=1.240,
-        availability="available", provenance="body_pose_audio",
-        confidence=0.87, support_time=1.233, support_delta=-0.001,
-        anomalies=("wobble",),
-    )
-    blob = "\n".join(lines)
-    assert "serve-001" in blob
-    assert "contact" in blob
-    assert "1.234" in blob
-    assert "1.240" in blob
-    assert "available" in blob
-    assert "body_pose_audio" in blob
-    assert "0.87" in blob
-    assert "wobble" in blob
-    # Never claim exact visual observation.
-    assert "visual" in blob.lower() or "estimate" in blob.lower()
-    assert "observ" not in blob.lower().replace("observation", "X").replace("visual observation", "X")
-
-
-def test_contact_caption_carries_estimate_disclaimer() -> None:
-    lines = build_caption_lines(
-        "serve-002", "contact",
-        requested_time=2.0, actual_time=2.0,
-        availability="partial", provenance="audio_transient",
-        confidence=0.5, support_time=2.0, support_delta=0.0,
-        anomalies=(),
-    )
-    assert any("not visual observation" in line for line in lines)
-
-
-def test_render_caption_burns_banner_deterministically() -> None:
-    image = np.full((48, 64, 3), 128, dtype=np.uint8)
-    first = render_caption(image, ["SERVE-001 CONTACT T=1.000S"])
-    second = render_caption(image, ["SERVE-001 CONTACT T=1.000S"])
-    assert np.array_equal(first, second)
-    # Banner at top differs from source.
-    assert not np.array_equal(first, image)
-    assert (first[0, 0] == np.array([0, 0, 0], dtype=np.uint8)).all()
-    # Glyph ink present (white pixels in banner).
-    assert (first[: first.shape[0]] == 255).any()
-    # Input never mutated.
-    assert (image == 128).all()
+# --- support unit tests ------------------------------------------------------
 
 
 def test_find_nearest_pose_exact_and_signed_delta() -> None:
@@ -292,7 +242,7 @@ def test_default_paths() -> None:
 # --- happy path --------------------------------------------------------------
 
 
-def test_rendered_images_carry_skeleton_and_caption(tmp_path: Path) -> None:
+def test_rendered_images_carry_skeleton(tmp_path: Path) -> None:
     metadata = make_metadata()
     phase = make_attempt_phase("serve-001", 1.0)
     document = make_document([phase], metadata)
@@ -306,10 +256,8 @@ def test_rendered_images_carry_skeleton_and_caption(tmp_path: Path) -> None:
     # One image per phase under attempt-stable directories with safe names.
     for key in STAGE_ORDER:
         assert (result.review_dir / "serve-001" / f"{key}.jpg").is_file()
-    # Captured arrays contain skeleton line color and caption banner.
-    # (Encoder captures staging paths; match by filename after rename.)
+    # Encoder captures staging paths; match by filename after rename.
     sample = next(v for k, v in store.items() if k.endswith("serve-001/start.jpg") or k.endswith("start.jpg"))
-    assert (sample[0, 0] == np.array([0, 0, 0], dtype=np.uint8)).all()  # caption banner
     assert ((sample == np.array(overlay_module.LINE_COLOR, dtype=np.uint8)).all(axis=2)).any()
     # Manifest ordering deterministic: stage order.
     payload = json.loads((result.review_dir / REVIEW_JSON_FILENAME).read_text(encoding="utf-8"))

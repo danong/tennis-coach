@@ -71,7 +71,7 @@ Current development commands:
 | `uv run --locked serve-review cut <video> --padding 1 --output <compilation\|clips\|both> [--dry-run] [--force]` | Detect accepted attempts and export a compilation, clips, or both. |
 | `mise run analyze -- <video>` | Legacy attempt-based analysis; requires prior `cut` output or `--attempts`. |
 | `uv run --locked serve-review analyze-serve <video> [--start-seconds S --end-seconds E] [--dry-run] [--force]` | Current one-attempt native-PTS 3D stage-checkpoint analysis; writes checkpoints, diagnostics, a review page, and a reusable world cache. |
-| `mise run review-phases -- <video>` | Render labeled pose-overlay keyframes for manual checkpoint review. |
+| `mise run review-phases -- <video>` | Render clean pose-overlay keyframes with labels in the review index. |
 | `mise run phase-annotate -- <video> --attempts <attempts.json> --labels <labels.json> --output <annotations.json>` | Convert zero-based decoded-frame labels to exact-PTS private annotations. |
 | `mise run phase-evaluate -- --checkpoints <checkpoints.json> --annotations <annotations.json> --output <report.json>` | Write the deterministic local checkpoint-evaluation report. |
 | `uv run python tools/export_segments.py <video> <segments.json> --output-dir <dir>` | Export manually selected corpus segments. |

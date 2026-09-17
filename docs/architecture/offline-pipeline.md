@@ -86,8 +86,8 @@ output/<source-stem>/
   attempts.json
   checkpoints.json             # only after checkpoint analysis
   serve-3d-diagnostics.json    # only after analyze-serve (3D audit trail)
-  review-phases/               # labeled JPEGs, HTML index, review manifest
-  review-serve-3d/             # only after analyze-serve (selected/manual JPEGs + index.html)
+  review-phases/               # clean pose-overlay JPEGs, HTML index, review manifest
+  review-serve-3d/             # clean selected/manual JPEGs + index (analyze-serve only)
   serves.mov                   # compilation/both
   clips/serve-001.mov          # clips/both
   cache/pose-v1.jsonl          # local derived cache

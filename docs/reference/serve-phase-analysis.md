@@ -177,7 +177,7 @@ These IDs distinguish current outputs from earlier coordinate, cue, and configur
 
 ## Review and interpretation
 
-`review-serve-3d/index.html` is the primary review page. It renders checkpoint keyframes and, for the narrow anchor-2 comparison mode, manual keyframes and signed selected-minus-manual deltas. `serve-3d-diagnostics.json` records selected cue values, total scores, PTS, candidate counts, and identities.
+`review-serve-3d/index.html` is the primary review page. It renders clean source-frame JPEGs for checkpoint keyframes and, for the narrow anchor-2 comparison mode, manual keyframes and signed selected-minus-manual deltas. Labels and timestamps live in `index.html` and `review.json`; they are not burned into the JPEG pixels. `serve-3d-diagnostics.json` records selected cue values, total scores, PTS, candidate counts, and identities.
 
 A high score means that the current waveform heuristic prefers the frame. It is useful alongside source playback, the review page, and diagnostics rather than as an authoritative biomechanical measurement. In particular:
 

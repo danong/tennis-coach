@@ -2,14 +2,13 @@
 
 Samples the original upright source at each available/partial stage's
 selected keyframe time, pairs it with the exact/nearest cached pose
-observation within an explicit bounded tolerance, renders the existing
-skeleton overlay with pure NumPy primitives, and burns a deterministic
-readable raster caption directly into a JPEG. Unavailable (or
+observation within an explicit bounded tolerance, and renders the existing
+skeleton overlay over an otherwise clean source-frame JPEG. Unavailable (or
 unsupported) phases produce no fabricated image but appear in the
 deterministic review index.
 
-Pure-domain helpers (caption layout, manifest building) are separated
-from file I/O, FFmpeg subprocesses, and pose-cache access. No pose is
+Pure-domain helpers are separated from file I/O, FFmpeg subprocesses,
+and pose-cache access. No pose is
 ever inferred here: only complete, identity-compatible caches are
 reused. Contact is labelled with provenance and source time explicitly
 and is never claimed as exact visual observation.
@@ -53,8 +52,6 @@ __all__ = [
     "default_checkpoints_path_for",
     "default_review_dir_for",
     "find_nearest_pose",
-    "build_caption_lines",
-    "render_caption",
     "run_review",
 ]
 
@@ -139,172 +136,6 @@ def _safe_component(name: str) -> str:
     cleaned = "".join(ch if (ch.isalnum() or ch in ("-", "_")) else "_" for ch in name)
     cleaned = cleaned.strip("_")
     return cleaned or "item"
-
-
-# --- Minimal bundled bitmap caption renderer (pure NumPy, no PIL) ---------
-
-# 3x5 font: each glyph is 5 rows of 3 cells ('#' ink, '.' paper).
-_FONT_3X5: dict[str, tuple[str, ...]] = {
-    "A": (".#.", "#.#", "###", "#.#", "#.#"),
-    "B": ("##.", "#.#", "##.", "#.#", "##."),
-    "C": (".##", "#..", "#..", "#..", ".##"),
-    "D": ("##.", "#.#", "#.#", "#.#", "##."),
-    "E": ("###", "#..", "##.", "#..", "###"),
-    "F": ("###", "#..", "##.", "#..", "#.."),
-    "G": (".##", "#..", "#.#", "#.#", ".##"),
-    "H": ("#.#", "#.#", "###", "#.#", "#.#"),
-    "I": ("###", ".#.", ".#.", ".#.", "###"),
-    "J": ("..#", "..#", "..#", "#.#", ".#."),
-    "K": ("#.#", "#.#", "##.", "#.#", "#.#"),
-    "L": ("#..", "#..", "#..", "#..", "###"),
-    "M": ("#.#", "###", "###", "#.#", "#.#"),
-    "N": ("#.#", "###", "###", "###", "#.#"),
-    "O": (".#.", "#.#", "#.#", "#.#", ".#."),
-    "P": ("##.", "#.#", "##.", "#..", "#.."),
-    "Q": (".#.", "#.#", "#.#", "##.", ".##"),
-    "R": ("##.", "#.#", "##.", "#.#", "#.#"),
-    "S": (".##", "#..", ".#.", "..#", "##."),
-    "T": ("###", ".#.", ".#.", ".#.", ".#."),
-    "U": ("#.#", "#.#", "#.#", "#.#", "###"),
-    "V": ("#.#", "#.#", "#.#", "#.#", ".#."),
-    "W": ("#.#", "#.#", "###", "###", "#.#"),
-    "X": ("#.#", "#.#", ".#.", "#.#", "#.#"),
-    "Y": ("#.#", "#.#", ".#.", ".#.", ".#."),
-    "Z": ("###", "..#", ".#.", "#..", "###"),
-    "0": ("###", "#.#", "#.#", "#.#", "###"),
-    "1": (".#.", "##.", ".#.", ".#.", "###"),
-    "2": ("###", "..#", "###", "#..", "###"),
-    "3": ("###", "..#", ".##", "..#", "###"),
-    "4": ("#.#", "#.#", "###", "..#", "..#"),
-    "5": ("###", "#..", "###", "..#", "###"),
-    "6": ("###", "#..", "###", "#.#", "###"),
-    "7": ("###", "..#", ".#.", ".#.", ".#."),
-    "8": ("###", "#.#", "###", "#.#", "###"),
-    "9": ("###", "#.#", "###", "..#", "###"),
-    " ": ("...", "...", "...", "...", "..."),
-    "-": ("...", "...", "###", "...", "..."),
-    ".": ("...", "...", "...", "...", ".#."),
-    ":": ("...", ".#.", "...", ".#.", "..."),
-    "/": ("..#", "..#", ".#.", "#..", "#.."),
-    "_": ("...", "...", "...", "...", "###"),
-    "(": (".##", "#..", "#..", "#..", ".##"),
-    ")": ("##.", "..#", "..#", "..#", "##."),
-    "+": ("...", ".#.", "###", ".#.", "..."),
-    "%": ("#.#", "..#", ".#.", "#..", "#.#"),
-    "=": ("...", "###", "...", "###", "..."),
-    ",": ("...", "...", "...", ".#.", "#.."),
-    "?": ("###", "..#", ".#.", "...", ".#."),
-    "|": (".#.", ".#.", ".#.", ".#.", ".#."),
-    ">": ("#..", ".#.", "..#", ".#.", "#.."),
-    "<": ("..#", ".#.", "#..", ".#.", "..#"),
-}
-
-_CAPTION_FG: tuple[int, int, int] = (255, 255, 255)
-_CAPTION_BG: tuple[int, int, int] = (0, 0, 0)
-
-
-def _glyph_for(ch: str) -> tuple[str, ...]:
-    upper = ch.upper()
-    return _FONT_3X5.get(upper, _FONT_3X5["?"])
-
-
-def _wrap_line(line: str, max_chars: int) -> list[str]:
-    text = str(line).upper()
-    if max_chars <= 0:
-        return [text]
-    chunks = [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
-    return chunks or [""]
-
-
-def build_caption_lines(
-    attempt_id: str,
-    stage_key: str,
-    *,
-    requested_time: float,
-    actual_time: float,
-    availability: str,
-    provenance: str,
-    confidence: float,
-    support_time: float,
-    support_delta: float,
-    anomalies: Sequence[str] = (),
-) -> list[str]:
-    """Build deterministic caption lines burned into the JPEG.
-
-    Every rendered image labels attempt ID, canonical stage, keyframe
-    source time (requested and actual sampled frame time),
-    confidence/provenance, availability, cache support time/delta, and
-    nonblocking anomalies. Contact stages carry an explicit estimate
-    disclaimer and never claim exact visual observation.
-    """
-    lines = [
-        f"{attempt_id} {stage_key} t={requested_time:.3f}s (frame t={actual_time:.3f}s)",
-        f"avail={availability} prov={provenance} conf={confidence:.2f}",
-        f"pose t={support_time:.3f}s d={support_delta:+.3f}s",
-        f"anomalies: {','.join(anomalies) if anomalies else 'none'}",
-    ]
-    if stage_key == "contact":
-        lines.append("contact estimate; not visual observation")
-    return lines
-
-
-def render_caption(
-    image: np.ndarray,
-    lines: Sequence[str],
-    *,
-    scale: int = 2,
-) -> np.ndarray:
-    """Return a copy of ``image`` with a top caption banner burned in.
-
-    Pure NumPy rasterization using the bundled 3x5 bitmap font. The
-    banner is opaque black with white glyphs; long lines wrap to fit
-    the frame width so tiny frames still carry the full label.
-    Deterministic: same inputs always produce identical bytes.
-    """
-    if not isinstance(image, np.ndarray):
-        raise ReviewError("review", "invalid frame image for caption rendering.")
-    if image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
-        raise ReviewError("review", "invalid frame image for caption rendering.")
-    if not isinstance(scale, int) or scale < 1 or scale > 4:
-        raise ReviewError("review", f"invalid caption scale {scale!r}.")
-    height, width, _ = image.shape
-    if height <= 0 or width <= 0:
-        raise ReviewError("review", "invalid frame dimensions for caption.")
-    char_w = 3 * scale + 1
-    max_chars = max(8, width // char_w)
-    physical: list[str] = []
-    for line in lines:
-        physical.extend(_wrap_line(str(line), max_chars))
-    line_h = 5 * scale + 2
-    pad = 2 * scale
-    banner_h = min(height, pad * 2 + line_h * len(physical))
-    # Number of physical rows that fit in the (possibly clipped) banner.
-    rows_fit = max(0, (banner_h - pad * 2 + 2) // line_h) if banner_h > pad * 2 else 0
-    rows_fit = min(rows_fit, len(physical))
-    canvas = np.ascontiguousarray(image.copy(), dtype=np.uint8)
-    canvas[0:banner_h, 0:width] = np.array(_CAPTION_BG, dtype=np.uint8)
-    fg = np.array(_CAPTION_FG, dtype=np.uint8)
-    for row in range(rows_fit):
-        text = physical[row]
-        y0 = pad + row * line_h
-        for col, ch in enumerate(text):
-            glyph = _glyph_for(ch)
-            x0 = pad + col * char_w
-            if x0 >= width:
-                break
-            for gr in range(5):
-                for gc in range(3):
-                    if glyph[gr][gc] != "#":
-                        continue
-                    ys = y0 + gr * scale
-                    xs = x0 + gc * scale
-                    ye = min(banner_h, ys + scale)
-                    xe = min(width, xs + scale)
-                    ys_c = max(0, ys)
-                    xs_c = max(0, xs)
-                    if ye > ys_c and xe > xs_c:
-                        canvas[ys_c:ye, xs_c:xe] = fg
-    return canvas
 
 
 def find_nearest_pose(
@@ -748,22 +579,6 @@ def run_review(
                     annotated = overlay_module.render_frame(frame_image, support)
                 except overlay_module.OverlayError as exc:
                     raise _fail("review", f"could not render skeleton overlay for {attempt_id} {stage_key}: {exc}.") from exc
-                caption = build_caption_lines(
-                    attempt_id,
-                    stage_key,
-                    requested_time=float(keyframe),
-                    actual_time=actual_time,
-                    availability=availability,
-                    provenance=provenance,
-                    confidence=confidence,
-                    support_time=float(support.time_seconds),
-                    support_delta=delta,
-                    anomalies=attempt_anomalies,
-                )
-                try:
-                    final = render_caption(annotated, caption)
-                except ReviewError as exc:
-                    raise _fail("review", f"could not render caption for {attempt_id} {stage_key}: {exc.message}.") from exc
                 rel = f"{safe_attempt}/{_safe_component(stage_key)}.jpg"
                 dest = staging / rel
                 try:
@@ -772,9 +587,9 @@ def run_review(
                     raise _fail("review", f"could not create review subdirectory {dest.parent}: {exc}.") from exc
                 try:
                     if encode_jpeg_fn is not None:
-                        encode_jpeg_fn(final, dest)
+                        encode_jpeg_fn(annotated, dest)
                     else:
-                        _encode_jpeg_ffmpeg(final, dest, ffmpeg)
+                        _encode_jpeg_ffmpeg(annotated, dest, ffmpeg)
                 except ReviewCancelled:
                     raise
                 except ReviewError:
