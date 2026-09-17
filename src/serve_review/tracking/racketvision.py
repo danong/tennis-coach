@@ -30,7 +30,7 @@ __all__ = [
 ]
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_SOURCE_ROOT = _REPOSITORY_ROOT / "tools" / "racketvision" / "RacketVision"
+_DEFAULT_SOURCE_ROOT = _REPOSITORY_ROOT / "vendor" / "racketvision"
 _DEFAULT_MODEL_ROOT = _REPOSITORY_ROOT / "models" / "racketvision"
 RACKET_KEYPOINT_NAMES = ("Top", "Bottom", "Handle", "Left", "Right")
 

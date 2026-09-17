@@ -13,8 +13,8 @@ Setuptools API still required by MMPose:
 mise run setup
 ```
 
-The ignored upstream RacketVision checkout remains at
-`tools/racketvision/RacketVision/`. Download its checkpoints, then place them
+The ignored upstream RacketVision checkout lives at
+`vendor/racketvision/`. Download its checkpoints, then place them
 under the project's common model directory:
 
 ```text

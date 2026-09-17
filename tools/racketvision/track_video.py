@@ -108,9 +108,7 @@ def main() -> None:
     parser.add_argument("video", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mediapipe-cache", type=Path)
-    parser.add_argument(
-        "--source-root", type=Path, default=Path("tools/racketvision/RacketVision")
-    )
+    parser.add_argument("--source-root", type=Path, default=Path("vendor/racketvision"))
     parser.add_argument("--model-root", type=Path, default=Path("models/racketvision"))
     parser.add_argument("--bbox-threshold", type=float, default=0.3)
     parser.add_argument("--device", default="cpu")
