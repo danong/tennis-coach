@@ -7,12 +7,10 @@ joins optional audio observations without introducing a new cache format.
 
 from __future__ import annotations
 
-import csv
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
-from pathlib import Path
 
 from serve_review.media.audio import AudioEnergy
 from serve_review.pose.schema import FrameObservation
@@ -29,9 +27,7 @@ __all__ = [
     "SceneFrame",
     "SceneTrack",
     "build_scene_track",
-    "build_scene_track_with_racketvision",
     "build_scene_track_with_racketvision_observations",
-    "load_racketvision_csv",
 ]
 
 SCENE_MODALITIES = frozenset({"body_2d", "body_3d", "ball_2d", "racket_2d", "audio"})
@@ -190,195 +186,6 @@ class SceneTrack:
             )
         object.__setattr__(self, "frames", frames)
         object.__setattr__(self, "available_modalities", modalities)
-
-
-def _csv_number(row: Mapping[str, str], column: str, *, required: bool) -> float | None:
-    raw = row.get(column, "")
-    if raw is None or not str(raw).strip():
-        if required:
-            raise ValueError(f"RacketVision CSV column {column!r} is missing a value.")
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"RacketVision CSV column {column!r} is not numeric: {raw!r}."
-        ) from exc
-    if not math.isfinite(value):
-        if required:
-            raise ValueError(f"RacketVision CSV column {column!r} is not finite.")
-        return None
-    return value
-
-
-def _pixel_point(
-    row: Mapping[str, str],
-    x_column: str,
-    y_column: str,
-    confidence_column: str,
-    width: float,
-    height: float,
-    *,
-    required: bool,
-) -> Point2D | None:
-    x = _csv_number(row, x_column, required=required)
-    y = _csv_number(row, y_column, required=required)
-    confidence = _csv_number(row, confidence_column, required=False)
-    if x is None or y is None:
-        if required:
-            raise ValueError(f"RacketVision point {x_column}/{y_column} is incomplete.")
-        return None
-    if confidence is None:
-        confidence = 0.0
-    return Point2D(x=x / width, y=y / height, confidence=confidence)
-
-
-def load_racketvision_csv(
-    csv_path: str | Path,
-    scene_frames: Sequence[SceneFrame],
-    *,
-    source_width: float,
-    source_height: float,
-    smoothed: bool = False,
-    crop_top: int = 0,
-) -> tuple[SceneFrame, ...]:
-    """Attach one raw or smoothed RacketVision CSV to native scene frames.
-
-    CSV row order is the only join key.  PTS is copied from ``scene_frames``;
-    this function never uses the CSV's frame number or an FPS estimate.
-    """
-    if crop_top != 0:
-        raise ValueError(
-            "RacketVision CSV with crop_top is unsupported: the CSV lacks a "
-            "source-coordinate transform."
-        )
-    width = _finite("source_width", source_width)
-    height = _finite("source_height", source_height)
-    if width <= 0.0 or height <= 0.0:
-        raise ValueError("source_width and source_height must be positive.")
-    if not isinstance(scene_frames, (tuple, list)):
-        raise TypeError("scene_frames must be a list or tuple of SceneFrame values.")
-    base = tuple(scene_frames)
-    if any(not isinstance(frame, SceneFrame) for frame in base):
-        raise ValueError("scene_frames must contain SceneFrame values.")
-    path = Path(csv_path)
-    try:
-        handle = path.open(newline="", encoding="utf-8")
-    except OSError as exc:
-        raise ValueError(f"Could not open RacketVision CSV {path}: {exc}") from exc
-    with handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames is None or "Frame" not in reader.fieldnames:
-            raise ValueError("RacketVision CSV must contain a 'Frame' column.")
-        rows = list(reader)
-    if len(rows) != len(base):
-        raise ValueError(
-            f"RacketVision CSV has {len(rows)} rows, expected {len(base)} scene frames."
-        )
-
-    prefix = "Smooth" if smoothed else ""
-    keypoint_names = ("Top", "Bottom", "Handle", "Left", "Right")
-    result: list[SceneFrame] = []
-    for index, (row, frame) in enumerate(zip(rows, base)):
-        frame_number = _csv_number(row, "Frame", required=True)
-        if frame_number != index or not frame_number.is_integer():
-            raise ValueError(
-                f"RacketVision CSV Frame at row {index} must be {index}, got {frame_number!r}."
-            )
-        ball = _pixel_point(
-            row,
-            f"{prefix}X" if smoothed else "X",
-            f"{prefix}Y" if smoothed else "Y",
-            "Confidence",
-            width,
-            height,
-            required=(
-                (_csv_number(row, "Visibility", required=False) or 0.0) > 0.0
-                if not smoothed
-                else _csv_number(row, "SmoothX", required=False) is not None
-                and _csv_number(row, "SmoothY", required=False) is not None
-            ),
-        )
-        if (
-            not smoothed
-            and (_csv_number(row, "Visibility", required=False) or 0.0) <= 0.0
-        ):
-            ball = None
-        racket_prefix = "Smooth" if smoothed else ""
-        bbox_columns = tuple(f"{racket_prefix}BBox{i}" for i in range(1, 5))
-        bbox_values = [
-            _csv_number(row, column, required=False) for column in bbox_columns
-        ]
-        bbox_confidence = _csv_number(row, "BBoxConfidence", required=False) or 0.0
-        racket_present = all(value is not None for value in bbox_values)
-        if (
-            bbox_confidence > 0.0 or any(value is not None for value in bbox_values)
-        ) and not racket_present:
-            raise ValueError(f"RacketVision racket box is incomplete at row {index}.")
-        racket = None
-        if racket_present:
-            bbox = tuple(
-                value / (width if column_index % 2 == 0 else height)
-                for column_index, value in enumerate(bbox_values)
-            )
-            keypoints = {}
-            for name in keypoint_names:
-                confidence = _csv_number(row, f"{name}Confidence", required=False)
-                keypoints[name] = _pixel_point(
-                    row,
-                    f"{racket_prefix}{name}X",
-                    f"{racket_prefix}{name}Y",
-                    f"{name}Confidence",
-                    width,
-                    height,
-                    required=(confidence or 0.0) > 0.0,
-                )
-            racket = Racket2D(
-                bbox=bbox, bbox_confidence=bbox_confidence, keypoints=keypoints
-            )
-        result.append(
-            SceneFrame(
-                time_seconds=frame.time_seconds,
-                body_2d=frame.body_2d,
-                body_3d=frame.body_3d,
-                ball_2d=ball,
-                racket_2d=racket,
-                audio_energy=frame.audio_energy,
-                audio_transient=frame.audio_transient,
-            )
-        )
-    return tuple(result)
-
-
-def build_scene_track_with_racketvision(
-    world_snapshot: WorldCacheSnapshot,
-    racketvision_csv: str | Path,
-    *,
-    source_width: float,
-    source_height: float,
-    smoothed: bool = False,
-    crop_top: int = 0,
-    audio: Sequence[AudioEnergy] | None = None,
-    audio_transients: Sequence[bool | None] | None = None,
-) -> SceneTrack:
-    """Build a scene and attach a strictly frame-aligned RacketVision CSV."""
-    scene = build_scene_track(
-        world_snapshot, audio=audio, audio_transients=audio_transients
-    )
-    frames = load_racketvision_csv(
-        racketvision_csv,
-        scene.frames,
-        source_width=source_width,
-        source_height=source_height,
-        smoothed=smoothed,
-        crop_top=crop_top,
-    )
-    return SceneTrack(
-        source_fingerprint=scene.source_fingerprint,
-        frames=frames,
-        available_modalities=scene.available_modalities
-        | frozenset({"ball_2d", "racket_2d"}),
-    )
 
 
 def build_scene_track_with_racketvision_observations(
