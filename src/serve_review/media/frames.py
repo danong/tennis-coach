@@ -388,6 +388,7 @@ def build_rawvideo_decode_args(
     ffmpeg: str = "ffmpeg",
     rate_hz: float | None = None,
     seek_seconds: float | None = None,
+    filter_expression: str | None = None,
 ) -> list[str]:
     """Build the FFmpeg argument array decoding stored frames to ``rgb24``.
 
@@ -417,10 +418,17 @@ def build_rawvideo_decode_args(
     source = str(video)
     if not source:
         raise FrameError("invalid video: expected a non-blank path.")
-    filt: list[str] = []
+    filters: list[str] = []
+    if filter_expression is not None:
+        if not isinstance(filter_expression, str) or not filter_expression.strip():
+            raise FrameError(
+                "invalid filter_expression: expected a non-blank filter expression."
+            )
+        filters.append(filter_expression.strip())
     if rate_hz is not None:
         rate = _check_rate(rate_hz)
-        filt = ["-vf", f"fps={rate:g}:round=up"]
+        filters.append(f"fps={rate:g}:round=up")
+    filt = ["-vf", ",".join(filters)] if filters else []
     seek = [] if seek_seconds is None else ["-ss", f"{seek_seconds:.17g}"]
     return [
         executable,
@@ -692,6 +700,7 @@ def _run_selected(
     ffmpeg: str,
     is_cancelled: Callable[[], bool] | None,
     filter_rate_hz: float | None = None,
+    filter_expression: str | None = None,
 ) -> Iterator[SampledFrame]:
     _ensure_tool(ffmpeg)
     first_wanted = selected[0]
@@ -704,6 +713,7 @@ def _run_selected(
             if filter_rate_hz is None and first_wanted > 0
             else None
         ),
+        filter_expression=filter_expression,
     )
     frame_size = stored_width * stored_height * 3
     if rotation in (90, 270):
@@ -850,6 +860,7 @@ def iter_sampled_frames(
     ffmpeg: str = "ffmpeg",
     ffprobe: str = "ffprobe",
     is_cancelled: Callable[[], bool] | None = None,
+    filter_expression: str | None = None,
 ) -> Iterator[SampledFrame]:
     """Yield selected RGB frames in strictly increasing source-time order.
 
@@ -867,6 +878,8 @@ def iter_sampled_frames(
         is_cancelled: Optional hook polled before each decoded frame; a
             true return raises :class:`FrameCancelled` and terminates the
             decoder.
+        filter_expression: Optional explicit FFmpeg video filter applied to
+            decoded pixels without changing the canonical source timestamps.
 
     Returns:
         A lazy iterator of :class:`SampledFrame`; decoding starts on
@@ -906,6 +919,7 @@ def iter_sampled_frames(
         ffmpeg_exe,
         is_cancelled,
         filter_rate_hz,
+        filter_expression,
     )
 
 
