@@ -610,7 +610,7 @@ def test_missing_wrist_support_skips_honestly(
     assert diagnostics["derived"]["deceleration"]["status"] == "skipped"
     contact_record = diagnostics["selected"]["contact"]
     assert contact_record["status"] == "selected"
-    assert contact_record["coverage"] == pytest.approx(0.10)
+    assert contact_record["coverage"] == pytest.approx(0.07)
 
 
 def test_outputs_are_deterministic(tmp_path: Path, no_legacy_sparse: None) -> None:
@@ -669,9 +669,6 @@ def _direct_candidate(
         cue_values=cues,
         provenance="kinematic_waveform",
         temporal_uncertainty_seconds=0.002,
-        method_version="composite-anchors-v4",
-        config_id="composite-anchors-default-v5",
-        schema_version=4,
     )
 
 

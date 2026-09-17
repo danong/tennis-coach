@@ -136,11 +136,11 @@ __all__ = [
 ]
 
 #: Version of the composite-anchor schemas in this module.
-COMPOSITE_ANCHORS_SCHEMA_VERSION = 4
+COMPOSITE_ANCHORS_SCHEMA_VERSION = 5
 #: Method identity recorded on every candidate and set.
-COMPOSITE_ANCHORS_METHOD_VERSION = "composite-anchors-v4"
-#: Default configuration identity (start/finish-reweighted development defaults).
-COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v5"
+COMPOSITE_ANCHORS_METHOD_VERSION = "composite-anchors-v5"
+#: Default configuration identity for multimodal experimental scoring.
+COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v6"
 #: Provenance recorded on every candidate (pure waveform evidence only).
 COMPOSITE_ANCHOR_PROVENANCE = "kinematic_waveform"
 
@@ -168,6 +168,7 @@ COMPOSITE_CUE_NAMES: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "left_arm_elevation_rise",
             "left_arm_extension",
             "preparation",
+            "ball_left_wrist_separation_onset",
         ),
         "loading": (
             "knee_flexion",
@@ -183,6 +184,7 @@ COMPOSITE_CUE_NAMES: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "torso_verticality",
             "knee_unload",
             "loading_unwind",
+            "racket_handle_hoop_vertical_orientation",
         ),
         "contact": (
             "right_wrist_elevation_apex",
@@ -191,6 +193,7 @@ COMPOSITE_CUE_NAMES: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "torso_verticality",
             "right_arm_extension",
             "audio_transient",
+            "racket_hoop_ball_proximity",
         ),
         "finish": (
             "right_wrist_speed_trough",
@@ -213,10 +216,11 @@ COMPOSITE_DEFAULT_WEIGHTS: Mapping[str, Mapping[str, float]] = MappingProxyType(
         ),
         "release": MappingProxyType(
             {
-                "left_arm_elevation": 0.30,
-                "left_arm_elevation_rise": 0.30,
-                "left_arm_extension": 0.25,
-                "preparation": 0.15,
+                "left_arm_elevation": 0.195,
+                "left_arm_elevation_rise": 0.195,
+                "left_arm_extension": 0.1625,
+                "preparation": 0.0975,
+                "ball_left_wrist_separation_onset": 0.35,
             }
         ),
         "loading": MappingProxyType(
@@ -231,21 +235,23 @@ COMPOSITE_DEFAULT_WEIGHTS: Mapping[str, Mapping[str, float]] = MappingProxyType(
         ),
         "cocking": MappingProxyType(
             {
-                "right_wrist_elevation_trough": 0.25,
-                "right_wrist_acceleration": 0.20,
-                "torso_verticality": 0.15,
-                "knee_unload": 0.15,
-                "loading_unwind": 0.25,
+                "right_wrist_elevation_trough": 0.1875,
+                "right_wrist_acceleration": 0.15,
+                "torso_verticality": 0.1125,
+                "knee_unload": 0.1125,
+                "loading_unwind": 0.1875,
+                "racket_handle_hoop_vertical_orientation": 0.25,
             }
         ),
         "contact": MappingProxyType(
             {
-                "right_wrist_elevation_apex": 0.25,
-                "right_wrist_speed_peak": 0.20,
-                "right_wrist_acceleration_peak": 0.15,
-                "torso_verticality": 0.10,
-                "right_arm_extension": 0.10,
-                "audio_transient": 0.20,
+                "right_wrist_elevation_apex": 0.175,
+                "right_wrist_speed_peak": 0.14,
+                "right_wrist_acceleration_peak": 0.105,
+                "torso_verticality": 0.07,
+                "right_arm_extension": 0.07,
+                "audio_transient": 0.14,
+                "racket_hoop_ball_proximity": 0.30,
             }
         ),
         "finish": MappingProxyType(
@@ -749,6 +755,22 @@ def _local_rise(
     return out
 
 
+def _forward_rise(
+    values: Sequence[float | None], times: Sequence[float]
+) -> list[float | None]:
+    """Attach an exact-PTS forward rise to the frame before it increases."""
+    out: list[float | None] = [None] * len(values)
+    for index, (current, following) in enumerate(zip(values, values[1:])):
+        if current is None or following is None:
+            continue
+        step = float(times[index + 1]) - float(times[index])
+        if not math.isfinite(step) or step <= 0.0:
+            continue
+        rise = (float(following) - float(current)) / step
+        out[index] = rise if math.isfinite(rise) else None
+    return out
+
+
 def _negate(values: Sequence[float | None]) -> list[float | None]:
     out: list[float | None] = []
     for value in values:
@@ -910,6 +932,7 @@ def _normalize_audio_transient_cue(
 
 def _extract_raw_cues(
     track: KinematicWaveformTrack,
+    scene_features: SceneFeatureSeries | None = None,
 ) -> dict[str, dict[str, list[float | None]]]:
     """Extract availability-qualified raw cue series per stage."""
     count = len(track.samples)
@@ -944,6 +967,18 @@ def _extract_raw_cues(
     trough = _negate(wrist_dy)
     unwind = _negate(separation)
     torso_settle = _negate(wrist_acc)
+    if scene_features is None:
+        ball_hand_onset = [None] * count
+        racket_vertical = [None] * count
+        racket_ball_proximity = [None] * count
+    else:
+        ball_hand_onset = _forward_rise(
+            scene_features.left_wrist_ball_distance, times
+        )
+        racket_vertical = list(
+            scene_features.racket_handle_hoop_vertical_orientation
+        )
+        racket_ball_proximity = _negate(scene_features.racket_hoop_ball_distance)
 
     raw: dict[str, dict[str, list[float | None]]] = {
         "start": {
@@ -957,6 +992,7 @@ def _extract_raw_cues(
             "left_arm_elevation_rise": list(left_elev_rise),
             "left_arm_extension": list(left_ext),
             "preparation": list(stillness_raw),
+            "ball_left_wrist_separation_onset": ball_hand_onset,
         },
         "loading": {
             "knee_flexion": list(knee_mean),
@@ -972,6 +1008,7 @@ def _extract_raw_cues(
             "torso_verticality": list(torso),
             "knee_unload": list(knee_unload),
             "loading_unwind": list(unwind),
+            "racket_handle_hoop_vertical_orientation": racket_vertical,
         },
         "contact": {
             "right_wrist_elevation_apex": list(wrist_dy),
@@ -980,6 +1017,7 @@ def _extract_raw_cues(
             "torso_verticality": list(torso),
             "right_arm_extension": _directional_arm_extension(wrist_dy, wrist_dist),
             "audio_transient": list(audio_cue),
+            "racket_hoop_ball_proximity": racket_ball_proximity,
         },
         "finish": {
             "right_wrist_speed_trough": list(_series(track, "right_wrist_speed_trough")),
@@ -1497,11 +1535,14 @@ def build_composite_anchor_set(
             f"got {type(config).__name__}."
         )
     _validate_track("build_composite_anchor_set", track)
-    if scene_track is not None:
+    scene_features = (
         build_scene_feature_series(
             scene_track, tuple(sample.time_seconds for sample in track.samples)
         )
-    raw = _extract_raw_cues(track)
+        if scene_track is not None
+        else None
+    )
+    raw = _extract_raw_cues(track, scene_features)
     normalized: dict[str, dict[str, tuple[float | None, ...]]] = {}
     for stage in COMPOSITE_ANCHOR_STAGES:
         staged: dict[str, tuple[float | None, ...]] = {}

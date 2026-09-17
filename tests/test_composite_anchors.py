@@ -86,7 +86,7 @@ def _times(count: int, dt: float = DT) -> list[float]:
     return [i * dt for i in range(count)]
 
 
-def test_scene_features_are_aligned_and_do_not_change_candidate_scores() -> None:
+def test_scene_features_are_aligned_and_available_to_candidate_scoring() -> None:
     times = [0.0, 0.1]
     keypoints = [BodyKeypoint(x=0.2, y=0.4, visibility=0.9) for _ in range(33)]
     body = FrameObservation(
@@ -128,10 +128,16 @@ def test_scene_features_are_aligned_and_do_not_change_candidate_scores() -> None
     assert features.left_wrist_ball_distance[1] is None
     assert features.racket_hoop_ball_distance[1] is None
     assert features.racket_handle_hoop_vertical_orientation[1] is None
-    track = _make_track(times)
-    assert ca.build_composite_anchor_set(
-        track, scene_track=scene
-    ) == ca.build_composite_anchor_set(track)
+    anchor_set = ca.build_composite_anchor_set(_make_track(times), scene_track=scene)
+    assert anchor_set.for_stage("release")[0].cue_values[
+        "ball_left_wrist_separation_onset"
+    ] is None
+    assert anchor_set.for_stage("cocking")[0].cue_values[
+        "racket_handle_hoop_vertical_orientation"
+    ] == pytest.approx(0.0)
+    assert anchor_set.for_stage("contact")[0].cue_values[
+        "racket_hoop_ball_proximity"
+    ] == pytest.approx(0.0)
 
 
 # --- config -------------------------------------------------------------------
@@ -146,10 +152,11 @@ def test_default_weights_match_exact_initial_generic_values() -> None:
         "left_arm_low": 0.45,
     }
     assert dict(config.weight_for("release")) == {
-        "left_arm_elevation": 0.30,
-        "left_arm_elevation_rise": 0.30,
-        "left_arm_extension": 0.25,
-        "preparation": 0.15,
+        "left_arm_elevation": 0.195,
+        "left_arm_elevation_rise": 0.195,
+        "left_arm_extension": 0.1625,
+        "preparation": 0.0975,
+        "ball_left_wrist_separation_onset": 0.35,
     }
     assert dict(config.weight_for("loading")) == {
         "knee_flexion": 0.20,
@@ -160,19 +167,21 @@ def test_default_weights_match_exact_initial_generic_values() -> None:
         "stillness": 0.10,
     }
     assert dict(config.weight_for("cocking")) == {
-        "right_wrist_elevation_trough": 0.25,
-        "right_wrist_acceleration": 0.20,
-        "torso_verticality": 0.15,
-        "knee_unload": 0.15,
-        "loading_unwind": 0.25,
+        "right_wrist_elevation_trough": 0.1875,
+        "right_wrist_acceleration": 0.15,
+        "torso_verticality": 0.1125,
+        "knee_unload": 0.1125,
+        "loading_unwind": 0.1875,
+        "racket_handle_hoop_vertical_orientation": 0.25,
     }
     assert dict(config.weight_for("contact")) == {
-        "right_wrist_elevation_apex": 0.25,
-        "right_wrist_speed_peak": 0.20,
-        "right_wrist_acceleration_peak": 0.15,
-        "torso_verticality": 0.10,
-        "right_arm_extension": 0.10,
-        "audio_transient": 0.20,
+        "right_wrist_elevation_apex": 0.175,
+        "right_wrist_speed_peak": 0.14,
+        "right_wrist_acceleration_peak": 0.105,
+        "torso_verticality": 0.07,
+        "right_arm_extension": 0.07,
+        "audio_transient": 0.14,
+        "racket_hoop_ball_proximity": 0.30,
     }
     assert dict(config.weight_for("finish")) == {
         "right_wrist_speed_trough": 0.60,
@@ -546,9 +555,9 @@ def test_contact_audio_cue_unavailable_without_audio() -> None:
     rows = ca.build_composite_anchor_set(silent).for_stage("contact")
     for candidate in rows:
         assert candidate.cue_values["audio_transient"] is None
-    # Mean available weight without the 0.20 audio cue is 0.80.
+    # The audio and unavailable visual cue weights are absent.
     for candidate in rows:
-        assert candidate.coverage == pytest.approx(0.80, abs=1e-12)
+        assert candidate.coverage == pytest.approx(0.56, abs=1e-12)
 
 
 def test_contact_audio_cue_rewards_transient_and_shifts_score() -> None:
@@ -580,9 +589,9 @@ def test_contact_audio_cue_rewards_transient_and_shifts_score() -> None:
     assert loud_rows[10].cue_values["audio_transient"] == pytest.approx(1.0)
     assert loud_rows[0].cue_values["audio_transient"] == pytest.approx(0.0)
     assert all(c.cue_values["audio_transient"] is None for c in silent_rows)
-    # Full coverage with audio; reduced without.
-    assert loud_rows[10].coverage == pytest.approx(1.0, abs=1e-12)
-    assert silent_rows[10].coverage == pytest.approx(0.80, abs=1e-12)
+    # Audio is present; the unavailable visual cue leaves 0.70 coverage.
+    assert loud_rows[10].coverage == pytest.approx(0.70, abs=1e-12)
+    assert silent_rows[10].coverage == pytest.approx(0.56, abs=1e-12)
     # The coincident transient deterministically raises the contact score.
     assert loud_rows[10].score > silent_rows[10].score
     # Diagnostic helper exposes the same normalized cue series.
