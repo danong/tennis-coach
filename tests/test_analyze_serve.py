@@ -15,7 +15,6 @@ absent) so no FFmpeg/ffprobe subprocess runs here.
 
 from __future__ import annotations
 
-import csv
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,6 +46,7 @@ from serve_review.domain import (
 from serve_review.media.frames import SampledFrame
 from serve_review.pose.schema import JOINT_INDEX, JOINT_NAMES, FrameObservation
 from serve_review.pose.world import WorldFrameObservation, WorldLandmark
+from serve_review.tracking.racketvision import RacketVisionFrameObservation
 
 DURATION = 2.0
 N_FRAMES = 30
@@ -107,6 +107,17 @@ def _world_observation(moment: float, *, missing: tuple[str, ...] = ()) -> World
     )
 
 
+class _FakeRacketVisionTracker:
+    def __init__(self, config=None) -> None:
+        self.config = config
+
+    def track_frames(self, frames):
+        return tuple(
+            RacketVisionFrameObservation(frame.time_seconds, None, None)
+            for frame in frames
+        )
+
+
 class _FakeBackend:
     """Synthetic world-pose backend with a call counter for cache tests."""
 
@@ -130,6 +141,27 @@ def _native_frames(remaining: tuple[float, ...]):
             time_seconds=float(moment),
             image=np.zeros((16, 16, 3), dtype=np.uint8),
         )
+
+
+@pytest.fixture(autouse=True)
+def fake_racketvision(monkeypatch: pytest.MonkeyPatch) -> None:
+    import serve_review.analyze_serve as analyze_module
+
+    monkeypatch.setattr(
+        analyze_module,
+        "fingerprint_racketvision_config",
+        lambda config: "sha256:test-racketvision",
+    )
+    monkeypatch.setattr(
+        analyze_module,
+        "iter_racketvision_model_frames",
+        lambda video, times, **kwargs: _native_frames(tuple(times)),
+    )
+    monkeypatch.setattr(
+        analyze_module,
+        "RacketVisionTracker",
+        _FakeRacketVisionTracker,
+    )
 
 
 @pytest.fixture
@@ -193,7 +225,6 @@ def _run(
     sampled_holder: list | None = None,
     encoded_holder: list | None = None,
     audio: str = "absent",
-    racketvision_csv: Path | None = None,
 ):
     from serve_review.analyze_serve import run_analyze_serve as _run_fn
 
@@ -232,7 +263,6 @@ def _run(
         start_seconds=start,
         end_seconds=end,
         force=force,
-        racketvision_csv=racketvision_csv,
         probe_fn=lambda path: _metadata(),
         native_times_fn=lambda _v, s, e: tuple(
             t for t in TIMES if t >= s - 1e-9 and t < e
@@ -246,24 +276,6 @@ def _run(
         audio_energies_fn=audio_hook,
     )
     return result, backend
-
-
-def _write_racketvision_csv(path: Path, count: int) -> None:
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(
-            handle, fieldnames=["Frame", "X", "Y", "Visibility", "Confidence"]
-        )
-        writer.writeheader()
-        for index in range(count):
-            writer.writerow(
-                {
-                    "Frame": index,
-                    "X": 0.5 * 320,
-                    "Y": 0.5 * 240,
-                    "Visibility": 0,
-                    "Confidence": 0,
-                }
-            )
 
 
 def _available_keyframes(phase: AttemptPhase) -> dict[str, float]:
@@ -286,7 +298,6 @@ def test_cli_defaults() -> None:
     assert args.end_seconds is None
     assert args.output_dir is None
     assert args.cache is None
-    assert args.racketvision_csv is None
     assert args.model == Path("models/pose_landmarker_heavy.task")
     assert args.dry_run is False
     assert args.force is False
@@ -377,9 +388,7 @@ def test_range_validation_rejects_bad_ranges(
 def test_racketvision_diagnostics_are_added_without_changing_checkpoints(
     tmp_path: Path, no_legacy_sparse: None
 ) -> None:
-    csv_path = tmp_path / "tracks.csv"
-    _write_racketvision_csv(csv_path, N_FRAMES)
-    result, _ = _run(tmp_path, racketvision_csv=csv_path)
+    result, _ = _run(tmp_path)
 
     diagnostics = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
     assert "visual_evidence" in diagnostics
@@ -388,13 +397,6 @@ def test_racketvision_diagnostics_are_added_without_changing_checkpoints(
     assert visual["contact"]["selected_time_seconds"] == diagnostics["selected"]["contact"]["time_seconds"]
     assert visual["release"]["ball_to_left_wrist"]["available"] is False
     assert visual["contact"]["ball_to_racket_hoop"]["available"] is False
-
-
-def test_invalid_racketvision_csv_is_actionable(tmp_path: Path, no_legacy_sparse: None) -> None:
-    missing = tmp_path / "missing.csv"
-    with pytest.raises(AnalyzeServeError) as excinfo:
-        _run(tmp_path, racketvision_csv=missing)
-    assert "RacketVision CSV does not exist" in str(excinfo.value)
 
 
 def test_default_range_covers_entire_source(tmp_path: Path, no_legacy_sparse: None) -> None:
@@ -421,6 +423,8 @@ def test_absent_audio_fallback_uses_body_pose(
     holders: list = []
     result, backend = _run(tmp_path, backend_holder=holders, audio="absent")
     assert result.cache_hit is False
+    assert result.racketvision_cache_hit is False
+    assert result.racketvision_cache_path.is_file()
     assert backend.calls == N_FRAMES
 
     # Cache reuse: drop outputs but keep the cache; the second run
@@ -432,6 +436,7 @@ def test_absent_audio_fallback_uses_body_pose(
     _shutil.rmtree(result.review_dir)
     result2, backend2 = _run(tmp_path, audio="absent")
     assert result2.cache_hit is True
+    assert result2.racketvision_cache_hit is True
     assert backend2.calls == 0
     assert result2.frame_count == N_FRAMES
 

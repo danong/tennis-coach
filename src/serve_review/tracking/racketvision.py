@@ -7,12 +7,15 @@ existing normalized scene geometry types. RacketVision never owns time.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import math
 import sys
 import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +30,7 @@ __all__ = [
     "RacketVisionError",
     "RacketVisionFrameObservation",
     "RacketVisionTracker",
+    "fingerprint_racketvision_config",
 ]
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -113,6 +117,48 @@ class RacketVisionConfig:
             raise RacketVisionError(
                 "missing RacketVision prerequisite(s): " + ", ".join(missing)
             )
+
+
+@lru_cache(maxsize=32)
+def _fingerprint_file(path_text: str, size: int, modified_ns: int) -> str:
+    del size, modified_ns
+    digest = hashlib.sha256()
+    with Path(path_text).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def fingerprint_racketvision_config(config: RacketVisionConfig) -> str:
+    """Identify all files and settings that can affect raw observations."""
+    if not isinstance(config, RacketVisionConfig):
+        raise TypeError("config must be a RacketVisionConfig value.")
+    config.require_files()
+    files = {
+        name: getattr(config, name)
+        for name in (
+            "ball_config",
+            "racket_detector_config",
+            "racket_keypoints_config",
+            "ball_checkpoint",
+            "racket_detector_checkpoint",
+            "racket_keypoints_checkpoint",
+        )
+    }
+    payload = {
+        "ball_batch_size": config.ball_batch_size,
+        "ball_threshold": config.ball_threshold,
+        "device": config.device,
+        "files": {
+            name: _fingerprint_file(
+                str(path.resolve()), path.stat().st_size, path.stat().st_mtime_ns
+            )
+            for name, path in files.items()
+        },
+        "racket_bbox_threshold": config.racket_bbox_threshold,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 @dataclass(frozen=True, slots=True)

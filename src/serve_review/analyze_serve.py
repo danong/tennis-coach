@@ -113,8 +113,23 @@ from serve_review.phase_review import render_caption
 from serve_review.pose import mediapipe as mediapipe_module
 from serve_review.pose import world as world_module
 from serve_review.pose.world import WorldFrameObservation
-from serve_review.scene import build_scene_track_with_racketvision
+from serve_review.scene import build_scene_track_with_racketvision_observations
 from serve_review.scene_diagnostics import build_scene_visual_diagnostics
+from serve_review.tracking.cache import (
+    RacketVisionCacheCorruptError,
+    RacketVisionCacheError,
+    RacketVisionCacheIdentity,
+    RacketVisionCacheStaleError,
+    fingerprint_frame_times,
+    load_racketvision_cache,
+    write_racketvision_cache,
+)
+from serve_review.tracking.model_frames import iter_racketvision_model_frames
+from serve_review.tracking.racketvision import (
+    RacketVisionConfig,
+    RacketVisionTracker,
+    fingerprint_racketvision_config,
+)
 
 __all__ = [
     "ANALYZE_SERVE_VERSION",
@@ -130,11 +145,13 @@ __all__ = [
     "REVIEW_JSON_FILENAME",
     "INDEX_HTML_FILENAME",
     "KINEMATIC_CACHE_FILENAME",
+    "RACKETVISION_CACHE_FILENAME",
     "CACHE_FLUSH_INTERVAL_FRAMES",
     "AnalyzeServeError",
     "AnalyzeServeCancelled",
     "AnalyzeServeResult",
     "default_kinematic_cache_path_for",
+    "default_racketvision_cache_path_for",
     "run_analyze_serve",
 ]
 
@@ -172,6 +189,8 @@ REVIEW_JSON_FILENAME = "review.json"
 INDEX_HTML_FILENAME = "index.html"
 #: Default kinematic-track (dense-world envelope) cache filename.
 KINEMATIC_CACHE_FILENAME = "kinematic-track-v1.jsonl"
+#: Default raw RacketVision observation cache filename.
+RACKETVISION_CACHE_FILENAME = "racketvision-track-v1.jsonl"
 #: How often to atomically flush a resumable partial kinematic cache.
 CACHE_FLUSH_INTERVAL_FRAMES = 30
 
@@ -214,6 +233,8 @@ class AnalyzeServeResult:
     review_json: Path
     cache_path: Path
     cache_hit: bool
+    racketvision_cache_path: Path
+    racketvision_cache_hit: bool
     frame_count: int
     inferred_frames: int
     total_score: float
@@ -243,6 +264,18 @@ def default_kinematic_cache_path_for(
         / "cache"
         / KINEMATIC_CACHE_FILENAME
     )
+
+
+def default_racketvision_cache_path_for(
+    video: Path | str, output_dir: Path | str = "output"
+) -> Path:
+    """Return the default reusable raw object-track cache path."""
+    stem = Path(str(video)).stem
+    if not stem:
+        raise AnalyzeServeError(
+            "validate", f"invalid video path {video!r}: no file stem."
+        )
+    return Path(output_dir).expanduser() / "cache" / RACKETVISION_CACHE_FILENAME
 
 
 def _check_bool(value: object, name: str) -> bool:
@@ -750,7 +783,11 @@ def run_analyze_serve(
     end_seconds: float | None = None,
     output_dir: Path | str | None = None,
     cache_path: Path | str | None = None,
-    racketvision_csv: Path | str | None = None,
+    racketvision_cache_path: Path | str | None = None,
+    racketvision_config: RacketVisionConfig | None = None,
+    racketvision_tracker_fingerprint: str | None = None,
+    racketvision_frame_factory: Callable[..., Iterator[Any]] | None = None,
+    racketvision_tracker_factory: Callable[[RacketVisionConfig], Any] | None = None,
     model_path: Path | str = mediapipe_module.DEFAULT_MODEL_PATH,
     dry_run: bool = False,
     force: bool = False,
@@ -783,9 +820,9 @@ def run_analyze_serve(
         cache_path: Explicit reusable kinematic-track cache file
             (dense-world envelope); defaults to
             ``<output_dir>/cache/kinematic-track-v1.jsonl``.
-        racketvision_csv: Optional raw or smoothed RacketVision CSV. It must
-            cover the same native frame timeline as the dense-world cache.
-            It is diagnostic-only and never changes checkpoint selection.
+        racketvision_cache_path: Explicit reusable raw object-track cache;
+            defaults to ``<output_dir>/cache/racketvision-track-v1.jsonl``.
+            RacketVision runs automatically on a cache miss.
         model_path: Approved Pose Landmarker ``.task`` artifact.
         dry_run: Validate the request and report intended destinations
             without directory creation, cache/model work, media export,
@@ -842,14 +879,6 @@ def run_analyze_serve(
         raise _fail("validate", "invalid video: expected a non-blank path.")
     if not video_path.is_file():
         raise _fail("validate", f"input video does not exist: {video_path}.")
-    racketvision_target: Path | None = None
-    if racketvision_csv is not None:
-        racketvision_target = Path(racketvision_csv).expanduser()
-        if not racketvision_target.is_file():
-            raise _fail(
-                "validate",
-                f"RacketVision CSV does not exist: {racketvision_target}.",
-            )
     dry_run_flag = _check_bool(dry_run, "dry_run")
     force_flag = _check_bool(force, "force")
     anchor2_flag = _check_bool(anchor2comparison, "anchor2comparison")
@@ -877,6 +906,13 @@ def run_analyze_serve(
             "validate",
             f"invalid --end-seconds {end_seconds!r}; expected seconds >= 0.",
         )
+    if racketvision_tracker_fingerprint is not None and (
+        not isinstance(racketvision_tracker_fingerprint, str)
+        or not racketvision_tracker_fingerprint.strip()
+    ):
+        raise _fail(
+            "validate", "invalid racketvision_tracker_fingerprint: expected text."
+        )
     for label, fn in (
         ("probe_fn", probe_fn),
         ("native_times_fn", native_times_fn),
@@ -885,6 +921,8 @@ def run_analyze_serve(
         ("sample_frame_fn", sample_frame_fn),
         ("encode_jpeg_fn", encode_jpeg_fn),
         ("audio_energies_fn", audio_energies_fn),
+        ("racketvision_frame_factory", racketvision_frame_factory),
+        ("racketvision_tracker_factory", racketvision_tracker_factory),
     ):
         if fn is not None and not callable(fn):
             raise _fail("validate", f"invalid {label}: {fn!r}.")
@@ -964,6 +1002,17 @@ def run_analyze_serve(
         cache_target = session_dir / "cache" / KINEMATIC_CACHE_FILENAME
     if not str(cache_target):
         raise _fail("validate", "invalid cache path: expected a non-blank path.")
+    racketvision_cache_target = (
+        Path(racketvision_cache_path).expanduser()
+        if racketvision_cache_path is not None
+        else session_dir / "cache" / RACKETVISION_CACHE_FILENAME
+    )
+    if racketvision_cache_target.exists() and racketvision_cache_target.is_dir():
+        raise _fail(
+            "validate",
+            f"invalid RacketVision cache path {racketvision_cache_target}: "
+            "destination is a directory.",
+        )
     if cache_target.exists() and cache_target.is_dir():
         raise _fail(
             "validate",
@@ -988,6 +1037,10 @@ def run_analyze_serve(
         _progress(f"analyze-serve dry-run: video {video_path}")
         _progress(f"analyze-serve dry-run: output {session_dir}")
         _progress(f"analyze-serve dry-run: cache {cache_target}")
+        _progress(
+            f"analyze-serve dry-run: RacketVision cache "
+            f"{racketvision_cache_target}"
+        )
         if start_opt is not None or end_opt is not None:
             _progress(
                 f"analyze-serve dry-run: range {start_opt} {end_opt}"
@@ -1542,33 +1595,91 @@ def run_analyze_serve(
                 except Exception:
                     pass
 
-        # --- optional RacketVision scene view (diagnostic-only) ---
-        scene_track = None
-        if racketvision_target is not None:
+        # --- raw ball/racket observations on the same exact PTS grid ---
+        rv_config = racketvision_config or RacketVisionConfig()
+        if not isinstance(rv_config, RacketVisionConfig):
+            raise _fail("tracking", "invalid racketvision_config.")
+        try:
+            rv_identity = RacketVisionCacheIdentity(
+                source_fingerprint=fingerprint,
+                attempt_start_seconds=req_start,
+                attempt_end_seconds=req_end,
+                timeline_fingerprint=fingerprint_frame_times(expected),
+                tracker_fingerprint=(
+                    racketvision_tracker_fingerprint.strip()
+                    if racketvision_tracker_fingerprint is not None
+                    else fingerprint_racketvision_config(rv_config)
+                ),
+            )
+        except Exception as exc:
+            raise _fail(
+                "tracking", f"could not identify RacketVision inputs: {exc}."
+            ) from exc
+
+        racketvision_hit = False
+        racketvision_observations = None
+        if racketvision_cache_target.is_file() and not force_flag:
             try:
-                scene_track = build_scene_track_with_racketvision(
-                    world_module.WorldCacheSnapshot(
-                        identity=identity,
-                        frames=tuple(observations),
-                        complete=True,
-                    ),
-                    racketvision_target,
-                    source_width=(
-                        metadata.height
-                        if metadata.rotation_degrees in (90, 270)
-                        else metadata.width
-                    ),
-                    source_height=(
-                        metadata.width
-                        if metadata.rotation_degrees in (90, 270)
-                        else metadata.height
-                    ),
+                rv_snapshot = load_racketvision_cache(
+                    racketvision_cache_target,
+                    rv_identity,
+                    expected_times=expected,
+                )
+            except (RacketVisionCacheCorruptError, RacketVisionCacheStaleError):
+                _quarantine_quietly(racketvision_cache_target)
+            except RacketVisionCacheError as exc:
+                raise _fail("tracking", f"could not read object track: {exc}.") from exc
+            else:
+                racketvision_observations = rv_snapshot.observations
+                racketvision_hit = True
+
+        if racketvision_observations is None:
+            try:
+                frames = (
+                    racketvision_frame_factory(expected, metadata)
+                    if racketvision_frame_factory is not None
+                    else iter_racketvision_model_frames(
+                        video_path,
+                        expected,
+                        source=metadata,
+                        ffmpeg=ffmpeg_exe,
+                        ffprobe=ffprobe_exe,
+                        is_cancelled=is_cancelled,
+                    )
+                )
+                tracker = (
+                    racketvision_tracker_factory(rv_config)
+                    if racketvision_tracker_factory is not None
+                    else RacketVisionTracker(rv_config)
+                )
+                racketvision_observations = tuple(tracker.track_frames(frames))
+                if tuple(
+                    observation.time_seconds
+                    for observation in racketvision_observations
+                ) != tuple(expected):
+                    raise RacketVisionCacheError(
+                        "tracker output does not match the native PTS grid."
+                    )
+                write_racketvision_cache(
+                    racketvision_cache_target,
+                    rv_identity,
+                    racketvision_observations,
+                    expected_times=expected,
                 )
             except Exception as exc:
-                raise _fail(
-                    "visual",
-                    f"could not align RacketVision CSV {racketvision_target}: {exc}",
-                ) from exc
+                raise _fail("tracking", f"RacketVision tracking failed: {exc}.") from exc
+
+        try:
+            scene_track = build_scene_track_with_racketvision_observations(
+                world_module.WorldCacheSnapshot(
+                    identity=identity,
+                    frames=tuple(observations),
+                    complete=True,
+                ),
+                racketvision_observations,
+            )
+        except Exception as exc:
+            raise _fail("tracking", f"could not build SceneTrack: {exc}.") from exc
 
         # --- 3D waveform chain with optional audio cue (never 2D, never sparse) ---
         _progress("analyze-serve: building 3D waveforms")
@@ -1992,6 +2103,10 @@ def run_analyze_serve(
             "attempt_id": ANALYZE_SERVE_ATTEMPT_ID,
             "attempt_range": attempt_range.to_dict(),
             "audio": audio_status,
+            "racketvision": {
+                "cache_hit": racketvision_hit,
+                "cache_path": str(racketvision_cache_target),
+            },
             "candidates": {
                 stage: {
                     "eligible": len(eligible[stage]),
@@ -2615,6 +2730,8 @@ def run_analyze_serve(
             review_json=review_dir / REVIEW_JSON_FILENAME,
             cache_path=cache_target,
             cache_hit=cache_hit,
+            racketvision_cache_path=racketvision_cache_target,
+            racketvision_cache_hit=racketvision_hit,
             frame_count=len(observations),
             inferred_frames=inferred,
             total_score=float(solution.total_score),

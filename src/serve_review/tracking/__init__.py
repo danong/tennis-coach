@@ -25,6 +25,7 @@ from serve_review.tracking.racketvision import (
     RacketVisionError,
     RacketVisionFrameObservation,
     RacketVisionTracker,
+    fingerprint_racketvision_config,
 )
 
 __all__ = [
@@ -43,6 +44,7 @@ __all__ = [
     "RacketVisionTracker",
     "build_color_probe_args",
     "fingerprint_frame_times",
+    "fingerprint_racketvision_config",
     "iter_racketvision_model_frames",
     "load_racketvision_cache",
     "parse_color_metadata",
