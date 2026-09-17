@@ -33,7 +33,6 @@ echo "analyze-serve: uv run --locked serve-review analyze-serve VIDEO --start-se
 echo "probe: uv run --locked serve-review probe VIDEO"
 echo "export: uv run --locked serve-review export VIDEO --ranges RANGES.json"
 echo "extract-poses: uv run --locked serve-review extract-poses VIDEO"
-echo "analyze: uv run --locked serve-review analyze VIDEO"
 echo "phase-debug: uv run --locked serve-review phase-debug ..."
 echo "phase-debug-dev: uv run --locked serve-review phase-debug-dev ..."
 echo "extract-world: uv run --locked serve-review extract-world VIDEO ..."
@@ -46,10 +45,6 @@ echo "setup/test/check: mise run setup | mise run test | mise run check"
 [tasks.cut]
 description = "Detect serves and export clips or a compilation"
 run = "uv run --locked serve-review cut \"$@\""
-
-[tasks.analyze]
-description = "Analyze accepted attempts into phase checkpoints"
-run = "uv run --locked serve-review analyze \"$@\""
 
 [tasks.phase-annotate]
 description = "Convert zero-based frame labels into a private phase annotation manifest"

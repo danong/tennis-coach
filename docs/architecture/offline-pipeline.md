@@ -67,7 +67,6 @@ serve-review doctor
 serve-review probe VIDEO
 serve-review export VIDEO --ranges ranges.json --output {compilation,clips,both}
 serve-review cut VIDEO --padding SECONDS --output {compilation,clips,both}
-serve-review analyze VIDEO [--attempts attempts.json]
 serve-review analyze-serve VIDEO [--start-seconds S --end-seconds E] [--output-dir DIR] [--cache PATH] [--anchor2comparison]
 
 # local manual-gate tools (through mise)
