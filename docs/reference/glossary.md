@@ -100,7 +100,7 @@ A fixed development source used for repeatable inspection or comparison. Always 
 - Use **stage** for the eight labels, **checkpoint** for analyzer data, and **keyframe** only for a frame/image.
 - Qualify review artifacts and analysis scope.
 - Use **pipeline step** for orchestration timing or errors so it is not confused with a serve stage.
-- Put implemented compatibility names such as `PhaseDocument`, `review-phases`, and `stage_timings_seconds` in code formatting.
+- Put implemented compatibility names such as `PhaseDocument` and `stage_timings_seconds` in code formatting.
 - Link to this glossary near the beginning of terminology-heavy maintained documents; do not link every occurrence.
 
 ## Implemented names and possible future renames
@@ -110,10 +110,8 @@ These changes are intentionally deferred until their code, schemas, CLI compatib
 | Current name | Preferred future name | Notes |
 | --- | --- | --- |
 | `docs/reference/serve-phase-analysis.md` | `docs/reference/serve-stage-analysis.md` | The maintained document describes stage checkpoints, not continuous phase intervals. |
-| `review-phases` | `review-checkpoints` or the future unified `review` command | Keep an alias during CLI migration. |
 | `phase-annotate` / `phase-evaluate` | `checkpoint-annotate` / `checkpoint-evaluate` | Coordinate with filenames and annotation schemas. |
 | `PhaseDocument`, `AttemptPhase`, `StagePhase` | checkpoint-oriented domain names | Requires a versioned schema/API migration; do not rename prose literals first. |
 | `phase-annotations.json` / `phase-evaluation.json` | checkpoint-oriented artifact names | Preserve readers for old local manifests where practical. |
-| `review-phases/` and `review-serve-3d/` | one review-artifact layout | Part of the future review-manifest project. |
 | `session_dir` in the current one-source cutting path | `source_dir` or `source_artifact_dir` | The directory currently represents a source, not a recording session. |
 | `stage_timings_seconds` in `run.json` | `pipeline_step_timings_seconds` | Avoid confusion with serve stages; requires a run-schema version change. |

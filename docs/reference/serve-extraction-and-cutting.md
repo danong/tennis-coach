@@ -156,7 +156,7 @@ The relevant identities are recorded in `run.json`: `cut-v1`, `candidate-ranges-
 2. Open `output/<stem>/serves.mov` for source-level review, or inspect the numbered clips individually.
 3. Review `attempts.json` against the original source, paying attention to unpadded versus padded ranges.
 4. Inspect `shadows.json` for tosses, silent overhead motions, truncated hypotheses, and other suppressed candidates.
-5. If stage checkpoints are needed, run `mise run analyze -- VIDEO` after `cut`, then `mise run review-phases -- VIDEO`; for the current native-PTS one-attempt path, use `uv run --locked serve-review analyze-serve VIDEO [--start-seconds S --end-seconds E]` as documented in [serve stage-checkpoint analysis](serve-phase-analysis.md).
+5. If stage checkpoints are needed, use `mise run process -- VIDEO` or run `uv run --locked serve-review analyze-serve VIDEO [--start-seconds S --end-seconds E]` as documented in [serve stage-checkpoint analysis](serve-phase-analysis.md).
 
 A compilation is a review aid, not ground truth. Confirm false positives and misses in the source before changing thresholds.
 

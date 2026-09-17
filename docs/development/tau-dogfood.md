@@ -110,13 +110,6 @@ private reasoning. The app's roadmap should point to the run and remaining work.
 - **Lifecycle:** reviewed and accepted through Tau with focused acceptance verification; worker workspace released; default working copy rebased. Human acceptance unavailable.
 - **Finding:** phase evaluation must compare keyframes against manually accepted uncertainty intervals, not pretend every body-only stage has an exact racket/ball ground-truth frame.
 
-### 2026-09-11 — labeled phase-review renderer
-
-- **Identity:** accepted run `a013079d-8dae-484d-b68e-00c63d2e4810`; base `0b684cfd`; candidate `6540a66fe304`; integrated `aedb6861`; model `opencode/muse-spark-1.3-contributor-free`; 32 turns.
-- **Evidence/review:** four allowed files changed and candidate verification passed. `review-phases` validates source-bound phase output and a complete matching pose cache, samples raw upright source at selected keyframes, overlays existing landmarks, and burns stage/time/confidence/provenance/anomaly caption text into JPEGs. It gives unavailable phases manifest rows instead of inventing images, labels contact as an estimate rather than visual observation, and publishes its review directory atomically. Tests cover source/cache failure, bounded pose support, cancellation/collision, determinism, and unchanged inputs.
-- **Development execution:** cut, analyze, and review succeeded locally on a private single-serve development exemplar. Five selected frames rendered; three stages were honestly unavailable. Local source paths, frame labels, and output paths remain ignored.
-- **Lifecycle:** reviewed and accepted through Tau with focused acceptance verification; worker workspace released; default working copy rebased. Human acceptance unavailable.
-
 ### 2026-09-11 — M4.6 optional manual-confidence repair and failed anchor gate
 
 - **Identity:** accepted repair `db6b077d-8d30-4541-a075-9ca1fdd3ebff`; candidate `915cc29342f6`; integrated `f025a824`; model `opencode/muse-spark-1.3-contributor-free`; 16 turns.
