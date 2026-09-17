@@ -1,38 +1,47 @@
-#!/usr/bin/env python3
-"""Run RacketVision BallTrack on one video and create an annotated MP4."""
+"""Legacy video/CSV renderer using the shared in-process RacketVision provider."""
+
+from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
 import cv2
-import numpy as np
 import pandas as pd
 
+from serve_review.media.frames import SampledFrame
+from serve_review.tracking.racketvision import (
+    RACKET_KEYPOINT_NAMES,
+    RacketVisionConfig,
+    RacketVisionTracker,
+)
 
-HERE = Path(__file__).resolve().parent
-RACKETVISION = HERE / "RacketVision"
-BALLTRACK = RACKETVISION / "source" / "BallTrack"
-RACKETPOSE = RACKETVISION / "source" / "RacketPose"
-DEFAULT_CFG = BALLTRACK / "configs" / "tracknetv3_base.py"
-# download_checkpoints.py was run from the RacketVision repository root.
-DEFAULT_CKPT = RACKETVISION / "BallTrack" / "checkpoints" / "balltrack_best.pth"
-DEFAULT_DET_CFG = RACKETPOSE / "configs" / "detection" / "rtmdet_m_racket_infer.py"
-DEFAULT_DET_CKPT = RACKETVISION / "RacketPose" / "checkpoints" / "epoch_300.pth"
-DEFAULT_POSE_CFG = RACKETPOSE / "configs" / "pose" / "rtmpose_m_racket_infer.py"
-DEFAULT_POSE_CKPT = RACKETVISION / "RacketPose" / "checkpoints" / "best_PCK_epoch_90.pth"
-POSE_CONNECTIONS = ((11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
-                    (11, 23), (12, 24), (23, 24), (23, 25), (25, 27),
-                    (24, 26), (26, 28), (27, 29), (29, 31), (28, 30),
-                    (30, 32), (23, 24))
+POSE_CONNECTIONS = (
+    (11, 12),
+    (11, 13),
+    (13, 15),
+    (12, 14),
+    (14, 16),
+    (11, 23),
+    (12, 24),
+    (23, 24),
+    (23, 25),
+    (25, 27),
+    (24, 26),
+    (26, 28),
+    (27, 29),
+    (29, 31),
+    (28, 30),
+    (30, 32),
+    (23, 24),
+)
+RACKET_CONNECTIONS = ((0, 1), (1, 2), (2, 3), (2, 4))
 POSE_LANDMARK_COUNT = 33
 
 
-def load_mediapipe_cache(path, frame_count):
+def load_mediapipe_cache(path: Path, frame_count: int):
     """Load normalized 2D landmarks from the existing JSONL cache."""
     frames = []
     with path.open() as handle:
@@ -49,267 +58,187 @@ def load_mediapipe_cache(path, frame_count):
     return frames
 
 
-def make_sdr_video(input_path, output_path):
-    """Convert BT.2020 HLG video to ordinary BT.709 SDR with ffmpeg."""
-    filter_expr = "colorspace=iall=bt2020:all=bt709:fast=0"
-    subprocess.run([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-i", str(input_path), "-vf", filter_expr,
-        "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
-        "-an", str(output_path),
-    ], check=True)
+def make_sdr_video(input_path: Path, output_path: Path) -> None:
+    """Convert the known BT.2020 HLG prototype input to BT.709 model pixels."""
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(input_path),
+            "-vf",
+            "colorspace=iall=bt2020:all=bt709:fast=0",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+            str(output_path),
+        ],
+        check=True,
+    )
 
 
-def letterbox(frame, width, height):
-    """Fit a frame into the model canvas without changing its aspect ratio."""
-    src_h, src_w = frame.shape[:2]
-    scale = min(width / src_w, height / src_h)
-    resized_w = max(1, round(src_w * scale))
-    resized_h = max(1, round(src_h * scale))
-    resized = cv2.resize(frame, (resized_w, resized_h))
-    left = (width - resized_w) // 2
-    top = (height - resized_h) // 2
-    canvas = np.zeros((height, width, 3), dtype=np.uint8)
-    canvas[top:top + resized_h, left:left + resized_w] = resized
-    return canvas, scale, left, top
-
-
-def extract_frames_and_median(video_path, frame_dir, width=512, height=288,
-                              samples=64, crop_top=0):
+def decode_frames(video_path: Path, *, crop_top: int = 0):
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
-
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if not fps or fps <= 0:
-        fps = 30.0
-
-    model_dir = frame_dir / "model"
-    model_dir.mkdir()
-    sample_indices = set(np.linspace(0, max(0, total - 1), samples, dtype=int)) if total else set()
-    native_samples = []
-    model_samples = []
-    frame_paths = []
-    model_frame_paths = []
-    frame_index = 0
-    output_width = output_height = None
-    transform = None
-
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    frames = []
     while True:
         ok, frame = cap.read()
         if not ok:
             break
-        # Preserve the source orientation. OpenCV gives us the actual portrait
-        # pixels; rotating them would make the output 90 degrees sideways.
         if crop_top:
             frame = frame[crop_top:]
-        if output_width is None:
-            output_height, output_width = frame.shape[:2]
-            _, scale, left, top = letterbox(frame, width, height)
-            transform = (scale, left, top)
-        model_frame, _, _, _ = letterbox(frame, width, height)
-
-        path = frame_dir / f"{frame_index:04d}.jpg"
-        model_path = model_dir / f"{frame_index:04d}.jpg"
-        if not cv2.imwrite(str(path), frame) or not cv2.imwrite(str(model_path), model_frame):
-            raise RuntimeError(f"Could not write frame {frame_index}")
-        frame_paths.append(path)
-        model_frame_paths.append(model_path)
-
-        if frame_index in sample_indices:
-            native_samples.append(frame.copy())
-            model_samples.append(model_frame)
-        frame_index += 1
-
+        frames.append(frame)
     cap.release()
-    if not frame_paths:
+    if not frames:
         raise RuntimeError("Video contains no readable frames")
-    if not native_samples:
-        native_samples.append(cv2.imread(str(frame_paths[0])))
-        model_samples.append(cv2.imread(str(model_frame_paths[0])))
-
-    native_median = np.median(np.stack(native_samples), axis=0).astype(np.uint8)
-    model_median = np.median(np.stack(model_samples), axis=0).astype(np.uint8)
-    return (frame_paths, model_frame_paths, native_median, model_median,
-            fps, output_width, output_height, transform)
+    return frames, float(fps)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("video", type=Path)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--cfg", type=Path, default=DEFAULT_CFG)
-    parser.add_argument("--ckpt", type=Path, default=DEFAULT_CKPT)
-    parser.add_argument("--det-cfg", type=Path, default=DEFAULT_DET_CFG)
-    parser.add_argument("--det-ckpt", type=Path, default=DEFAULT_DET_CKPT)
-    parser.add_argument("--pose-cfg", type=Path, default=DEFAULT_POSE_CFG)
-    parser.add_argument("--pose-ckpt", type=Path, default=DEFAULT_POSE_CKPT)
-    parser.add_argument("--mediapipe-cache", type=Path, default=None,
-                        help="Existing MediaPipe JSONL cache for 2D overlay")
+    parser.add_argument("--mediapipe-cache", type=Path)
+    parser.add_argument(
+        "--source-root", type=Path, default=Path("tools/racketvision/RacketVision")
+    )
+    parser.add_argument("--model-root", type=Path, default=Path("models/racketvision"))
     parser.add_argument("--bbox-threshold", type=float, default=0.3)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--samples", type=int, default=64)
     parser.add_argument("--batchsize", type=int, default=20)
-    parser.add_argument("--threshold", type=float, default=0.5)
-    parser.add_argument("--crop-top", type=int, default=0,
-                        help="Pixels to remove from the top before inference")
+    parser.add_argument("--threshold", type=float, default=0.10)
+    parser.add_argument("--crop-top", type=int, default=0)
     args = parser.parse_args()
 
-    if not args.video.exists():
+    if not args.video.is_file():
         parser.error(f"Input does not exist: {args.video}")
-    if not args.cfg.exists():
-        parser.error(f"Config does not exist: {args.cfg}")
-    for path in (args.ckpt, args.det_cfg, args.det_ckpt, args.pose_cfg, args.pose_ckpt):
-        if not path.exists():
-            parser.error(f"Required file does not exist: {path}")
-    if args.mediapipe_cache and not args.mediapipe_cache.exists():
+    if args.mediapipe_cache and not args.mediapipe_cache.is_file():
         parser.error(f"MediaPipe cache does not exist: {args.mediapipe_cache}")
 
-    sys.path.insert(0, str(BALLTRACK))
-    from inference import BallInferencer
-
-    pose_spec = importlib.util.spec_from_file_location(
-        "racketvision_pose_inference", RACKETPOSE / "tools" / "inference.py"
-    )
-    pose_module = importlib.util.module_from_spec(pose_spec)
-    pose_spec.loader.exec_module(pose_module)
-
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    csv_path = args.output.with_suffix(".csv")
-
-    with tempfile.TemporaryDirectory(prefix="racketvision-") as temp:
-        temp_dir = Path(temp)
-        sdr_video = temp_dir / "input-sdr.mp4"
+    with tempfile.TemporaryDirectory(prefix="racketvision-video-") as temporary:
+        sdr_video = Path(temporary) / "input-sdr.mp4"
         print("Converting HDR/HLG input to BT.709 SDR...")
         make_sdr_video(args.video, sdr_video)
-        (frame_paths, model_frame_paths, native_median, model_median,
-         fps, width, height, transform) = extract_frames_and_median(
-            sdr_video, temp_dir, samples=max(1, args.samples),
-            crop_top=max(0, args.crop_top)
+        frames, fps = decode_frames(sdr_video, crop_top=max(0, args.crop_top))
+
+    height, width = frames[0].shape[:2]
+    pose_rows = (
+        load_mediapipe_cache(args.mediapipe_cache, len(frames))
+        if args.mediapipe_cache
+        else [None] * len(frames)
+    )
+    sampled = (
+        SampledFrame(
+            time_seconds=index / fps,
+            timestamp_ms=round(index * 1000 / fps),
+            width=width,
+            height=height,
+            image=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
         )
-        median_path = temp_dir / "median.npz"
-        np.savez(median_path, median=model_median)
-        cv2.imwrite(str(temp_dir / "median.png"), model_median)
+        for index, frame in enumerate(frames)
+    )
+    config = RacketVisionConfig(
+        source_root=args.source_root,
+        ball_checkpoint=args.model_root / "balltrack.pth",
+        racket_detector_checkpoint=args.model_root / "racket-detector.pth",
+        racket_keypoints_checkpoint=args.model_root / "racket-keypoints.pth",
+        ball_threshold=args.threshold,
+        racket_bbox_threshold=args.bbox_threshold,
+        ball_batch_size=args.batchsize,
+        device=args.device,
+    )
+    observations = RacketVisionTracker(config).track_frames(sampled)
 
-        # Keep inspectable artifacts after the temporary frames have been
-        # cleaned up. The default median is native-orientation; the model
-        # version shows exactly what is passed to TrackNet.
-        persistent_median_path = args.output.with_name(args.output.stem + "-median.npz")
-        persistent_median_png = args.output.with_name(args.output.stem + "-median.png")
-        persistent_model_median_png = args.output.with_name(args.output.stem + "-model-median.png")
-        np.savez(persistent_median_path, median=native_median)
-        cv2.imwrite(str(persistent_median_png), native_median)
-        cv2.imwrite(str(persistent_model_median_png), model_median)
-
-        inferencer = BallInferencer(
-            str(args.cfg), str(args.ckpt), device=args.device,
-            thre=args.threshold, batchsize=args.batchsize,
-        )
-        results = inferencer([str(path) for path in model_frame_paths], str(median_path))
-        scale, left, top = transform
-
-        print("Loading racket detector and pose models...")
-        with pose_module.DefaultScope.overwrite_default_scope("mmdet"):
-            det_model = pose_module.init_detector(
-                str(args.det_cfg), str(args.det_ckpt), device=args.device
+    rows = []
+    for index, (observation, pose) in enumerate(zip(observations, pose_rows)):
+        row = {"Frame": index, "X": 0, "Y": 0, "Visibility": 0, "Confidence": 0.0}
+        if observation.ball_2d is not None:
+            row.update(
+                X=round(observation.ball_2d.x * width),
+                Y=round(observation.ball_2d.y * height),
+                Visibility=1,
+                Confidence=observation.ball_2d.confidence,
             )
-        pose_model = pose_module.init_pose_model(
-            str(args.pose_cfg), str(args.pose_ckpt), device=args.device
-        )
-        mediapipe_results = (
-            load_mediapipe_cache(args.mediapipe_cache, len(frame_paths))
-            if args.mediapipe_cache else [None] * len(frame_paths)
-        )
-        racket_results = []
-        for path in frame_paths:
-            frame = cv2.imread(str(path))
-            racket_results.append(pose_module.detect_and_estimate_pose(
-                det_model, pose_model, frame, cat_id=2,
-                bbox_thr=args.bbox_threshold
-            ))
-
-        for result in results:
-            if result["Visibility"]:
-                result["X"] = round((result["X"] - left) / scale)
-                result["Y"] = round((result["Y"] - top) / scale)
-                if not (0 <= result["X"] < width and 0 <= result["Y"] < height):
-                    result["X"] = result["Y"] = 0
-                    result["Visibility"] = 0
-        rows = []
-        keypoint_names = ["Top", "Bottom", "Handle", "Left", "Right"]
-        for ball, rackets, pose in zip(results, racket_results, mediapipe_results):
-            rackets = rackets[:1]  # one racket is enough for this prototype
-            row = ball.copy()
-            if pose:
-                for pose_index, point in enumerate(pose[:POSE_LANDMARK_COUNT]):
-                    row[f"Pose{pose_index}X"] = point["x"] * width
-                    row[f"Pose{pose_index}Y"] = point["y"] * height
-                    row[f"Pose{pose_index}Confidence"] = point.get("visibility", 0.0)
-            if not rackets:
-                rows.append(row)
-                continue
-            racket = rackets[0]
+        if pose:
+            for pose_index, point in enumerate(pose[:POSE_LANDMARK_COUNT]):
+                row[f"Pose{pose_index}X"] = point["x"] * width
+                row[f"Pose{pose_index}Y"] = point["y"] * height
+                row[f"Pose{pose_index}Confidence"] = point.get("visibility", 0.0)
+        racket = observation.racket_2d
+        if racket is not None:
             row["RacketIndex"] = 0
-            bbox = racket["bbox"][0]
-            for i, value in enumerate(bbox):
-                row[f"BBox{i + 1}"] = value
-            row["BBoxConfidence"] = racket["bbox_score"]
-            for name, point, score in zip(
-                keypoint_names, racket["keypoints"], racket["keypoint_scores"]
-            ):
-                row[f"{name}X"], row[f"{name}Y"] = point
-                row[f"{name}Confidence"] = score
-            rows.append(row)
-        pd.DataFrame(rows).to_csv(csv_path, index=False)
+            row["BBox1"], row["BBox2"], row["BBox3"], row["BBox4"] = (
+                racket.bbox[0] * width,
+                racket.bbox[1] * height,
+                racket.bbox[2] * width,
+                racket.bbox[3] * height,
+            )
+            row["BBoxConfidence"] = racket.bbox_confidence
+            for name in RACKET_KEYPOINT_NAMES:
+                point = racket.keypoints.get(name)
+                if point is not None:
+                    row[f"{name}X"] = point.x * width
+                    row[f"{name}Y"] = point.y * height
+                    row[f"{name}Confidence"] = point.confidence
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(args.output.with_suffix(".csv"), index=False)
 
-        writer = cv2.VideoWriter(
-            str(args.output), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
-        )
-        if not writer.isOpened():
-            raise RuntimeError(f"Could not open output video: {args.output}")
-        try:
-            for frame_index, (result, frame_path, rackets) in enumerate(
-                zip(results, frame_paths, racket_results)
-            ):
-                frame = cv2.imread(str(frame_path))
-                pose = mediapipe_results[frame_index]
-                if result["Visibility"]:
-                    center = (int(result["X"]), int(result["Y"]))
-                    cv2.circle(frame, center, 14, (0, 255, 255), 3)
-                    cv2.putText(
-                        frame, f"ball {result['Confidence']:.2f}",
-                        (center[0] + 16, center[1] - 16),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2,
+    writer = cv2.VideoWriter(
+        str(args.output), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
+    )
+    if not writer.isOpened():
+        raise RuntimeError(f"Could not open output video: {args.output}")
+    try:
+        for frame, observation, pose in zip(frames, observations, pose_rows):
+            if observation.ball_2d is not None:
+                center = (
+                    round(observation.ball_2d.x * width),
+                    round(observation.ball_2d.y * height),
+                )
+                cv2.circle(frame, center, 14, (0, 255, 255), 3)
+            if pose:
+                points = [
+                    (round(point["x"] * width), round(point["y"] * height))
+                    for point in pose[:POSE_LANDMARK_COUNT]
+                ]
+                for a, b in POSE_CONNECTIONS:
+                    if (
+                        pose[a].get("visibility", 0.0) >= 0.5
+                        and pose[b].get("visibility", 0.0) >= 0.5
+                    ):
+                        cv2.line(frame, points[a], points[b], (0, 165, 255), 2)
+            racket = observation.racket_2d
+            if racket is not None:
+                points = []
+                for name in RACKET_KEYPOINT_NAMES:
+                    point = racket.keypoints.get(name)
+                    points.append(
+                        None
+                        if point is None
+                        else (round(point.x * width), round(point.y * height))
                     )
-                if pose:
-                    points = []
-                    for point in pose[:POSE_LANDMARK_COUNT]:
-                        xy = (round(point["x"] * width), round(point["y"] * height))
-                        points.append(xy)
-                        if point.get("visibility", 0.0) >= 0.5:
-                            cv2.circle(frame, xy, 5, (0, 165, 255), -1)
-                    for a, b in POSE_CONNECTIONS:
-                        if (pose[a].get("visibility", 0.0) >= 0.5 and
-                                pose[b].get("visibility", 0.0) >= 0.5):
-                            cv2.line(frame, points[a], points[b], (0, 165, 255), 2)
-                for racket in rackets[:1]:
-                    x1, y1, x2, y2 = map(int, racket["bbox"][0])
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
-                    points = [tuple(map(int, point)) for point in racket["keypoints"]]
-                    for point in points:
+                for point in points:
+                    if point is not None:
                         cv2.circle(frame, point, 7, (255, 0, 255), -1)
-                    for a, b in ((0, 1), (1, 2), (2, 3), (2, 4)):
+                for a, b in RACKET_CONNECTIONS:
+                    if points[a] is not None and points[b] is not None:
                         cv2.line(frame, points[a], points[b], (255, 0, 255), 2)
-                writer.write(frame)
-        finally:
-            writer.release()
+            writer.write(frame)
+    finally:
+        writer.release()
 
-    print(f"Wrote {csv_path}")
+    print(f"Wrote {args.output.with_suffix('.csv')}")
     print(f"Wrote {args.output}")
-    print(f"Wrote {persistent_median_png}")
-    print(f"Wrote {persistent_median_path}")
-    print(f"Wrote {persistent_model_median_png}")
 
 
 if __name__ == "__main__":

@@ -5,36 +5,31 @@ video and a per-frame CSV. This is intentionally a small, CPU-only prototype.
 
 ## Setup
 
-The prototype uses a separate uv environment:
+RacketVision and MediaPipe share the project's locked uv environment. The
+RacketVision dependency group pins Torch/OpenMMLab, NumPy 1.26, and the older
+Setuptools API still required by MMPose:
 
 ```bash
-uv venv --python 3.11 tools/racketvision/.venv
-VENV=tools/racketvision/.venv/bin/python
-uv pip install --python "$VENV" torch==2.1.2 torchvision==0.16.2
-uv pip install --python "$VENV" mmengine==0.10.7
-uv pip install --python "$VENV" mmcv==2.1.0 \
-  --find-links https://download.openmmlab.com/mmcv/dist/cpu/torch2.1/index.html
-uv pip install --python "$VENV" mmdet==3.3.0 mmpose==1.3.2
-uv pip install --python "$VENV" \
-  pandas tqdm parse huggingface_hub terminaltables pycocotools \
-  shapely scipy xtcocotools munkres json_tricks albumentations chumpy
+mise run setup
 ```
 
-Download the RacketVision checkpoints (from the cloned repository root):
+The ignored upstream RacketVision checkout remains at
+`tools/racketvision/RacketVision/`. Download its checkpoints, then place them
+under the project's common model directory:
 
-```bash
-cd tools/racketvision/RacketVision
-../.venv/bin/python source/download_checkpoints.py --module BallTrack
-../.venv/bin/python source/download_checkpoints.py --module RacketPose
-cd ../../..
+```text
+models/racketvision/balltrack.pth
+models/racketvision/racket-detector.pth
+models/racketvision/racket-keypoints.pth
 ```
 
+Their expected SHA-256 identities are recorded in `models/manifest.json`.
 `ffmpeg` must also be available on `PATH`.
 
 ## Run
 
 ```bash
-tools/racketvision/.venv/bin/python tools/racketvision/track_video.py \
+uv run --locked --all-groups python tools/racketvision/track_video.py \
   input.MOV --output output/racketvision/tracked.mp4 \
   --threshold 0.10
 ```
@@ -42,7 +37,7 @@ tools/racketvision/.venv/bin/python tools/racketvision/track_video.py \
 To overlay the existing MediaPipe 2D pose cache for `single-serve-01`:
 
 ```bash
-tools/racketvision/.venv/bin/python tools/racketvision/track_video.py \
+uv run --locked --all-groups python tools/racketvision/track_video.py \
   refs/anchors/single-serve-01.mov \
   --output output/racketvision/single-serve-01-mediapipe.mp4 \
   --threshold 0.10 \
@@ -58,8 +53,6 @@ inference. Outputs include:
 ```text
 tracked.mp4
 tracked.csv
-tracked-median.png / tracked-median.npz
-tracked-model-median.png
 ```
 
 The CSV contains ball coordinates/confidence and, when detected, one racket
@@ -71,7 +64,7 @@ bounding box plus five racket keypoints (`Top`, `Bottom`, `Handle`, `Left`,
 Post-process an existing run without re-running any models:
 
 ```bash
-tools/racketvision/.venv/bin/python tools/racketvision/smooth_tracks.py \
+uv run --locked --all-groups python tools/racketvision/smooth_tracks.py \
   output/racketvision/single-serve-01-mediapipe.csv
 ```
 
@@ -84,7 +77,7 @@ no tracking text. Adjust with `--window` and `--polyorder`.
 Find and render an impact candidate from the smoothed metadata:
 
 ```bash
-tools/racketvision/.venv/bin/python tools/racketvision/find_impact.py \
+uv run --locked --all-groups python tools/racketvision/find_impact.py \
   output/racketvision/single-serve-01-mediapipe-smoothed.csv
 ```
 
@@ -98,7 +91,7 @@ Apply fixed median bone lengths and fit separate quadratic ball arcs after
 release and impact, without re-running inference:
 
 ```bash
-tools/racketvision/.venv/bin/python tools/racketvision/fit_physics.py \
+uv run --locked --all-groups python tools/racketvision/fit_physics.py \
   output/racketvision/single-serve-01-mediapipe-smoothed.csv \
   --video refs/anchors/single-serve-01.mov
 ```
@@ -120,11 +113,11 @@ artifact lineage rather than a perfectly contiguous sequence:
 Regenerate the raw overlays:
 
 ```bash
-tools/racketvision/.venv/bin/python tools/racketvision/render_raw.py \
+uv run --locked --all-groups python tools/racketvision/render_raw.py \
   refs/anchors/single-serve-01.mov output/racketvision/cache/single-serve-01-raw.csv \
   --output output/racketvision/00-single-serve-01-raw.mp4
 
-tools/racketvision/.venv/bin/python tools/racketvision/render_raw.py \
+uv run --locked --all-groups python tools/racketvision/render_raw.py \
   /Users/danielong/Documents/Tennis/Serves/2026-09-15/cropped.MOV \
   output/racketvision/cache/cropped-raw.csv \
   --output output/racketvision/00-cropped-raw.mp4
@@ -151,12 +144,12 @@ whether a point came from a real observation or an interpolation.
 Regenerate the smoothed outputs:
 
 ```bash
-tools/racketvision/.venv/bin/python tools/racketvision/smooth_tracks.py \
+uv run --locked --all-groups python tools/racketvision/smooth_tracks.py \
   output/racketvision/cache/single-serve-01-raw.csv \
   --video output/racketvision/00-single-serve-01-raw.mp4 \
   --output output/racketvision/01-single-serve-01-smoothed.csv
 
-tools/racketvision/.venv/bin/python tools/racketvision/smooth_tracks.py \
+uv run --locked --all-groups python tools/racketvision/smooth_tracks.py \
   output/racketvision/cache/cropped-raw.csv \
   --video output/racketvision/00-cropped-raw.mp4 \
   --output output/racketvision/01-cropped-smoothed.csv
@@ -177,13 +170,13 @@ as release even when the ball is elsewhere.
 Regenerate the stage frames:
 
 ```bash
-tools/racketvision/.venv/bin/python tools/racketvision/find_stages.py \
+uv run --locked --all-groups python tools/racketvision/find_stages.py \
   output/racketvision/cache/single-serve-01-smoothed.csv \
   refs/anchors/single-serve-01.mov \
   output/racketvision/cache/single-serve-01-stages.json \
   --prefix output/racketvision/02-single-serve-01
 
-tools/racketvision/.venv/bin/python tools/racketvision/find_stages.py \
+uv run --locked --all-groups python tools/racketvision/find_stages.py \
   output/racketvision/cache/cropped-smoothed.csv \
   /Users/danielong/Documents/Tennis/Serves/2026-09-15/cropped.MOV \
   output/racketvision/cache/cropped-stages.json \
@@ -197,13 +190,13 @@ tools/racketvision/.venv/bin/python tools/racketvision/find_stages.py \
 Regenerate the physics videos:
 
 ```bash
-tools/racketvision/.venv/bin/python tools/racketvision/fit_physics.py \
+uv run --locked --all-groups python tools/racketvision/fit_physics.py \
   output/racketvision/cache/single-serve-01-smoothed.csv \
   --video refs/anchors/single-serve-01.mov \
   --toss-start 272 --release-frame 327 --impact-frame 439 --peak-frame 380 \
   --output output/racketvision/03-single-serve-01-physics.csv
 
-tools/racketvision/.venv/bin/python tools/racketvision/fit_physics.py \
+uv run --locked --all-groups python tools/racketvision/fit_physics.py \
   output/racketvision/cache/cropped-smoothed.csv \
   --video /Users/danielong/Documents/Tennis/Serves/2026-09-15/cropped.MOV \
   --toss-start 107 --release-frame 141 --impact-frame 170 --peak-frame 153 \

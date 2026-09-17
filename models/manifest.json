@@ -13,6 +13,39 @@
       "macos_variant": "heavy",
       "ios_candidates": ["full", "lite"],
       "status": "local sanity-test baseline; not yet approved for production"
+    },
+    {
+      "id": "racketvision-balltrack",
+      "runtime": "torch-2.1.2",
+      "artifact": "racketvision/balltrack.pth",
+      "sha256": "00d707b9db7a49561c411e4765956e79bcd7c7e20c7a0a535073440b3e972342",
+      "source_url": "https://huggingface.co/linfeng302/RacketVision-Models/blob/main/checkpoints/balltrack_best.pth",
+      "license_review": "prototype evaluation only; upstream license review required before distribution",
+      "input": "BT.709 SDR upright image sequence",
+      "output": "one ball center and confidence per frame",
+      "status": "local prototype"
+    },
+    {
+      "id": "racketvision-racket-detector",
+      "runtime": "mmdet-3.3.0",
+      "artifact": "racketvision/racket-detector.pth",
+      "sha256": "e6ad74371259d844b11529a64b09052edaec4277ce9ebeeca64d77b9131a19cd",
+      "source_url": "https://huggingface.co/linfeng302/RacketVision-Models/blob/main/checkpoints/epoch_300.pth",
+      "license_review": "prototype evaluation only; upstream license review required before distribution",
+      "input": "BT.709 SDR upright image",
+      "output": "racket bounding boxes",
+      "status": "local prototype component of RacketPose"
+    },
+    {
+      "id": "racketvision-racket-keypoints",
+      "runtime": "mmpose-1.3.2",
+      "artifact": "racketvision/racket-keypoints.pth",
+      "sha256": "faab22d4c8753759a6c6d4b48241e97b560f5a1b4374ba5cd4074932801a51e2",
+      "source_url": "https://huggingface.co/linfeng302/RacketVision-Models/blob/main/checkpoints/best_PCK_epoch_90.pth",
+      "license_review": "prototype evaluation only; upstream license review required before distribution",
+      "input": "detected racket crop",
+      "output": "five racket keypoints and confidences",
+      "status": "local prototype component of RacketPose"
     }
   ]
 }
