@@ -30,6 +30,7 @@ __all__ = [
     "SceneTrack",
     "build_scene_track",
     "build_scene_track_with_racketvision",
+    "build_scene_track_with_racketvision_observations",
     "load_racketvision_csv",
 ]
 
@@ -375,6 +376,62 @@ def build_scene_track_with_racketvision(
     return SceneTrack(
         source_fingerprint=scene.source_fingerprint,
         frames=frames,
+        available_modalities=scene.available_modalities
+        | frozenset({"ball_2d", "racket_2d"}),
+    )
+
+
+def build_scene_track_with_racketvision_observations(
+    world_snapshot: WorldCacheSnapshot,
+    observations: Sequence[object],
+    *,
+    audio: Sequence[AudioEnergy] | None = None,
+    audio_transients: Sequence[bool | None] | None = None,
+) -> SceneTrack:
+    """Build a scene with one typed RacketVision observation per world frame.
+
+    Observations are joined strictly by sequence position.  Their timestamps
+    must be exactly equal to the native world-frame timestamps; no FPS or
+    tolerance-based alignment is performed.
+    """
+    # Keep this import local: racketvision uses Point2D and Racket2D from this
+    # module, so importing it at module load time would create a cycle.
+    from serve_review.tracking.racketvision import RacketVisionFrameObservation
+
+    if not isinstance(observations, (tuple, list)):
+        raise TypeError("observations must be a list or tuple of typed values.")
+    scene = build_scene_track(
+        world_snapshot, audio=audio, audio_transients=audio_transients
+    )
+    if len(observations) != len(scene.frames):
+        raise ValueError(
+            "RacketVision observations must contain exactly one value per world frame."
+        )
+    result: list[SceneFrame] = []
+    for index, (frame, observation) in enumerate(zip(scene.frames, observations)):
+        if not isinstance(observation, RacketVisionFrameObservation):
+            raise TypeError(
+                "observations must contain RacketVisionFrameObservation values."
+            )
+        if observation.time_seconds != frame.time_seconds:
+            raise ValueError(
+                f"RacketVision observation timestamp at row {index} must exactly "
+                "match the world frame timestamp."
+            )
+        result.append(
+            SceneFrame(
+                time_seconds=frame.time_seconds,
+                body_2d=frame.body_2d,
+                body_3d=frame.body_3d,
+                ball_2d=observation.ball_2d,
+                racket_2d=observation.racket_2d,
+                audio_energy=frame.audio_energy,
+                audio_transient=frame.audio_transient,
+            )
+        )
+    return SceneTrack(
+        source_fingerprint=scene.source_fingerprint,
+        frames=tuple(result),
         available_modalities=scene.available_modalities
         | frozenset({"ball_2d", "racket_2d"}),
     )

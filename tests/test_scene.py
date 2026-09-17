@@ -24,7 +24,9 @@ from serve_review.scene import (
     SceneTrack,
     build_scene_track,
     build_scene_track_with_racketvision,
+    build_scene_track_with_racketvision_observations,
 )
+from serve_review.tracking.racketvision import RacketVisionFrameObservation
 
 
 def _world_frame(time: float) -> WorldFrameObservation:
@@ -199,6 +201,37 @@ def test_racketvision_adapter_rejects_mismatch_malformed_data_and_crop(
     with pytest.raises(ValueError, match="crop_top.*unsupported"):
         build_scene_track_with_racketvision(
             _snapshot(0.0), path, source_width=100, source_height=100, crop_top=4
+        )
+
+
+def test_typed_racketvision_observations_attach_without_losing_nulls() -> None:
+    racket = Racket2D((0.1, 0.2, 0.5, 0.8), 0.7, {})
+    scene = build_scene_track_with_racketvision_observations(
+        _snapshot(1.0, 1.1),
+        (
+            RacketVisionFrameObservation(1.0, None, None),
+            RacketVisionFrameObservation(1.1, Point2D(0.4, 0.5, 0.8), racket),
+        ),
+        audio=(AudioEnergy(1.0, 0.2), AudioEnergy(1.1, 0.3)),
+    )
+    assert scene.source_fingerprint == "sha256:test"
+    assert scene.available_modalities == frozenset(
+        {"body_2d", "body_3d", "ball_2d", "racket_2d", "audio"}
+    )
+    assert scene.frames[0].ball_2d is None
+    assert scene.frames[0].racket_2d is None
+    assert scene.frames[1].ball_2d == Point2D(0.4, 0.5, 0.8)
+    assert scene.frames[1].racket_2d is racket
+    assert scene.frames[1].audio_energy == 0.3
+
+
+def test_typed_racketvision_observations_require_exact_rows_and_timestamps() -> None:
+    observation = RacketVisionFrameObservation(0.0, None, None)
+    with pytest.raises(ValueError, match="exactly one"):
+        build_scene_track_with_racketvision_observations(_snapshot(0.0, 0.1), (observation,))
+    with pytest.raises(ValueError, match="exactly match"):
+        build_scene_track_with_racketvision_observations(
+            _snapshot(0.0), (RacketVisionFrameObservation(0.00001, None, None),)
         )
 
 
