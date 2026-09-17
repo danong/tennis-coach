@@ -23,13 +23,14 @@ __all__ = [
     "probe_color_metadata",
 ]
 
-# Decode tagged HLG to linear light, apply a deterministic SDR tone map, then
-# encode BT.709 video-range pixels. zscale reads the source color tags.
+# Decode the exact tagged iPhone HLG format to linear light, apply a
+# deterministic SDR tone map, then encode BT.709 video-range pixels. The final
+# consumer selects its own pixel format (for example, raw rgb24 for CV).
 HLG_TO_SDR_FILTER = (
-    "zscale=transfer=linear:npl=100,format=gbrpf32le,"
+    "zscale=pin=bt2020:tin=arib-std-b67:min=bt2020nc:rin=tv:"
+    "transfer=linear:npl=100,format=gbrpf32le,"
     "tonemap=tonemap=hable:desat=0,"
-    "zscale=primaries=bt709:transfer=bt709:matrix=bt709:range=tv,"
-    "format=yuv420p"
+    "zscale=primaries=bt709:transfer=bt709:matrix=bt709:range=tv"
 )
 
 

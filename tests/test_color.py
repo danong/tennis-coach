@@ -25,7 +25,8 @@ def test_tagged_iphone_hlg_selects_tonemapping_filter() -> None:
 
     assert metadata.is_bt2020_hlg is True
     assert metadata.sdr_filter == HLG_TO_SDR_FILTER
-    assert "zscale=transfer=linear" in HLG_TO_SDR_FILTER
+    assert "pin=bt2020:tin=arib-std-b67:min=bt2020nc:rin=tv" in HLG_TO_SDR_FILTER
+    assert "transfer=linear" in HLG_TO_SDR_FILTER
     assert "tonemap=tonemap=hable" in HLG_TO_SDR_FILTER
 
 
