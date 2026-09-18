@@ -1,8 +1,8 @@
 # Serve Review offline pipeline design
 
-> **Status:** Current · **State:** Maintained · **Work:** None · **As of:** 2026-09-14
+> **Status:** Historical · **State:** Superseded · **Work:** None · **As of:** 2026-09-16
 
-> **Status note:** implementation specification. M1–M3 are complete. The dense MediaPipe 3D kinematic-waveform M4 replacement is implemented and frozen after accepted development confirmation; one held-out checkpoint evaluation remains. See [`serve-stage-checkpoint-analysis.md`](../reference/serve-stage-checkpoint-analysis.md).
+> **Status note:** retained as the earlier offline design record. Current operational behavior is documented by [processing lifecycle](processing-lifecycle.md), [serve extraction and cutting](../reference/serve-extraction-and-cutting.md), and [serve stage-checkpoint analysis](../reference/serve-stage-checkpoint-analysis.md).
 
 Terminology follows the [glossary](../reference/glossary.md). Literal command, schema, and type names retain their current compatibility spelling.
 

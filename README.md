@@ -20,13 +20,13 @@ A local command-line tool for finding and reviewing tennis serve attempts in sou
 
 ## Documents
 
-- [Design](docs/architecture/offline-pipeline.md): offline behavior, media rules, architecture, detection, checkpoints, and evaluation.
-- [Deferred roadmap](docs/plans/offline-roadmap.md): earlier single-run leaves, dependencies, allowed scope, checks, and milestone gates.
-- [Serve stage-checkpoint analysis](docs/reference/serve-stage-checkpoint-analysis.md): current native-PTS 3D checkpoint pipeline, cues, weights, filtering, artifacts, limitations, and code pointers.
-- [Archive](docs/archive/): superseded M4 remediation and iOS-first planning documents.
-- [M5 TCN proposal](docs/proposals/m5-tcn-phase-detection.md): deferred learned multi-view phase-detection experiment.
+Start with the [documentation index](docs/README.md). The main operational references are:
 
-The design is the general behavioral source of truth. [Serve stage-checkpoint analysis](docs/reference/serve-stage-checkpoint-analysis.md) is the operational source of truth for the current native-3D checkpoint path; the deferred roadmap records its earlier delivery order and gates. If maintained documents conflict, resolve and update them before implementation.
+- [Processing lifecycle](docs/architecture/processing-lifecycle.md): what happens when `mise run process` runs.
+- [Serve extraction and cutting](docs/reference/serve-extraction-and-cutting.md): attempt detection and export.
+- [Serve stage-checkpoint analysis](docs/reference/serve-stage-checkpoint-analysis.md): multimodal checkpoint analysis.
+
+If maintained documents conflict, resolve and update them before implementation.
 
 ## Offline development setup
 
@@ -69,7 +69,7 @@ Current development commands:
 | `mise run help` | Show the repository command inventory. |
 | `mise run process -- TARGET [--dry-run] [--force]` | Process one source or a recording directory and publish its local summary. |
 | `uv run --locked serve-review cut <video> --padding 1 --output <compilation\|clips\|both> [--dry-run] [--force]` | Detect accepted attempts and export a compilation, clips, or both. |
-| `uv run --locked serve-review analyze-serve <video> [--start-seconds S --end-seconds E] [--dry-run] [--force]` | Current one-attempt native-PTS 3D stage-checkpoint analysis; writes checkpoints, diagnostics, a review page, and a reusable world cache. |
+| `uv run --locked serve-review analyze-serve <video> [--start-seconds S --end-seconds E] [--dry-run] [--force]` | One-attempt native-PTS stage-checkpoint analysis; writes checkpoints, diagnostics, review, and reusable body-world and ball/racket observation caches. |
 | `mise run phase-annotate -- <video> --attempts <attempts.json> --labels <labels.json> --output <annotations.json>` | Convert zero-based decoded-frame labels to exact-PTS private annotations. |
 | `mise run phase-evaluate -- --checkpoints <checkpoints.json> --annotations <annotations.json> --output <report.json>` | Write the deterministic local checkpoint-evaluation report. |
 | `uv run python tools/export_segments.py <video> <segments.json> --output-dir <dir>` | Export manually selected corpus segments. |

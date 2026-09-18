@@ -41,20 +41,27 @@ A compatible cache avoids native-frame inference. The backend is still initializ
 ```mermaid
 flowchart LR
     source["One source or explicit attempt range"]
-    pts["Decode every native frame<br/>preserve exact presentation timestamps (PTS)"]
-    pose["MediaPipe Heavy inference<br/>world 3D landmarks + optional 2D overlay landmarks"]
-    cache["Source/model-bound reusable<br/>kinematic-track cache"]
-    filter["Per-joint, per-axis segment-safe<br/>Butterworth low-pass filter"]
-    waves["Timestamped 3D waveform matrix<br/>geometry, relative wrist motion, derivatives, settling"]
-    audio["Optional raw-source audio<br/>band-pass RMS + shared transient qualification"]
-    candidates["Six dense weighted candidate sets<br/>start, release, loading, cocking, contact, finish"]
-    dp["Dynamic-programming chronology search<br/>including contact-to-finish guard"]
-    derived["Derive acceleration and deceleration<br/>as selected-anchor midpoints"]
-    review["Atomic checkpoints.json<br/>diagnostics JSON + source-frame HTML review"]
+    body["Native-PTS MediaPipe body observations<br/>reusable kinematic cache"]
+    racket["Native-PTS RacketVision observations<br/>reusable ball/racket cache"]
+    audio["Aligned audio energy and transient observations"]
+    scene["SceneTrack<br/>aligned observation-level rows"]
+    wave["Filtered world track<br/>KinematicWaveformTrack"]
+    features["SceneFeatureSeries"]
+    candidates["CompositeAnchorSet<br/>weighted dense candidates"]
+    dp["SixAnchorSolver<br/>chronological selection"]
+    output["checkpoints, diagnostics, review"]
 
-    source --> pts --> pose --> cache --> filter --> waves --> candidates --> dp --> derived --> review
-    source --> audio --> candidates
-    cache -. compatible reuse skips inference .-> filter
+    source --> body
+    source --> racket
+    source --> audio
+    body --> scene
+    racket --> scene
+    audio --> scene
+    body --> wave
+    scene --> features
+    wave --> candidates
+    features --> candidates
+    candidates --> dp --> output
 ```
 
 ### Time and coordinates
