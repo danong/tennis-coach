@@ -95,8 +95,10 @@ from serve_review.checkpoints.composite_anchors import (
     CompositeAnchorSet,
 )
 from serve_review.checkpoints.kinematic_waveforms import KinematicWaveformsConfig
-from serve_review.checkpoints.phase_solver import PhaseSolverConfig
-from serve_review.checkpoints.six_anchor_solver import SIX_ANCHOR_STAGES
+from serve_review.checkpoints.six_anchor_solver import (
+    SIX_ANCHOR_STAGES,
+    SixAnchorSolverConfig,
+)
 from serve_review.checkpoints.world_filter import WorldFilterConfig
 from serve_review.detection.decoder import DecoderConfig
 from serve_review.domain import (
@@ -795,7 +797,7 @@ def run_analyze_serve(
     filter_config: WorldFilterConfig | None = None,
     waveforms_config: KinematicWaveformsConfig | None = None,
     composite_config: CompositeAnchorConfig | None = None,
-    solver_config: PhaseSolverConfig | None = None,
+    solver_config: SixAnchorSolverConfig | None = None,
     probe_fn: Callable[[Path], SourceMetadata] | None = None,
     native_times_fn: Callable[..., tuple[float, ...]] | None = None,
     native_frame_factory: Callable[..., Iterator[Any]] | None = None,
@@ -959,15 +961,15 @@ def run_analyze_serve(
     cfg_solver = (
         solver_config
         if solver_config is not None
-        else PhaseSolverConfig(
+        else SixAnchorSolverConfig(
             config_id=ANALYZE_SERVE_SOLVER_CONFIG_ID,
             max_contact_to_finish_seconds=ANALYZE_SERVE_MAX_CONTACT_TO_FINISH_SECONDS,
         )
     )
-    if not isinstance(cfg_solver, PhaseSolverConfig):
+    if not isinstance(cfg_solver, SixAnchorSolverConfig):
         raise _fail(
             "validate",
-            "invalid solver_config: expected PhaseSolverConfig, "
+            "invalid solver_config: expected SixAnchorSolverConfig, "
             f"got {type(cfg_solver).__name__}.",
         )
     if isinstance(model_path, Path):

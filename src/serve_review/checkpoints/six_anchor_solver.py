@@ -48,11 +48,11 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from serve_review.checkpoints.composite_anchors import CompositeAnchorCandidate
-from serve_review.checkpoints.phase_solver import PhaseSolverConfig
 
 __all__ = [
     "SIX_ANCHOR_STAGES",
     "SIX_ANCHOR_METHOD_VERSION",
+    "SixAnchorSolverConfig",
     "SixAnchorSolverError",
     "SixAnchorSolution",
     "transition_feasible",
@@ -71,6 +71,43 @@ SIX_ANCHOR_STAGES: tuple[str, ...] = (
 
 #: Method identity for six-anchor DP selection records.
 SIX_ANCHOR_METHOD_VERSION = "six-anchor-dp-v1"
+SIX_ANCHOR_DEFAULT_CONFIG_ID = "phase-solver-default-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class SixAnchorSolverConfig:
+    """Only the chronology policy consumed by the six-anchor DP."""
+
+    config_id: str = SIX_ANCHOR_DEFAULT_CONFIG_ID
+    skip_penalty: float = 0.30
+    contact_skip_penalty: float = 0.80
+    min_transition_gap_seconds: float = 0.0
+    max_transition_gap_seconds: float = 1.50
+    max_contact_to_finish_seconds: float | None = None
+    transition_bonus: float = 0.05
+
+    def __post_init__(self) -> None:
+        values = (
+            self.skip_penalty,
+            self.contact_skip_penalty,
+            self.min_transition_gap_seconds,
+            self.max_transition_gap_seconds,
+            self.transition_bonus,
+        )
+        if any(not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0 for value in values):
+            raise SixAnchorSolverError("six_anchor_solver_config: values must be non-negative.")
+        if self.max_transition_gap_seconds <= 0 or self.min_transition_gap_seconds > self.max_transition_gap_seconds:
+            raise SixAnchorSolverError("six_anchor_solver_config: invalid transition gap bounds.")
+        if self.max_contact_to_finish_seconds is not None and self.max_contact_to_finish_seconds <= 0:
+            raise SixAnchorSolverError("six_anchor_solver_config: contact-to-finish cap must be > 0.")
+        if not isinstance(self.config_id, str) or not self.config_id.strip():
+            raise SixAnchorSolverError("six_anchor_solver_config: config_id must be non-blank.")
+
+    def skip_cost(self, stage: str) -> float:
+        return float(self.contact_skip_penalty if stage == "contact" else self.skip_penalty)
+
+    def max_gap_for_span(self, span: int) -> float:
+        return float(self.max_transition_gap_seconds) * span
 
 #: Numerical tolerance for gap-bound comparisons (same as M4.4).
 _GAP_EPSILON_SECONDS = 1e-9
@@ -132,7 +169,7 @@ def transition_feasible(
     later: CompositeAnchorCandidate,
     earlier_index: int,
     later_index: int,
-    config: PhaseSolverConfig,
+    config: SixAnchorSolverConfig,
 ) -> bool:
     """Return True when two selected candidates may be consecutive picks.
 
@@ -244,7 +281,7 @@ class SixAnchorSolution:
 
 def solve_six_anchors(
     candidates: Mapping[str, Sequence[CompositeAnchorCandidate]],
-    config: PhaseSolverConfig | None = None,
+    config: SixAnchorSolverConfig | None = None,
 ) -> SixAnchorSolution:
     """Select the globally coherent six-anchor sequence.
 
@@ -261,16 +298,16 @@ def solve_six_anchors(
             (``coverage > 0``) candidate list in PTS order; an empty
             list honestly means no selectable evidence for that stage.
         config: Solver configuration owning penalties/gap bounds/bonus
-            (defaults to :class:`PhaseSolverConfig` defaults).
+            (defaults to :class:`SixAnchorSolverConfig` defaults).
 
     Returns:
         An immutable :class:`SixAnchorSolution`.
     """
     name = "solve_six_anchors"
-    cfg = config if config is not None else PhaseSolverConfig()
-    if not isinstance(cfg, PhaseSolverConfig):
+    cfg = config if config is not None else SixAnchorSolverConfig()
+    if not isinstance(cfg, SixAnchorSolverConfig):
         raise SixAnchorSolverError(
-            f"{name}: 'config' must be a PhaseSolverConfig, "
+            f"{name}: 'config' must be a SixAnchorSolverConfig, "
             f"got {type(config).__name__}."
         )
     per_stage_map = _check_candidates(name, candidates)

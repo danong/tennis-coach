@@ -33,7 +33,7 @@ from serve_review.checkpoints.composite_anchors import (
     COMPOSITE_CUE_NAMES,
     CompositeAnchorCandidate,
 )
-from serve_review.checkpoints.phase_solver import PhaseSolverConfig
+from serve_review.checkpoints.six_anchor_solver import SixAnchorSolverConfig
 from serve_review.domain import (
     STAGE_ORDER,
     AttemptPhase,
@@ -173,9 +173,6 @@ def fake_racketvision(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def no_legacy_sparse(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail loudly if any legacy sparse/M3 function is invoked."""
-    import serve_review.checkpoints.evidence as evidence_module
-    import serve_review.checkpoints.phase_features as features_module
-    import serve_review.checkpoints.phase_solver as solver_module
     import serve_review.pose.cache as cache_module
     import serve_review.pose.extract as extract_module
 
@@ -184,10 +181,6 @@ def no_legacy_sparse(monkeypatch: pytest.MonkeyPatch) -> None:
             "legacy sparse path must never run on analyze-serve"
         )
 
-    monkeypatch.setattr(features_module, "build_phase_feature_grid", _boom)
-    monkeypatch.setattr(evidence_module, "build_phase_evidence", _boom)
-    monkeypatch.setattr(solver_module, "solve_attempt_phase", _boom)
-    monkeypatch.setattr(solver_module, "solve_with_diagnostics", _boom)
     monkeypatch.setattr(cache_module, "load_cache", _boom)
     monkeypatch.setattr(extract_module, "extract_poses", _boom)
 
@@ -673,7 +666,7 @@ def _direct_candidate(
 
 
 def test_contact_to_finish_cap_only_limits_that_stage_pair() -> None:
-    cfg = PhaseSolverConfig(max_contact_to_finish_seconds=0.8)
+    cfg = SixAnchorSolverConfig(max_contact_to_finish_seconds=0.8)
     contact = _direct_candidate("contact", 4.0)
     finish_at_cap = _direct_candidate("finish", 4.8)
     finish_after_cap = _direct_candidate("finish", 4.800001)
@@ -697,8 +690,8 @@ def test_dp_skips_empty_stage_and_stays_chronological() -> None:
         )
         for stage in six_module.SIX_ANCHOR_STAGES
     }
-    first = six_module.solve_six_anchors(candidates, PhaseSolverConfig())
-    second = six_module.solve_six_anchors(candidates, PhaseSolverConfig())
+    first = six_module.solve_six_anchors(candidates, SixAnchorSolverConfig())
+    second = six_module.solve_six_anchors(candidates, SixAnchorSolverConfig())
     assert first.choice["contact"] is None
     assert first.total_score == second.total_score
     assert dict(first.choice) == dict(second.choice)

@@ -18,19 +18,6 @@ from serve_review.domain import (
     PhaseError,
     StagePhase,
 )
-from serve_review.checkpoints.phase_features import (
-    PHASE_FEATURES_METHOD_VERSION,
-    PHASE_FEATURES_SCHEMA_VERSION,
-    TRACKED_JOINT_NAMES,
-    PhaseFeatureGrid,
-    PhaseFeatureSample,
-    PhaseFeaturesConfig,
-    PhaseFeaturesError,
-    build_phase_feature_grid,
-    resolve_direct_observation_tolerance_seconds,
-    window_samples_for_seconds,
-)
-
 __all__ = [
     "PHASE_SCHEMA_VERSION",
     "STAGE_ORDER",
@@ -42,14 +29,4 @@ __all__ = [
     "PhaseDocument",
     "PhaseError",
     "StagePhase",
-    "PHASE_FEATURES_SCHEMA_VERSION",
-    "PHASE_FEATURES_METHOD_VERSION",
-    "TRACKED_JOINT_NAMES",
-    "PhaseFeatureGrid",
-    "PhaseFeatureSample",
-    "PhaseFeaturesConfig",
-    "PhaseFeaturesError",
-    "build_phase_feature_grid",
-    "resolve_direct_observation_tolerance_seconds",
-    "window_samples_for_seconds",
 ]
