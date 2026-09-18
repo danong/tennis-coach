@@ -104,6 +104,17 @@ def test_schema_rejects_structurally_unavailable_non_null_cells() -> None:
                         tuple(tuple(row) for row in masks))
 
 
+def test_schema_rejects_partial_channel_support_in_available_segment() -> None:
+    payload = _sample_fingerprint().to_dict()
+    segment = payload["normalized_sequence"]["segments"][0]
+    segment["available"] = True
+    segment["availability"][0][0] = True
+    segment["values"][0][0] = 0.0
+
+    with pytest.raises(ServeFingerprintError):
+        ServeFingerprintV1.from_dict(payload)
+
+
 def _waveform(rows: list[dict[str, float | None]]) -> KinematicWaveformTrack:
     samples = []
     for i, supplied in enumerate(rows):
@@ -161,6 +172,22 @@ def test_scalar_extraction_uses_exact_anchor_rows_closed_intervals_and_signs() -
     assert v("hitting_elbow_extension_rate_peak_cocking_to_contact") == 8.0
     assert v("hitting_elbow_extension_peak_time_relative_to_contact") == -1.0
     assert v("right_wrist_speed_peak_time_relative_to_contact") == -1.0
+
+
+def test_extension_rate_is_zero_without_extension_and_elbow_peak_time_is_unavailable() -> None:
+    names = ("knee_flexion_velocity_left", "knee_flexion_velocity_right",
+             "elbow_flexion_velocity_right")
+    values = [{channel: float(i + 1) for channel in names} for i in range(7)]
+    anchors = dict(zip(ANCHOR_NAMES, (0., 1., 2., 3., 5., 6.)))
+
+    metrics = extract_scalar_metrics(_waveform(values), anchors)
+
+    assert metrics["knee_extension_rate_left_peak_loading_to_contact"].value == 0.0
+    assert metrics["knee_extension_rate_right_peak_loading_to_contact"].value == 0.0
+    elbow_rate = metrics["hitting_elbow_extension_rate_peak_cocking_to_contact"]
+    elbow_time = metrics["hitting_elbow_extension_peak_time_relative_to_contact"]
+    assert elbow_rate.available and elbow_rate.value == 0.0
+    assert not elbow_time.available and elbow_time.value is None
 
 
 def test_scalar_metrics_are_unavailable_for_missing_anchor_or_interior_support() -> None:
@@ -235,3 +262,40 @@ def test_sequence_missing_anchor_and_interior_support_are_explicit() -> None:
     assert not absent.segments[0].available
     assert all(value is None for row in absent.segments[0].values for value in row)
     assert all(not value for row in absent.segments[0].availability for value in row)
+
+
+def test_piecewise_linear_fixture_checks_scalars_resampling_and_gap_support() -> None:
+    sampled_channel = "knee_flexion_left"
+    gap_channel = "knee_flexion_right"
+    scalar_channel = "right_wrist_speed"
+    rows = [{} for _ in range(11)]
+    rows[0].update({sampled_channel: 0.0, gap_channel: 2.0})
+    rows[1].update({sampled_channel: 15.0, gap_channel: None})
+    rows[2].update({sampled_channel: 0.0, gap_channel: 4.0})
+    rows[6][scalar_channel] = 0.0
+    rows[7][scalar_channel] = 12.0
+    rows[8][scalar_channel] = 3.0
+    fingerprint = build_serve_fingerprint_v1(
+        _waveform(rows), _phase((0., 2., 4., 6., 8., 10.)),
+        source_fingerprint="sha256:piecewise", body_model_name="pose", body_model_version="1",
+    )
+
+    # The first segment covers t=0..2. These native values are linear on
+    # either side of t=1, so every normalized sample has an exact expectation.
+    segment = fingerprint.segments[0]
+    sampled_column = CHANNEL_NAMES.index(sampled_channel)
+    expected = tuple(
+        pytest.approx(30.0 * i / 15.0 if i <= 7 else 30.0 * (1.0 - i / 15.0))
+        for i in range(16)
+    )
+    assert tuple(row[sampled_column] for row in segment.values) == expected
+    assert all(row[sampled_column] for row in segment.availability)
+
+    # The scalar maximum is the middle native point, with time relative to contact.
+    assert fingerprint.metrics["right_wrist_speed_peak_cocking_to_contact"].value == 12.0
+    assert fingerprint.metrics["right_wrist_speed_peak_time_relative_to_contact"].value == -1.0
+
+    # A missing native row invalidates the entire channel/segment series.
+    gap_column = CHANNEL_NAMES.index(gap_channel)
+    assert all(row[gap_column] is None for row in segment.values)
+    assert all(not row[gap_column] for row in segment.availability)

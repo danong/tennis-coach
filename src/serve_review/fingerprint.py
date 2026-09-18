@@ -181,6 +181,13 @@ class SequenceSegment:
                     raise ServeFingerprintError("unavailable sequence cells must be null.")
                 if not self.available and (supported or value is not None):
                     raise ServeFingerprintError("structurally unavailable segments must be all null/false.")
+        if self.available:
+            for column in range(len(CHANNEL_NAMES)):
+                channel_mask = tuple(mask[column] for mask in self.availability)
+                if any(channel_mask) and not all(channel_mask):
+                    raise ServeFingerprintError(
+                        "available sequence channels must have complete support across the segment."
+                    )
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "available": self.available,
@@ -409,11 +416,14 @@ def extract_scalar_metrics(
         put(name, result[0] if result else None)
         name = f"knee_extension_rate_{side}_peak_loading_to_contact"
         result = interval("loading", "contact", f"knee_flexion_velocity_{side}")
-        put(name, -min((float(_sample_value(s, f"knee_flexion_velocity_{side}"))
-                        for s in waveform.samples
-                        if times["loading"] is not None and times["contact"] is not None
-                        and times["loading"] <= s.time_seconds <= times["contact"]), default=math.inf)
-            if result is not None else None)
+        if result is not None:
+            knee_velocities = [float(_sample_value(s, f"knee_flexion_velocity_{side}"))
+                               for s in waveform.samples
+                               if times["loading"] is not None and times["contact"] is not None
+                               and times["loading"] <= s.time_seconds <= times["contact"]]
+            put(name, max(0.0, -min(knee_velocities)))
+        else:
+            put(name, None)
 
     sep = interval("release", "contact", "shoulder_hip_separation_transverse_deg")
     put("shoulder_hip_separation_max_release_to_contact", sep[0] if sep else None)
@@ -428,11 +438,19 @@ def extract_scalar_metrics(
                   and times["contact"] is not None
                   and times["cocking"] <= s.time_seconds <= times["contact"]]
     elbow_values = [_sample_value(s, "elbow_flexion_velocity_right") for s in elbow_rows]
-    elbow_ext = (-min(elbow_values), elbow_rows[min(range(len(elbow_values)),
-                 key=lambda i: elbow_values[i])].time_seconds) if elbow is not None else None
+    if elbow is not None:
+        min_elbow_velocity = min(elbow_values)
+        elbow_rate = max(0.0, -min_elbow_velocity)
+        # A zero rate means the interval contains no actual extension, so there
+        # is no meaningful time for the peak extension metric.
+        elbow_ext = (elbow_rate, elbow_rows[min(range(len(elbow_values)),
+                     key=lambda i: elbow_values[i])].time_seconds if elbow_rate > 0.0 else None)
+    else:
+        elbow_ext = None
     put("hitting_elbow_extension_rate_peak_cocking_to_contact", elbow_ext[0] if elbow_ext else None)
     put("hitting_elbow_extension_peak_time_relative_to_contact",
-        elbow_ext[1] - contact if elbow_ext is not None and contact is not None else None)
+        elbow_ext[1] - contact if elbow_ext is not None and elbow_ext[1] is not None
+        and contact is not None else None)
     wrist = interval("cocking", "contact", "right_wrist_speed")
     put("right_wrist_speed_peak_cocking_to_contact", wrist[0] if wrist else None)
     put("right_wrist_speed_peak_time_relative_to_contact",
