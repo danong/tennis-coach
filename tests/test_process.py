@@ -392,17 +392,3 @@ def test_dry_run_writes_no_summary_and_runs_no_producers(tmp_path: Path) -> None
     assert result.summary_path is None
     assert not (tmp_path / "metadata" / "index.html").exists()
     assert result.actions[0].action == "run"
-
-
-def test_mise_inventory_lists_process_first() -> None:
-    from pathlib import Path as _Path
-
-    text = (_Path(__file__).resolve().parent.parent / "mise.toml").read_text(
-        encoding="utf-8"
-    )
-    assert 'run = "uv run --locked serve-review process' in text
-    assert "[tasks.process]" in text
-    assert "[tasks.help]" in text
-    help_run = text.split("[tasks.help]", 1)[1]
-    assert help_run.index("process") < help_run.index("cut")
-    assert "uv run --locked serve-review" in help_run

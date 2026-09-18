@@ -8,7 +8,6 @@ Labels JSON schema v1:
 """
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import os
@@ -134,18 +133,3 @@ def annotate(video: Path, attempts_path: Path, labels_path: Path, output: Path, 
     manifest = PhaseAnnotationManifest(dataset_split=labels["dataset_split"], annotations=tuple(rows))
     _atomic_write(output, manifest.to_json(), overwrite)
     return output
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Build a phase annotation manifest from zero-based decoded frame labels.")
-    parser.add_argument("video", type=Path); parser.add_argument("--attempts", type=Path, required=True)
-    parser.add_argument("--labels", type=Path, required=True); parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--ffprobe", default="ffprobe"); parser.add_argument("--overwrite", action="store_true")
-    args = parser.parse_args()
-    try:
-        print(annotate(args.video, args.attempts, args.labels, args.output, ffprobe=args.ffprobe, overwrite=args.overwrite))
-    except AnnotationToolError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr); return 1
-    return 0
-
-if __name__ == "__main__": raise SystemExit(main())

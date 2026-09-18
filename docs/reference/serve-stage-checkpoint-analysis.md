@@ -20,7 +20,7 @@ uv run --locked serve-review analyze-serve VIDEO \
 
 `mise.toml` does not currently expose an `analyze-serve` task; use the `uv run` command above. For a source containing multiple attempts, first use `cut` to make or select one attempt range or clip, then run `analyze-serve` on that range or clip.
 
-Optional `--anchor2comparison` is deliberately narrow: it compares only the fixed local development anchor-2 video with its fixed manual labels. It is not a general annotation interface.
+The deliberately narrow fixed anchor-2 comparison is available only through `uv run --locked serve-review dev anchor2-comparison VIDEO`; it is not a normal analysis option or a general annotation interface.
 
 Outputs are written atomically beneath `<output-dir>/<video-stem>/`:
 

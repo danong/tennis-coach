@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import argparse
 import os
 import shutil
 import subprocess
 import sys
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 
 @contextmanager
@@ -73,7 +72,7 @@ def doctor() -> int:
     return 0
 
 
-def probe(args: argparse.Namespace) -> int:
+def probe(args: Any) -> int:
     from serve_review.media.probe import ProbeError, probe_source, write_source_json
 
     source = args.video.expanduser()
@@ -98,7 +97,7 @@ def probe(args: argparse.Namespace) -> int:
     return 0
 
 
-def export_cmd(args: argparse.Namespace) -> int:
+def export_cmd(args: Any) -> int:
     import json
 
     from serve_review.domain import DomainError, ExportPlan, MediaRange
@@ -227,7 +226,7 @@ def plan_error(message: str) -> Exception:
     return ExportPlanError(message)
 
 
-def extract_poses_cmd(args: argparse.Namespace) -> int:
+def extract_poses_cmd(args: Any) -> int:
     from serve_review.pose import extract as extract_module
 
     source = args.video.expanduser()
@@ -297,7 +296,7 @@ def extract_poses_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
-def cut(args: argparse.Namespace) -> int:
+def cut(args: Any) -> int:
     from serve_review.pipeline import CutCancelled, CutError, run_cut
 
     source = args.video.expanduser()
@@ -355,7 +354,7 @@ def cut(args: argparse.Namespace) -> int:
     return 0
 
 
-def analyze_serve(args: argparse.Namespace) -> int:
+def analyze_serve(args: Any) -> int:
     from serve_review.analyze_serve import (
         AnalyzeServeCancelled,
         AnalyzeServeError,
@@ -416,7 +415,7 @@ def analyze_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def process_cmd(args: argparse.Namespace) -> int:
+def process_cmd(args: Any) -> int:
     from serve_review.process import FingerprintMismatch, ProcessError
     from serve_review.process import process as run_process
 
@@ -466,358 +465,3 @@ def process_cmd(args: argparse.Namespace) -> int:
     return 1 if result.failures else 0
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="serve-review",
-        description="Detect tennis serves in a recording and export useful ranges.",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    doctor_parser = subparsers.add_parser("doctor", help="check local prerequisites")
-    doctor_parser.set_defaults(handler=lambda _args: doctor())
-
-    probe_parser = subparsers.add_parser(
-        "probe",
-        help="inspect a video with ffprobe and emit normalized source.json",
-        description=(
-            "Run ffprobe on a source MOV/MP4 video and write normalized "
-            "source.json metadata (dimensions, rational frame rate/time base, "
-            "duration, codec, rotation)."
-        ),
-    )
-    probe_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
-    probe_parser.add_argument(
-        "--output",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help="destination source.json file (default: output/<source-stem>/source.json)",
-    )
-    probe_parser.add_argument(
-        "--ffprobe",
-        default="ffprobe",
-        metavar="EXE",
-        help="ffprobe executable (default: ffprobe)",
-    )
-    probe_parser.set_defaults(handler=probe)
-
-    cut_parser = subparsers.add_parser("cut", help="detect and export serves")
-    cut_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
-    cut_parser.add_argument(
-        "--padding",
-        type=float,
-        default=1.0,
-        metavar="SECONDS",
-        help="seconds to retain before and after each detected serve (default: 1)",
-    )
-    cut_parser.add_argument(
-        "--output",
-        choices=("compilation", "clips", "both"),
-        default="compilation",
-        help="output form (default: compilation)",
-    )
-    cut_parser.add_argument(
-        "--metadata-dir",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        dest="metadata_dir",
-        help=(
-            "exact metadata/cache destination override "
-            "(default: VIDEO.parent/metadata/VIDEO.stem)"
-        ),
-    )
-    cut_parser.add_argument(
-        "--export-dir",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        dest="export_dir",
-        help=(
-            "exact media destination override "
-            "(default: VIDEO.parent/exports/VIDEO.stem)"
-        ),
-    )
-    cut_parser.add_argument(
-        "--dry-run",
-        dest="dry_run",
-        action="store_true",
-        default=False,
-        help="validate and report destinations without writes (default: off)",
-    )
-    cut_parser.add_argument(
-        "--force",
-        dest="force",
-        action="store_true",
-        default=False,
-        help="replace only this command's exact destinations (default: fail on collision)",
-    )
-    cut_parser.add_argument(
-        "--ffmpeg",
-        default="ffmpeg",
-        metavar="EXE",
-        help="ffmpeg executable (default: ffmpeg)",
-    )
-    cut_parser.add_argument(
-        "--ffprobe",
-        default="ffprobe",
-        metavar="EXE",
-        help="ffprobe executable (default: ffprobe)",
-    )
-    cut_parser.set_defaults(handler=cut)
-
-    export_parser = subparsers.add_parser(
-        "export",
-        help="export manual ranges as clips and/or a compilation",
-        description=(
-            "Concatenate validated manual source ranges without dead-time gaps. "
-            "Ranges are read from a JSON file (a list of "
-            "{start_seconds, end_seconds} objects or a full export-plan document) "
-            "and exported from the original source samples with filter-based "
-            "re-encoding."
-        ),
-    )
-    export_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
-    export_parser.add_argument(
-        "--ranges",
-        type=Path,
-        required=True,
-        metavar="RANGES_JSON",
-        help="JSON file with manual ranges to export",
-    )
-    export_parser.add_argument(
-        "--output",
-        choices=("compilation", "clips", "both"),
-        default="compilation",
-        help="output form (default: compilation)",
-    )
-    export_parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("output"),
-        help="generated output directory (default: output)",
-    )
-    export_parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="replace existing outputs (default: fail on collision)",
-    )
-    export_parser.add_argument(
-        "--ffmpeg",
-        default="ffmpeg",
-        metavar="EXE",
-        help="ffmpeg executable (default: ffmpeg)",
-    )
-    export_parser.add_argument(
-        "--ffprobe",
-        default="ffprobe",
-        metavar="EXE",
-        help="ffprobe executable (default: ffprobe)",
-    )
-    export_parser.set_defaults(handler=export_cmd)
-
-    poses_parser = subparsers.add_parser(
-        "extract-poses",
-        help="extract cached body-pose observations for diagnostics",
-        description=(
-            "Sample timestamped frames at --sample-rate Hz, run the approved "
-            "Heavy Pose Landmarker in serialized VIDEO mode, and write a "
-            "resumable versioned pose cache. Complete caches with matching "
-            "identity are reused without inference; interrupted caches resume."
-        ),
-    )
-    poses_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
-    poses_parser.add_argument(
-        "--model",
-        type=Path,
-        default=Path("models/pose_landmarker_heavy.task"),
-        metavar="PATH",
-        help="approved Pose Landmarker .task artifact (default: models/pose_landmarker_heavy.task)",
-    )
-    poses_parser.add_argument(
-        "--sample-rate",
-        type=float,
-        default=30.0,
-        metavar="HZ",
-        help="uniform sampling rate in Hz (default: 30)",
-    )
-    poses_parser.add_argument(
-        "--cache",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help="destination pose cache file (default: <output-dir>/<source-stem>/cache/pose-v1.jsonl)",
-    )
-    poses_parser.add_argument(
-        "--overlay",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help=(
-            "optional diagnostic .mp4: render the sampled upright frames "
-            "with pose landmarks and skeleton lines via the system ffmpeg "
-            "(default: off)"
-        ),
-    )
-    poses_parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("output"),
-        help="generated output directory (default: output)",
-    )
-    poses_parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="replace any existing cache instead of resuming it",
-    )
-    poses_parser.add_argument(
-        "--ffmpeg",
-        default="ffmpeg",
-        metavar="EXE",
-        help="ffmpeg executable (default: ffmpeg)",
-    )
-    poses_parser.add_argument(
-        "--ffprobe",
-        default="ffprobe",
-        metavar="EXE",
-        help="ffprobe executable (default: ffprobe)",
-    )
-    poses_parser.set_defaults(handler=extract_poses_cmd)
-
-    serve_parser = subparsers.add_parser(
-        "analyze-serve",
-        help="analyze one serve range through the 3D waveform path",
-        description=(
-            "Analyze one explicit serve video/range using the 3D "
-            "kinematic path (native-PTS world track, segment-safe filter, "
-            "3D waveforms with aligned raw-audio transient channels when "
-            "present, six composite anchor candidates, DP chronology "
-            "search, two derived midpoint stages) and atomically write "
-            "checkpoints.json, a 3D diagnostic JSON, and a source-frame "
-            "review page. Defaults to the entire source timeline; no "
-            "attempts.json, attempt id, or phase JSON is required. A "
-            "synthetic in-memory serve-001 range exists solely for output "
-            "linkage. Raw-source audio is demuxed once and aligned to the "
-            "exact kinematic PTS; demux/alignment failure or an absent "
-            "stream is nonfatal and yields unavailable audio channels. "
-            "Contact uses body_pose_audio provenance when the selected "
-            "contact carries an available supporting audio cue, otherwise "
-            "body_pose."
-        ),
-    )
-    serve_parser.add_argument("video", type=Path, help="source MOV/MP4 video")
-    serve_parser.add_argument(
-        "--start-seconds",
-        type=float,
-        default=None,
-        metavar="SECONDS",
-        dest="start_seconds",
-        help="serve range start in source seconds (default: 0.0)",
-    )
-    serve_parser.add_argument(
-        "--end-seconds",
-        type=float,
-        default=None,
-        metavar="SECONDS",
-        dest="end_seconds",
-        help="serve range end in source seconds (default: source duration)",
-    )
-    serve_parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        dest="output_dir",
-        help=(
-            "exact output destination override "
-            "(default: VIDEO.parent/metadata/VIDEO.stem/manual-analysis)"
-        ),
-    )
-    serve_parser.add_argument(
-        "--cache",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help=(
-            "reusable kinematic-track cache file (default: "
-            "<exact-output>/cache/kinematic-track-v1.jsonl)"
-        ),
-    )
-    serve_parser.add_argument(
-        "--model",
-        type=Path,
-        default=Path("models/pose_landmarker_heavy.task"),
-        metavar="PATH",
-        help="approved Pose Landmarker .task artifact (default: models/pose_landmarker_heavy.task)",
-    )
-    serve_parser.add_argument(
-        "--dry-run",
-        dest="dry_run",
-        action="store_true",
-        default=False,
-        help="validate and report destinations without writes (default: off)",
-    )
-    serve_parser.add_argument(
-        "--force",
-        dest="force",
-        action="store_true",
-        default=False,
-        help="replace only this command's exact destination (default: fail on collision)",
-    )
-    serve_parser.add_argument(
-        "--anchor2comparison",
-        "--anchor2-comparison",
-        dest="anchor2comparison",
-        action="store_true",
-        default=False,
-        help=(
-            "compare against the fixed manual anchor for exactly "
-            "refs/anchors/single-serve-02.mov "
-            "(refs/annotations/dev/single-serve-02.anchor2.json)"
-        ),
-    )
-    serve_parser.add_argument(
-        "--ffmpeg",
-        default="ffmpeg",
-        metavar="EXE",
-        help="ffmpeg executable (default: ffmpeg)",
-    )
-    serve_parser.add_argument(
-        "--ffprobe",
-        default="ffprobe",
-        metavar="EXE",
-        help="ffprobe executable (default: ffprobe)",
-    )
-    serve_parser.set_defaults(handler=analyze_serve)
-
-    process_parser = subparsers.add_parser(
-        "process",
-        help="process a recording directory or single video beside its sources",
-    )
-    process_parser.add_argument("target", type=Path, help="recording directory or MOV/MP4 video")
-    process_parser.add_argument(
-        "--dry-run",
-        dest="dry_run",
-        action="store_true",
-        default=False,
-        help="report planned skip/clear/run actions without writes (default: off)",
-    )
-    process_parser.add_argument(
-        "--force",
-        dest="force",
-        action="store_true",
-        default=False,
-        help="replace selected generated trees before processing (default: off)",
-    )
-    process_parser.set_defaults(handler=process_cmd)
-
-    return parser
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    return int(args.handler(args))
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

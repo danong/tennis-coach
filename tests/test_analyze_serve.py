@@ -834,19 +834,13 @@ def test_anchor2_file_content_and_midpoints() -> None:
     )
 
 
-def test_cli_anchor2_flag_parsing() -> None:
-    from serve_review.cli import build_parser
+def test_cli_anchor2_comparison_is_development_only() -> None:
+    from click.testing import CliRunner
+    from serve_review.cli.main import cli
 
-    default = build_parser().parse_args(["analyze-serve", "session.mov"])
-    assert default.anchor2comparison is False
-    long = build_parser().parse_args(
-        ["analyze-serve", "session.mov", "--anchor2comparison"]
-    )
-    assert long.anchor2comparison is True
-    aliased = build_parser().parse_args(
-        ["analyze-serve", "session.mov", "--anchor2-comparison"]
-    )
-    assert aliased.anchor2comparison is True
+    runner = CliRunner()
+    assert runner.invoke(cli, ["analyze-serve", "session.mov", "--anchor2comparison"]).exit_code != 0
+    assert runner.invoke(cli, ["dev", "anchor2-comparison", "session.mov", "--help"]).exit_code == 0
 
 
 def test_anchor2_rejects_other_basename(tmp_path: Path) -> None:

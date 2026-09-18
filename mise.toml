@@ -25,19 +25,8 @@ description = "Process a recording directory or single video beside its sources"
 run = "uv run --locked serve-review process \"$@\""
 
 [tasks.help]
-description = "Show the repository command inventory"
-run = """
-echo "process: mise run process -- TARGET [--dry-run] [--force]"
-echo "cut: uv run --locked serve-review cut VIDEO --padding 1 --output compilation [--dry-run] [--force]"
-echo "analyze-serve: uv run --locked serve-review analyze-serve VIDEO --start-seconds S --end-seconds E [--dry-run] [--force]"
-echo "probe: uv run --locked serve-review probe VIDEO"
-echo "export: uv run --locked serve-review export VIDEO --ranges RANGES.json"
-echo "extract-poses: uv run --locked serve-review extract-poses VIDEO"
-echo "phase-annotate: mise run phase-annotate -- ..."
-echo "phase-evaluate: mise run phase-evaluate -- ..."
-echo "doctor: mise run doctor"
-echo "setup/test/check: mise run setup | mise run test | mise run check"
-"""
+description = "Show serve-review command help"
+run = "uv run --locked serve-review --help"
 
 [tasks.cut]
 description = "Detect serves and export clips or a compilation"
@@ -45,8 +34,8 @@ run = "uv run --locked serve-review cut \"$@\""
 
 [tasks.phase-annotate]
 description = "Convert zero-based frame labels into a private phase annotation manifest"
-run = "uv run --locked python tools/phase_annotations.py \"$@\""
+run = "uv run --locked serve-review dev phase-annotate \"$@\""
 
 [tasks.phase-evaluate]
 description = "Evaluate checkpoints against a private annotation manifest"
-run = "uv run --locked python tools/evaluate_checkpoints.py \"$@\""
+run = "uv run --locked serve-review dev phase-evaluate \"$@\""

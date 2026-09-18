@@ -2,7 +2,6 @@
 """Write a deterministic M4 checkpoint evaluation report without mutating inputs."""
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 import tempfile
@@ -40,19 +39,3 @@ def evaluate(checkpoints: Path, annotations: Path, output: Path, *, overwrite: b
         raise ValueError(f"cannot evaluate checkpoints: {exc}") from exc
     atomic_write(output, report.to_json(), overwrite)
     return output
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Evaluate phase checkpoints against manual annotations.")
-    parser.add_argument("--checkpoints", type=Path, required=True)
-    parser.add_argument("--annotations", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--overwrite", action="store_true")
-    args = parser.parse_args()
-    try:
-        print(evaluate(args.checkpoints, args.annotations, args.output, overwrite=args.overwrite))
-    except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr); return 1
-    return 0
-
-if __name__ == "__main__": raise SystemExit(main())

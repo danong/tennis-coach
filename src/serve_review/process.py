@@ -10,13 +10,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
-from serve_review.analyze_serve import (
-    DIAGNOSTICS_FILENAME,
-    INDEX_HTML_FILENAME,
-    REVIEW_DIRNAME,
-    REVIEW_JSON_FILENAME,
-    run_analyze_serve,
-)
+from serve_review.analysis_artifacts import AttemptAnalysisArtifacts
+from serve_review.analyze_serve import run_analyze_serve
 from serve_review.domain import AttemptDocument, SourceMetadata
 from serve_review.media.probe import probe_source
 from serve_review.pipeline import run_cut
@@ -133,33 +128,6 @@ def _cut_complete(
     return complete, attempts
 
 
-def _analysis_complete(directory: Path) -> bool:
-    review_dir = directory / REVIEW_DIRNAME
-    if not (directory / "cache" / "racketvision-track-v1.jsonl").is_file():
-        return False
-    checkpoints = _json_object(directory / "checkpoints.json")
-    diagnostics = _json_object(directory / DIAGNOSTICS_FILENAME)
-    review = _json_object(review_dir / REVIEW_JSON_FILENAME)
-    try:
-        html = (review_dir / INDEX_HTML_FILENAME).read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        return False
-    if checkpoints is None or diagnostics is None or review is None or not html.strip():
-        return False
-
-    entries = review.get("entries")
-    if not isinstance(entries, list):
-        return False
-    for entry in entries:
-        if not isinstance(entry, dict):
-            return False
-        for key in ("image", "manual_image"):
-            image = entry.get(key)
-            if image and not (review_dir / Path(str(image)).name).is_file():
-                return False
-    return True
-
-
 def _clear(*directories: Path) -> None:
     for directory in directories:
         if directory.is_dir():
@@ -203,7 +171,9 @@ def _source_status(
         return "empty"
     metadata_dir, _ = generated_paths(video)
     for attempt in attempts.attempts:
-        if not _analysis_complete(metadata_dir / "attempts" / attempt.attempt_id):
+        if not AttemptAnalysisArtifacts(
+            metadata_dir / "attempts" / attempt.attempt_id
+        ).is_complete():
             return "incomplete"
     return "complete"
 
@@ -262,7 +232,8 @@ def _render_index(
             lines.append("<ul>")
             for attempt in attempts.attempts:
                 destination = metadata_dir / "attempts" / attempt.attempt_id
-                done = _analysis_complete(destination)
+                artifacts = AttemptAnalysisArtifacts(destination)
+                done = artifacts.is_complete()
                 span = _format_range(
                     attempt.detected_range.start_seconds,
                     attempt.detected_range.end_seconds,
@@ -274,7 +245,7 @@ def _render_index(
                 if done:
                     link = _quote(
                         f"{video.stem}/attempts/{attempt.attempt_id}/"
-                        f"{REVIEW_DIRNAME}/{INDEX_HTML_FILENAME}"
+                        f"{artifacts.review_dir.name}/{artifacts.index_html_path.name}"
                     )
                     row += f"<a href=\"{link}\">[Checkpoint review]</a>"
                 else:
@@ -409,7 +380,7 @@ def process(
         total_attempts = len(attempts.attempts)
         for position, attempt in enumerate(attempts.attempts, start=1):
             destination = metadata_dir / "attempts" / attempt.attempt_id
-            complete = _analysis_complete(destination)
+            complete = AttemptAnalysisArtifacts(destination).is_complete()
             if complete:
                 actions.append(Action(video.name, attempt.attempt_id, "skip"))
                 continue
@@ -460,7 +431,9 @@ def process(
             if known is not None:
                 complete_sources += 1
                 for attempt in known.attempts:
-                    if _analysis_complete(metadata_dir / "attempts" / attempt.attempt_id):
+                    if AttemptAnalysisArtifacts(
+                        metadata_dir / "attempts" / attempt.attempt_id
+                    ).is_complete():
                         complete_attempts += 1
     return ProcessResult(
         videos,
