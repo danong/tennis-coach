@@ -30,7 +30,8 @@ serve-3d-diagnostics.json        versions, PTS, candidate counts, selected cues
 review-serve-3d/index.html       source-frame review page
 review-serve-3d/review.json      deterministic review manifest
 review-serve-3d/*.jpg            selected frames; manual frames when requested
-cache/kinematic-track-v1.jsonl   default reusable native 3D cache
+cache/kinematic-track-v1.jsonl    reusable native body-world cache
+cache/racketvision-track-v1.jsonl  reusable native ball/racket observation cache
 ```
 
 A compatible cache avoids native-frame inference. The backend is still initialized to establish model identity, so MediaPipe startup logging does not itself prove a cache miss. `AnalyzeServeResult.cache_hit` and `inferred_frames` are authoritative for programmatic callers.
@@ -60,7 +61,7 @@ flowchart LR
 
 - Source PTS is canonical. Frame number divided by nominal FPS is never used as checkpoint time.
 - Ranges are half-open: `[start_seconds, end_seconds)`.
-- Stage-checkpoint geometry uses [MediaPipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker) **world landmarks only**. Normalized 2D landmarks from the same inference may be rendered in review overlays but are never waveform values, candidate evidence, or DP inputs.
+- Body kinematic features use [MediaPipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker) world landmarks. An exact-PTS `SceneTrack` separately aligns observation-level body 2D, ball, racket, and optional qualified audio rows; its image-space feature table supplies the experimental release/cocking/contact cues.
 - In the current world convention, `+y` points down. Upward elevation is therefore `reference_y - joint_y`.
 - World landmarks are hip-centered per frame. They cannot measure absolute court height, jump height, or foot contact.
 
@@ -137,7 +138,7 @@ deceleration = midpoint(contact, finish)
 
 The implementation currently submits a checkpoint candidate at every native waveform sample for every directly searched stage. Candidate scores are weighted means over available cues. Continuous cues are normalized within the attempt using 5th/95th percentiles; missing cues are omitted from the available-weight denominator and reduce coverage. This dense-candidate policy is intentional current behavior, but sparse stage-event eligibility is deferred.
 
-The authoritative cue names, weights, score normalization, and candidate codec are in [`composite_anchors.py`](../../src/serve_review/checkpoints/composite_anchors.py): `COMPOSITE_CUE_NAMES`, `COMPOSITE_DEFAULT_WEIGHTS`, `_extract_raw_cues`, and `build_composite_anchor_set`.
+The active table flow is `SceneTrack -> SceneFeatureSeries` and `FilteredWorldTrack -> KinematicWaveformTrack`; `build_composite_anchor_set` rejects the two feature tables unless their complete PTS sequences match exactly, then owns cue transforms, weights, normalization, and candidate construction. The authoritative scoring code is [`scene_features.py`](../../src/serve_review/checkpoints/scene_features.py) and [`composite_anchors.py`](../../src/serve_review/checkpoints/composite_anchors.py).
 
 ### Latest development cue weights
 
