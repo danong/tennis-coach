@@ -433,7 +433,7 @@ def process(
                     start_seconds=attempt.detected_range.start_seconds,
                     end_seconds=attempt.detected_range.end_seconds,
                     output_dir=destination,
-                    force=False,
+                    force=force,
                     racketvision_tracker_factory=racketvision_tracker_factory,
                 )
             except Exception as error:
