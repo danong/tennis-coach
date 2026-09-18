@@ -25,7 +25,7 @@ source video + requested attempt range
   -> native-PTS RacketVision ball/racket observations
   -> racketvision-track-v1.jsonl
   -> aligned native-PTS audio energy/transient observations
-  -> SceneTrack (strict PTS join of raw body, ball, racket, audio observations)
+  -> SceneTrack (strict aligned body, ball, racket, and audio observations)
 
 body-world observations -> FilteredWorldTrack -> KinematicWaveformTrack
 SceneTrack audio ----------------------------------------------^
@@ -36,10 +36,10 @@ CompositeAnchorSet -> SixAnchorSolution -> AttemptPhase
 AttemptPhase -> checkpoints.json + review JPEGs/HTML
 ```
 
-The durable artifacts are deliberately few: the two raw observation caches
-and the final user-facing checkpoint/review output. Filtering, waveforms,
-scene features, candidates, and DP solutions are in-memory values. This is
-the right storage policy for a prototype.
+The durable artifacts are deliberately few: the two source/model-observation
+caches and the final user-facing checkpoint/review output. Filtering,
+waveforms, scene features, candidates, and DP solutions are in-memory values.
+This is the right storage policy for a prototype.
 
 The core data values already have useful names:
 
@@ -47,7 +47,7 @@ The core data values already have useful names:
 |---|---|
 | Dense body observations | `pose/world.py` |
 | Ball/racket observations | `tracking/racketvision.py` |
-| Strict raw multimodal join | `scene.py` |
+| Strict aligned multimodal observations | `scene.py` |
 | Aligned audio sampling/qualification | currently `analyze_serve.py` + `media/audio.py` |
 | Filtered body track | `checkpoints/world_filter.py` |
 | Body/audio waveform table | `checkpoints/kinematic_waveforms.py` |
@@ -75,7 +75,7 @@ combined with, rather than preserving SceneTrack's own canonical timeline.
 There is a related canonical-data gap: `SceneTrack` can represent aligned
 audio, but active orchestration builds it before audio sampling and passes
 audio directly to the waveform builder. The result is two parallel views of
-the attempt timeline rather than one raw multimodal row sequence.
+the attempt timeline rather than one aligned multimodal observation table.
 
 ## 2. Where we should go
 
@@ -83,8 +83,8 @@ The desired architecture is a short chain of typed tables, with each module
 owning one transformation:
 
 ```text
-raw observations
-  -> aligned scene table
+source/model observations
+  -> aligned observation table (`SceneTrack`)
   -> body/audio feature table     ->\
   -> scene feature table           -> scored candidate table
                                      -> selected-anchor table
@@ -93,9 +93,12 @@ raw observations
 
 The rules are simple:
 
-- **Raw observations own no stage meaning.** `SceneTrack` remains an exact
-  PTS-aligned view of body, ball, racket, and optional audio. Do not add
-  scores, stage labels, smoothing, or selection state to it.
+- **Observation-level aligned data owns no stage meaning.** `SceneTrack`
+  remains an exact PTS-aligned view of body, ball, racket, and optional audio.
+  Its audio transient flag may be qualified, but it is still an observation,
+  not a biomechanical feature or decision. Do not add smoothing-derived
+  biomechanics, normalized cues, weights, stage labels, or selection state to
+  it.
 - **Feature tables derive values, not decisions.** A scene-feature table owns
   handle/hoop orientation, ball/wrist distance, and ball/hoop distance. It
   takes only `SceneTrack` and preserves its PTS verbatim. A waveform table
@@ -111,8 +114,9 @@ The rules are simple:
 - **The DP owns only chronology.** It consumes candidate scores and PTS; it
   must not know whether a score came from a wrist, microphone, ball, or
   racket.
-- **The orchestrator owns I/O and composition only.** It loads/generates raw
-  artifacts, calls transformations in order, and writes final outputs. It
+- **The orchestrator owns I/O and composition only.** It loads/generates
+  source/model observation artifacts, calls transformations in order, and
+  writes final outputs. It
   does not define biomechanical features or solver recurrence.
 
 This is data-oriented programming in the useful small sense: explicit,
@@ -162,10 +166,15 @@ checkpoints/evidence.py
 legacy solving portions of checkpoints/phase_solver.py
 ```
 
-`PhaseSolverConfig`, the only active dependency from that area, should move
-beside `six_anchor_solver.py` (or into a tiny adjacent chronology-config
-module) with the same active six-anchor semantics. Remove stale package
-re-exports and tests that exist only for the deleted sparse path.
+Replace `PhaseSolverConfig`, the only active dependency from that area, with
+`SixAnchorSolverConfig` beside `six_anchor_solver.py` (or in a tiny adjacent
+chronology-config module). It contains only the active six-anchor fields:
+`skip_penalty`, `contact_skip_penalty`, `min_transition_gap_seconds`,
+`max_transition_gap_seconds`, `max_contact_to_finish_seconds`, and
+`transition_bonus`, plus the current config identity. Do not copy sparse-path
+observation floors, confidence bonuses/penalties, or body thresholds into the
+new config. Remove stale package re-exports and tests that exist only for the
+deleted sparse path.
 
 This is deletion, not compatibility preservation. There is no production CLI
 or artifact that consumes those modules.
@@ -180,18 +189,23 @@ still in progress; otherwise fold the diagram directly into the reference.
 
 ### D. Stop (about 30 minutes for focused checks)
 
-Run the focused active analysis tests, one forced anchor process run, and
-inspect the generated checkpoint/review output. Do not undertake a broad
-module rename, cache migration, new diagnostics, score-reliability framework,
-or API compatibility layer in this cleanup.
+First capture a deterministic pre-refactor regression fixture: fixed
+synthetic waveform and scene-feature tables, the resulting composite
+candidate set, and the six-anchor solution. After the move/deletion work,
+assert byte-equivalent candidate/solution serializations and selected PTS for
+that fixture. Then run the focused active analysis tests, one forced anchor
+process run, and inspect the generated checkpoint/review output. Do not
+undertake a broad module rename, cache migration, new diagnostics,
+score-reliability framework, or API compatibility layer in this cleanup.
 
 ## Acceptance criteria
 
 At the end of the day:
 
 1. A reader can trace one `process` attempt through no more than these values:
-   raw observations, scene/waveform features, candidates, solution, output.
-2. `SceneTrack` remains raw aligned data, including optional audio rows, and
+   source/model observations, aligned observations, scene/waveform features,
+   candidates, solution, output.
+2. `SceneTrack` remains observation-level aligned data, including optional audio rows, and
    `build_scene_feature_series()` depends only on it.
 3. The composite builder rejects unequal waveform/scene-feature PTS sequences
    before scoring; it consumes feature tables rather than raw model
@@ -199,7 +213,8 @@ At the end of the day:
 4. No production-reachable code imports the removed sparse stage stack.
 5. `mise run process refs/anchors/single-serve-01.mov --force` still creates
    the same artifact layout and successfully reaches a selected stage result.
-6. No new generic framework, persistence format, fallback mode, or process
+6. The deterministic pre-refactor candidate/solution fixture is unchanged.
+7. No new generic framework, persistence format, fallback mode, or process
    behavior is introduced.
 
 This leaves room for later experimental weight tuning, but makes that tuning
