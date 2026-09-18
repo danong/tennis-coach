@@ -9,13 +9,16 @@ builders over synthetic world geometry.
 
 from __future__ import annotations
 
+import hashlib
 import math
 
 import pytest
 
 from serve_review.checkpoints import composite_anchors as ca
 from serve_review.checkpoints import kinematic_waveforms as kw
+from serve_review.checkpoints import six_anchor_solver as six_module
 from serve_review.checkpoints.kinematic_waveforms import KinematicWaveformsConfig
+from serve_review.checkpoints.phase_solver import PhaseSolverConfig
 from serve_review.pose.schema import BodyKeypoint, FrameObservation, PersonBox, PersonObservation
 from serve_review.pose.world import WorldFrameObservation, WorldLandmark
 from serve_review.scene import Point2D, Racket2D, SceneFrame, SceneTrack
@@ -138,6 +141,21 @@ def test_scene_features_are_aligned_and_available_to_candidate_scoring() -> None
     assert anchor_set.for_stage("contact")[0].cue_values[
         "racket_hoop_ball_proximity"
     ] == pytest.approx(0.0)
+    eligible = {
+        stage: [candidate for candidate in anchor_set.for_stage(stage) if candidate.coverage > 0]
+        for stage in six_module.SIX_ANCHOR_STAGES
+    }
+    solution = six_module.solve_six_anchors(eligible, PhaseSolverConfig())
+    assert hashlib.sha256(anchor_set.to_json().encode()).hexdigest() == "355bb983b70a7c248a862a5b0c9ed09fa7c65566a2a048107d0e33488aac53e7"
+    assert dict(solution.choice) == {
+        "start": 0,
+        "release": None,
+        "loading": None,
+        "cocking": None,
+        "contact": 1,
+        "finish": None,
+    }
+    assert solution.total_score == pytest.approx(-1.15)
 
 
 # --- config -------------------------------------------------------------------
