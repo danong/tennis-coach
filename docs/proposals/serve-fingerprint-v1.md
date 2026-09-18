@@ -50,7 +50,7 @@ Existing ball/racket/audio cues remain available to checkpoint selection. Their 
 A consumer may assume that:
 
 - schema and extractor identities define the exact metric and sequence inventory;
-- source time is canonical PTS-based time;
+- source time is canonical source time derived from source PTS;
 - sequence values retain the units of the source waveform channels;
 - only the sequence time axis has been normalized;
 - `null` and `available: false` mean unavailable, never numeric zero;
@@ -97,7 +97,7 @@ Top-level sketch:
   "phase_layout": {
     "layout_id": "serve-five-segment-layout-v1",
     "samples_per_segment": 16,
-    "resampling_method": "linear-exact-pts-complete-support-v1",
+    "resampling_method": "linear-source-time-complete-support-v1",
     "segments": [
       {"id": "start_to_release", "start_anchor": "start", "end_anchor": "release"},
       {"id": "release_to_loading", "start_anchor": "release", "end_anchor": "loading"},
@@ -145,30 +145,34 @@ Top-level sketch:
 
 The abbreviated `values` and `availability` arrays above are illustrative. Each persisted segment contains exactly 16 rows and 12 columns. The full tensor shape is always `[5, 16, 12]`.
 
+`ServeFingerprintV1` permanently fixes the 30-name scalar inventory, sequence channel order, five-segment layout, 16-sample segment size, units, and missingness/resampling semantics. Configuration may not alter their persisted shape or meaning. Removing, adding, or changing a persisted metric or channel requires a new fingerprint schema/version; a different extractor or config identity is not sufficient. Any V1 configuration type exists only to pin and validate this fixed contract.
+
 ### Identity and provenance rules
 
 - `source_fingerprint` plus exact attempt range is the attempt identity. The synthetic `serve-001` identifier is not identity.
 - No filesystem path is persisted.
 - The body model identity is included because it directly changes persisted waveform values and is not encoded by the fingerprint extractor ID.
 - The fingerprint does not store a dependency graph or every internal configuration.
-- Anchor records contain only availability and selected PTS. Existing heuristic checkpoint scores are not copied or relabeled as probabilities.
+- Anchor records contain only availability and selected canonical source time in seconds. Existing heuristic checkpoint scores are not copied or relabeled as probabilities.
 
 ### Missingness rules
 
 - Scalar metrics always exist by name. Unavailable metrics use `available: false` and `value: null` while retaining their unit.
 - Available anchors contain finite `time_seconds`; unavailable anchors contain `time_seconds: null`.
 - Sequence cells use both `null` and a parallel boolean availability mask. A missing value is never encoded as zero.
-- When either segment boundary is unavailable, the segment has `available: false`, and all values and masks are `null`/`false`.
+- `segment.available` means both boundary anchors exist and at least three native waveform rows lie in the closed segment.
+- When `segment.available` is false, all values and masks in that segment are `null`/`false`.
+- Channel support does not change `segment.available`. An unsupported channel within a structurally available segment is represented only by its per-cell values and masks.
 
 ## 3. Initial scalar metric inventory
 
 ### Shared extraction rules
 
-- Anchor samples use the exact waveform row at the selected anchor PTS. Direct selected anchors already lie on the waveform PTS grid. Failure to find an exact row makes the dependent metric unavailable.
-- Intervals are closed at both selected anchor PTS values.
+- Anchor samples use the exact waveform row at the selected anchor source time. Direct selected anchors already lie on the waveform source-time grid. Failure to find an exact row makes the dependent metric unavailable.
+- Intervals are closed at both selected anchor source times.
 - An interval reduction requires both anchors, at least three native waveform rows, and complete channel availability at every native row in the interval. This strict V1 rule avoids claiming an extremum when an unsupported portion could contain it.
-- Extrema ties select the earliest PTS.
-- `*_time_relative_to_contact` is `extremum_pts - contact_pts`; values before contact are negative.
+- Extrema ties select the earliest source time.
+- `*_time_relative_to_contact` is `extremum_time_seconds - contact_time_seconds`; values before contact are negative.
 - Flexion is `0` at full extension. “Peak extension rate” is `max(-flexion_velocity)`, reported as a positive magnitude.
 - Availability follows only existing waveform availability and anchor availability. V1 adds no new confidence score.
 
@@ -186,7 +190,7 @@ The abbreviated `values` and `availability` arrays above are illustrative. Each 
 | 10 | `knee_extension_rate_left_peak_loading_to_contact` | Fastest left-knee extension | `knee_flexion_velocity_left` | Maximum of negated velocity over loading–contact | degrees/second | Complete qualified interval |
 | 11 | `knee_extension_rate_right_peak_loading_to_contact` | Fastest right-knee extension | `knee_flexion_velocity_right` | Maximum of negated velocity over loading–contact | degrees/second | Complete qualified interval |
 | 12 | `shoulder_hip_separation_max_release_to_contact` | Largest unsigned transverse shoulder/hip separation | `shoulder_hip_separation_transverse_deg` | Maximum over release–contact | degrees | Complete qualified interval |
-| 13 | `shoulder_hip_separation_max_time_relative_to_contact` | Timing of maximum separation | same as #12 | PTS of #12 minus contact PTS | seconds | Metric #12 and contact available |
+| 13 | `shoulder_hip_separation_max_time_relative_to_contact` | Timing of maximum separation | same as #12 | Source time of #12 minus contact source time | seconds | Metric #12 and contact available |
 | 14 | `shoulder_tilt_at_loading` | Shoulder-line tilt at loading | `shoulder_tilt_deg` | Exact loading sample | degrees | Loading and channel sample available |
 | 15 | `shoulder_tilt_at_contact` | Shoulder-line tilt at contact | `shoulder_tilt_deg` | Exact contact sample | degrees | Contact and channel sample available |
 | 16 | `hip_tilt_at_loading` | Hip-line tilt at loading | `hip_tilt_deg` | Exact loading sample | degrees | Loading and channel sample available |
@@ -199,9 +203,9 @@ The abbreviated `values` and `availability` arrays above are illustrative. Each 
 | 23 | `hitting_elbow_flexion_at_cocking` | Right-elbow bend at cocking | `elbow_flexion_right` | Exact cocking sample | degrees | Cocking and channel sample available |
 | 24 | `hitting_elbow_flexion_at_contact` | Right-elbow bend at contact | `elbow_flexion_right` | Exact contact sample | degrees | Contact and channel sample available |
 | 25 | `hitting_elbow_extension_rate_peak_cocking_to_contact` | Fastest right-elbow extension toward contact | `elbow_flexion_velocity_right` | Maximum of negated velocity over cocking–contact | degrees/second | Complete qualified interval |
-| 26 | `hitting_elbow_extension_peak_time_relative_to_contact` | Timing of fastest elbow extension | same as #25 | PTS of #25 minus contact PTS | seconds | Metric #25 and contact available |
+| 26 | `hitting_elbow_extension_peak_time_relative_to_contact` | Timing of fastest elbow extension | same as #25 | Source time of #25 minus contact source time | seconds | Metric #25 and contact available |
 | 27 | `right_wrist_speed_peak_cocking_to_contact` | Peak normalized right-wrist speed toward contact | `right_wrist_speed` | Maximum over cocking–contact | body_lengths/second | Complete qualified interval |
-| 28 | `right_wrist_speed_peak_time_relative_to_contact` | Timing of peak right-wrist speed | same as #27 | PTS of #27 minus contact PTS | seconds | Metric #27 and contact available |
+| 28 | `right_wrist_speed_peak_time_relative_to_contact` | Timing of peak right-wrist speed | same as #27 | Source time of #27 minus contact source time | seconds | Metric #27 and contact available |
 | 29 | `right_wrist_shoulder_distance_at_cocking` | Right wrist distance from right shoulder at cocking | `right_wrist_rel_shoulder_distance` | Exact cocking sample | body_lengths | Cocking and channel sample available |
 | 30 | `right_wrist_shoulder_distance_at_contact` | Right wrist distance from right shoulder at contact | `right_wrist_rel_shoulder_distance` | Exact contact sample | body_lengths | Contact and channel sample available |
 
@@ -214,7 +218,7 @@ The following are retained because they are useful within the supported rear-vie
 - vertical extent/elevation channels;
 - MediaPipe-world wrist speed.
 
-No raw `dx` or `dz` wrist component is included in V1. If empirical review shows one of the retained quantities is unstable even within compatible rear views, remove it by introducing a new extractor/config identity rather than silently changing V1 semantics.
+No raw `dx` or `dz` wrist component is included in V1. If empirical review shows one of the retained quantities is unstable even within compatible rear views, V1 remains unchanged and a new fingerprint schema/version must remove or change it.
 
 ## 4. Normalized sequence inventory
 
@@ -250,11 +254,12 @@ The layout identity is `serve-five-segment-layout-v1`. This identity, rather tha
 ### Sampling and interpolation
 
 - Each segment contains 16 samples, including both endpoints.
-- Target PTS values are evenly spaced in time between the two selected anchor PTS values: `start + i * duration / 15` for `i = 0..15`.
-- Values are interpolated linearly in exact PTS time from the bracketing waveform rows.
-- An exact target PTS uses the exact source value.
-- A channel/segment is eligible only when both anchors exist, at least three native waveform rows lie in the closed segment, and every native waveform row in the segment has that channel available.
-- If eligibility fails, all 16 values for that channel/segment are `null`, and its 16 mask entries are `false`.
+- Target source times are evenly spaced between the two selected anchor source times: `start + i * duration / 15` for `i = 0..15`.
+- Values are interpolated linearly in canonical source time from the bracketing waveform rows.
+- An exact target source time uses the exact source value.
+- A segment is structurally available only when both anchors exist and at least three native waveform rows lie in the closed segment.
+- Within a structurally available segment, a channel is supported only when every native waveform row in the segment has that channel available.
+- If channel support fails, all 16 values for that channel/segment are `null`, and its 16 mask entries are `false`; the segment itself remains structurally available.
 - No interpolation crosses an unavailable interior row. V1 does not fill, smooth, extrapolate, or borrow from another segment.
 - Shared anchors appear at the end of one segment and the start of the next. This intentional duplication keeps each segment independently interpretable.
 
@@ -264,7 +269,7 @@ The strict complete-support policy may produce more missing channel/segments tha
 
 Temporal normalization does not erase tempo because the artifact also stores:
 
-- all six selected anchor PTS values; and
+- all six selected anchor source times in seconds; and
 - the five scalar segment-duration metrics.
 
 No per-segment speed adjustment is applied to values. Existing derivative values remain in degrees/second or body_lengths/second.
@@ -297,7 +302,7 @@ build_serve_fingerprint_v1(
 ) -> ServeFingerprintV1
 ```
 
-`AttemptPhase` supplies the effective attempt range, checkpoint method/config identity, and selected direct-anchor PTS. The extractor must reject an available direct anchor that is not exactly present on the waveform PTS grid.
+`AttemptPhase` supplies the effective attempt range, checkpoint method/config identity, and selected direct-anchor source times. The extractor must reject an available direct anchor that is not exactly present on the waveform source-time grid.
 
 #### `tests/test_fingerprint.py`
 
@@ -307,7 +312,7 @@ Focused synthetic tests for:
 - exact-anchor metrics and duration metrics;
 - extrema values, timing, signed extension-rate conversion, and earliest tie handling;
 - stable `[5, 16, 12]` sequence shape;
-- exact-PTS linear interpolation;
+- exact-source-time linear interpolation;
 - missing anchor and missing interior support behavior;
 - rejection of ball/racket/audio channels from the declared inventories.
 
@@ -431,7 +436,7 @@ No migration or backfill command will be added for V1. The consequence is that a
 - `src/serve_review/fingerprint.py`;
 - `tests/test_fingerprint.py`.
 
-**Observable result:** Exact-PTS linear interpolation is deterministic; boundaries are retained; missing anchors or any unsupported interior source sample make the affected channel/segment unavailable; no values are imputed.
+**Observable result:** Exact-source-time linear interpolation is deterministic; boundaries are retained; missing anchors or too few native rows make a segment structurally unavailable; unsupported channel samples make only that channel/segment series unavailable; no values are imputed.
 
 **Dependencies:** Item 1. It may reuse anchor/interval lookup helpers from item 2.
 
@@ -519,7 +524,7 @@ The milestone is complete when all of the following are true:
 - Existing checkpoint selection, checkpoint JSON, diagnostics, and review behavior are unchanged.
 - Focused fingerprint/analyze/process tests and normal repository checks pass.
 
-A small synthetic fixture should additionally verify one known piecewise-linear channel end to end, including expected scalar extrema, expected extrema PTS, 16 resampled values, and missing-gap behavior. No corpus-level accuracy benchmark is required for V1 completion.
+A small synthetic fixture should additionally verify one known piecewise-linear channel end to end, including expected scalar extrema, expected extrema source time, 16 resampled values, and missing-gap behavior. No corpus-level accuracy benchmark is required for V1 completion.
 
 ## 9. Deferred work
 
