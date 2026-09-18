@@ -1,4 +1,4 @@
-"""Click CLI entry point and transitional direct-adapter exports for tests."""
+"""Serve-review command-line entry point."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -6,57 +6,68 @@ from typing import Sequence
 
 import click
 
-from serve_review import cli_legacy as _legacy
+from . import commands
 from .main import cli, main
 
-cut = _legacy.cut
-probe = _legacy.probe
-export_cmd = _legacy.export_cmd
-extract_poses_cmd = _legacy.extract_poses_cmd
-process_cmd = _legacy.process_cmd
-analyze_serve = _legacy.analyze_serve
+
+# Direct adapters remain importable for focused workflow tests; command parsing is
+# owned exclusively by ``cli`` in main.py.
+def _values(args: object) -> dict[str, object]:
+    return {key: value for key, value in vars(args).items() if key != "handler"}
 
 
-class _ClickCommandParser:
-    """Expose Click-declared options to legacy direct-adapter tests.
+def cut(args: object) -> int:
+    return commands.cut(**_values(args))
 
-    This is not an argparse parser; production command parsing and help remain
-    entirely Click-owned.
-    """
 
+def probe(args: object) -> int:
+    return commands.probe(**_values(args))
+
+
+def export_cmd(args: object) -> int:
+    return commands.export_cmd(**_values(args))
+
+
+def extract_poses_cmd(args: object) -> int:
+    return commands.extract_poses_cmd(**_values(args))
+
+
+def process_cmd(args: object) -> int:
+    return commands.process_cmd(**_values(args))
+
+
+def analyze_serve(args: object) -> int:
+    return commands.analyze_serve(**_values(args))
+
+
+class _ClickTestParser:
     def format_help(self) -> str:
-        context = click.Context(cli, info_name="serve-review")
-        return cli.get_help(context)
+        return cli.get_help(click.Context(cli, info_name="serve-review"))
 
     def parse_args(self, argv: Sequence[str]) -> SimpleNamespace:
         context = click.Context(cli, info_name="serve-review")
         try:
-            command_name, command, remaining = cli.resolve_command(context, list(argv))
-            command_context = command.make_context(command_name, remaining, parent=context)
+            name, command, remaining = cli.resolve_command(context, list(argv))
+            parsed = command.make_context(name, remaining, parent=context)
         except click.exceptions.Exit as exc:
             raise SystemExit(exc.exit_code) from exc
         except click.ClickException as exc:
             exc.show()
             raise SystemExit(exc.exit_code) from exc
-        values = dict(command_context.params)
-        handlers = {
-            "cut": cut,
-            "probe": probe,
-            "export": export_cmd,
-            "extract-poses": extract_poses_cmd,
-            "process": process_cmd,
-            "analyze-serve": analyze_serve,
-        }
-        if command_name in handlers:
-            values["handler"] = handlers[command_name]
-        if command_name == "analyze-serve":
+        values = dict(parsed.params)
+        handlers = {"cut": cut, "probe": probe, "export": export_cmd,
+                    "extract-poses": extract_poses_cmd, "process": process_cmd,
+                    "analyze-serve": analyze_serve}
+        if name in handlers:
+            values["handler"] = handlers[name]
+        if name == "analyze-serve":
             values["anchor2comparison"] = False
         return SimpleNamespace(**values)
 
 
-def build_parser() -> _ClickCommandParser:
-    """Compatibility test helper backed by the Click command declarations."""
-    return _ClickCommandParser()
+def build_parser() -> _ClickTestParser:
+    """Test-only Click declaration adapter; not used by the CLI."""
+    return _ClickTestParser()
 
 
 __all__ = ["main"]

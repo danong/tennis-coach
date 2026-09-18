@@ -72,19 +72,19 @@ def doctor() -> int:
     return 0
 
 
-def probe(args: Any) -> int:
+def probe(*, video: Path, output: Path | None, ffprobe: str) -> int:
     from serve_review.media.probe import ProbeError, probe_source, write_source_json
 
-    source = args.video.expanduser()
+    source = video.expanduser()
     if not source.is_file():
         print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
         return 2
-    if args.output is not None:
-        dest = args.output.expanduser()
+    if output is not None:
+        dest = output.expanduser()
     else:
         dest = Path("output") / source.stem / "source.json"
     try:
-        metadata = probe_source(source, ffprobe=args.ffprobe)
+        metadata = probe_source(source, ffprobe=ffprobe)
     except ProbeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -97,23 +97,23 @@ def probe(args: Any) -> int:
     return 0
 
 
-def export_cmd(args: Any) -> int:
+def export_cmd(*, video: Path, ranges: Path, output: str, output_dir: Path, overwrite: bool, ffmpeg: str, ffprobe: str) -> int:
     import json
 
     from serve_review.domain import DomainError, ExportPlan, MediaRange
     from serve_review.media import export as export_module
     from serve_review.media.probe import ProbeError, probe_source
 
-    source = args.video.expanduser()
+    source = video.expanduser()
     if not source.is_file():
         print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
         return 2
-    ranges_path = args.ranges.expanduser()
+    ranges_path = ranges.expanduser()
     if not ranges_path.is_file():
         print(f"ERROR: ranges file does not exist: {ranges_path}", file=sys.stderr)
         return 2
     try:
-        metadata = probe_source(source, ffprobe=args.ffprobe)
+        metadata = probe_source(source, ffprobe=ffprobe)
     except ProbeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -132,17 +132,17 @@ def export_cmd(args: Any) -> int:
     except DomainError as exc:
         print(f"ERROR: invalid ranges: {exc}.", file=sys.stderr)
         return 2
-    base_dir = args.output_dir.expanduser() / source.stem
+    base_dir = output_dir.expanduser() / source.stem
     try:
         results = export_module.export_outputs(
             source,
             plan,
             base_dir,
-            mode=args.output,
+            mode=output,
             source=metadata,
-            ffmpeg=args.ffmpeg,
-            ffprobe=args.ffprobe,
-            overwrite=args.overwrite,
+            ffmpeg=ffmpeg,
+            ffprobe=ffprobe,
+            overwrite=overwrite,
         )
     except export_module.ExportCollisionError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -226,33 +226,33 @@ def plan_error(message: str) -> Exception:
     return ExportPlanError(message)
 
 
-def extract_poses_cmd(args: Any) -> int:
+def extract_poses_cmd(*, video: Path, model: Path, sample_rate: float, cache: Path | None, overlay: Path | None, output_dir: Path, overwrite: bool, ffmpeg: str, ffprobe: str) -> int:
     from serve_review.pose import extract as extract_module
 
-    source = args.video.expanduser()
+    source = video.expanduser()
     if not source.is_file():
         print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
         return 2
     try:
-        rate = float(args.sample_rate)
+        rate = float(sample_rate)
     except (TypeError, ValueError):
         print(
-            f"ERROR: invalid --sample-rate {args.sample_rate!r}; expected a number in (0, 120].",
+            f"ERROR: invalid --sample-rate {sample_rate!r}; expected a number in (0, 120].",
             file=sys.stderr,
         )
         return 2
     if not (0 < rate <= 120.0):
         print(
-            f"ERROR: invalid --sample-rate {args.sample_rate!r}; expected a number in (0, 120].",
+            f"ERROR: invalid --sample-rate {sample_rate!r}; expected a number in (0, 120].",
             file=sys.stderr,
         )
         return 2
-    if args.cache is not None:
-        cache_path = args.cache.expanduser()
+    if cache is not None:
+        cache_path = cache.expanduser()
     else:
-        cache_path = extract_module.default_cache_path_for(source, args.output_dir)
-    model_path = args.model.expanduser()
-    overlay = args.overlay.expanduser() if args.overlay is not None else None
+        cache_path = extract_module.default_cache_path_for(source, output_dir)
+    model_path = model.expanduser()
+    overlay = overlay.expanduser() if overlay is not None else None
 
     def _progress(done: int, total: int, observation: object) -> None:
         print(f"extract-poses: {done}/{total} frames", file=sys.stderr)
@@ -269,9 +269,9 @@ def extract_poses_cmd(args: Any) -> int:
             cache_path,
             sample_rate_hz=rate,
             model_path=model_path,
-            ffmpeg=args.ffmpeg,
-            ffprobe=args.ffprobe,
-            overwrite=args.overwrite,
+            ffmpeg=ffmpeg,
+            ffprobe=ffprobe,
+            overwrite=overwrite,
             progress_callback=_progress,
             overlay_path=overlay,
             overlay_progress_callback=_overlay_progress if overlay is not None else None,
@@ -296,18 +296,18 @@ def extract_poses_cmd(args: Any) -> int:
     return 0
 
 
-def cut(args: Any) -> int:
+def cut(*, video: Path, padding: float, output: str, metadata_dir: Path | None, export_dir: Path | None, dry_run: bool, force: bool, ffmpeg: str, ffprobe: str) -> int:
     from serve_review.pipeline import CutCancelled, CutError, run_cut
 
-    source = args.video.expanduser()
+    source = video.expanduser()
     if not source.is_file():
         print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
         return 2
     try:
-        padding = float(args.padding)
+        padding = float(padding)
     except (TypeError, ValueError):
         print(
-            f"ERROR: invalid --padding {args.padding!r}; "
+            f"ERROR: invalid --padding {padding!r}; "
             "expected seconds >= 0.",
             file=sys.stderr,
         )
@@ -322,14 +322,14 @@ def cut(args: Any) -> int:
     try:
         result = run_cut(
             source,
-            metadata_dir=args.metadata_dir,
-            export_dir=args.export_dir,
+            metadata_dir=metadata_dir,
+            export_dir=export_dir,
             padding_seconds=padding,
-            mode=args.output,
-            dry_run=args.dry_run,
-            force=args.force,
-            ffmpeg=args.ffmpeg,
-            ffprobe=args.ffprobe,
+            mode=output,
+            dry_run=dry_run,
+            force=force,
+            ffmpeg=ffmpeg,
+            ffprobe=ffprobe,
             progress_callback=_progress,
         )
     except CutCancelled as exc:
@@ -354,14 +354,14 @@ def cut(args: Any) -> int:
     return 0
 
 
-def analyze_serve(args: Any) -> int:
+def analyze_serve(*, video: Path, start_seconds: float | None, end_seconds: float | None, output_dir: Path | None, cache: Path | None, model: Path, dry_run: bool, force: bool, ffmpeg: str, ffprobe: str, anchor2comparison: bool = False) -> int:
     from serve_review.analyze_serve import (
         AnalyzeServeCancelled,
         AnalyzeServeError,
         run_analyze_serve,
     )
 
-    source = args.video.expanduser()
+    source = video.expanduser()
     if not source.is_file():
         print(f"ERROR: input video does not exist: {source}", file=sys.stderr)
         return 2
@@ -372,16 +372,16 @@ def analyze_serve(args: Any) -> int:
     try:
         result = run_analyze_serve(
             source,
-            start_seconds=args.start_seconds,
-            end_seconds=args.end_seconds,
-            output_dir=args.output_dir,
-            cache_path=args.cache,
-            model_path=args.model,
-            dry_run=args.dry_run,
-            force=args.force,
-            ffmpeg=args.ffmpeg,
-            ffprobe=args.ffprobe,
-            anchor2comparison=args.anchor2comparison,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            output_dir=output_dir,
+            cache_path=cache,
+            model_path=model,
+            dry_run=dry_run,
+            force=force,
+            ffmpeg=ffmpeg,
+            ffprobe=ffprobe,
+            anchor2comparison=anchor2comparison,
             progress_callback=_progress,
         )
     except AnalyzeServeCancelled as exc:
@@ -415,11 +415,11 @@ def analyze_serve(args: Any) -> int:
     return 0
 
 
-def process_cmd(args: Any) -> int:
+def process_cmd(*, target: Path, dry_run: bool, force: bool) -> int:
     from serve_review.process import FingerprintMismatch, ProcessError
     from serve_review.process import process as run_process
 
-    target = args.target.expanduser()
+    target = target.expanduser()
 
     progress_stream = os.fdopen(os.dup(2), "w", encoding="utf-8")
 
@@ -430,8 +430,8 @@ def process_cmd(args: Any) -> int:
         with progress_stream, _silence_model_output():
             result = run_process(
                 target,
-                force=args.force,
-                dry_run=args.dry_run,
+                force=force,
+                dry_run=dry_run,
                 progress_callback=_progress,
             )
     except FingerprintMismatch as exc:
@@ -440,7 +440,7 @@ def process_cmd(args: Any) -> int:
     except ProcessError as exc:
         print(f"ERROR: {exc}.", file=sys.stderr)
         return 2
-    if args.dry_run:
+    if dry_run:
         for action in result.actions:
             detail = action.filename
             if action.attempt is not None:

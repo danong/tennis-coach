@@ -2,16 +2,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import click
 
-from serve_review import cli_legacy as legacy
+from . import commands
 
 
 def _run(handler: Any, **values: Any) -> None:
-    result = handler(SimpleNamespace(**values))
+    result = handler(**values)
     if result:
         raise click.exceptions.Exit(result)
 
@@ -27,7 +26,7 @@ def cli() -> None:
 @click.option("--force", is_flag=True)
 def process(target: Path, dry_run: bool, force: bool) -> None:
     """Process a recording directory or one video beside its source."""
-    _run(legacy.process_cmd, target=target, dry_run=dry_run, force=force)
+    _run(commands.process_cmd, target=target, dry_run=dry_run, force=force)
 
 
 @cli.command("cut")
@@ -42,7 +41,7 @@ def process(target: Path, dry_run: bool, force: bool) -> None:
 @click.option("--ffprobe", default="ffprobe")
 def cut(**values: Any) -> None:
     """Detect and export serves."""
-    _run(legacy.cut, **values)
+    _run(commands.cut, **values)
 
 
 @cli.command("analyze-serve")
@@ -58,13 +57,13 @@ def cut(**values: Any) -> None:
 @click.option("--ffprobe", default="ffprobe")
 def analyze_serve(**values: Any) -> None:
     """Analyze one explicit serve range."""
-    _run(legacy.analyze_serve, anchor2comparison=False, **values)
+    _run(commands.analyze_serve, anchor2comparison=False, **values)
 
 
 @cli.command()
 def doctor() -> None:
     """Check local prerequisites."""
-    result = legacy.doctor()
+    result = commands.doctor()
     if result:
         raise click.exceptions.Exit(result)
 
@@ -75,7 +74,7 @@ def doctor() -> None:
 @click.option("--ffprobe", default="ffprobe")
 def probe(**values: Any) -> None:
     """Inspect a video and emit normalized source.json metadata."""
-    _run(legacy.probe, **values)
+    _run(commands.probe, **values)
 
 
 @cli.command("export")
@@ -88,7 +87,7 @@ def probe(**values: Any) -> None:
 @click.option("--ffprobe", default="ffprobe")
 def export(**values: Any) -> None:
     """Export manual ranges."""
-    _run(legacy.export_cmd, **values)
+    _run(commands.export_cmd, **values)
 
 
 @cli.command("extract-poses")
@@ -103,7 +102,7 @@ def export(**values: Any) -> None:
 @click.option("--ffprobe", default="ffprobe")
 def extract_poses(**values: Any) -> None:
     """Extract cached body-pose observations for diagnostics."""
-    _run(legacy.extract_poses_cmd, **values)
+    _run(commands.extract_poses_cmd, **values)
 
 
 @cli.group()
@@ -124,7 +123,7 @@ def dev() -> None:
 @click.option("--ffprobe", default="ffprobe")
 def anchor2_comparison(**values: Any) -> None:
     """Analyze the fixed anchor-2 development comparison."""
-    _run(legacy.analyze_serve, anchor2comparison=True, **values)
+    _run(commands.analyze_serve, anchor2comparison=True, **values)
 
 
 @dev.command("phase-annotate")

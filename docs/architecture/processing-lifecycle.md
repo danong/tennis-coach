@@ -109,9 +109,10 @@ artifacts.
 
 | Module | Owns |
 | --- | --- |
-| `process.py` | Multi-source coordination, completeness, local summary |
+| `process.py` | Multi-source coordination, rerun decisions, local summary |
 | `pipeline.py` | Attempt detection and export orchestration |
 | `analyze_serve.py` | Per-attempt I/O composition and output publication |
+| `analysis_artifacts.py` | Attempt artifact paths and completeness validation |
 | `scene.py` | Exact PTS-aligned observation rows |
 | `checkpoints/scene_features.py` | Image-space scene feature table |
 | `checkpoints/kinematic_waveforms.py` | Body/audio waveform feature table |
