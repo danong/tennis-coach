@@ -30,51 +30,42 @@ If maintained documents conflict, resolve and update them before implementation.
 
 ## Offline development setup
 
-The first implementation target is a macOS command-line pipeline. Mise pins Python and uv and provides the project entrypoints; uv owns the Python environment and lockfile. FFmpeg/ffprobe are system prerequisites checked by `doctor`.
+This is a local macOS workflow. Install [mise](https://mise.jdx.dev/) and
+FFmpeg (including `ffprobe`), then prepare and check the project:
 
 ```sh
 mise install
 mise run setup
 mise run doctor
-mise run check
 ```
+
+Run `mise run test` before changing code, or `mise run check` for the full
+local check.
 
 ## Process a recording directory
 
-Copy one or more `.mov` or `.mp4` source videos into a meaningfully named directory, then run:
+Put one or more `.mov` or `.mp4` recordings in a directory and run:
 
 ```sh
 mise run process -- ~/videos/tennis/2026-09-10
 ```
 
-The command leaves source videos unchanged, writes detection and checkpoint data under `metadata/`, writes one compilation per source under `exports/`, and prints a `file://` link to `metadata/index.html`. Repeating the command skips complete artifacts and regenerates incomplete work.
+`process` leaves source videos unchanged. It detects attempts, writes metadata
+and per-attempt reviews under `metadata/`, writes a compilation under
+`exports/`, and prints a link to the local review index. A video path processes
+that one source; a directory processes its immediate MOV/MP4 children.
 
-Preview without writing, or explicitly regenerate selected output:
+Rerunning skips complete generated work. Use `--dry-run` to see planned work
+without writing, or `--force` to regenerate it:
 
 ```sh
 mise run process -- TARGET --dry-run
 mise run process -- TARGET --force
 ```
 
-A video path processes only that source; a directory processes its immediate MOV/MP4 children. Run `mise run help` for the primary and internal command inventory.
-
-Current development commands:
-
-| Command | Purpose |
-| --- | --- |
-| `mise run setup` | Create/update the Python environment exactly from `uv.lock`. |
-| `mise run doctor` | Verify Python, FFmpeg, and ffprobe. |
-| `mise run test` | Run offline pipeline tests. |
-| `mise run check` | Run diagnostics and tests. |
-| `mise run help` | Show the repository command inventory. |
-| `mise run process -- TARGET [--dry-run] [--force]` | Process one source or a recording directory and publish its local summary. |
-| `uv run --locked serve-review cut <video> --padding 1 --output <compilation\|clips\|both> [--dry-run] [--force]` | Detect accepted attempts and export a compilation, clips, or both. |
-| `uv run --locked serve-review analyze-serve <video> [--start-seconds S --end-seconds E] [--dry-run] [--force]` | One-attempt native-PTS stage-checkpoint analysis; writes checkpoints, diagnostics, review, and reusable body-world and ball/racket observation caches. |
-| `mise run phase-annotate -- <video> --attempts <attempts.json> --labels <labels.json> --output <annotations.json>` | Convert zero-based decoded-frame labels to exact-PTS private annotations. |
-| `mise run phase-evaluate -- --checkpoints <checkpoints.json> --annotations <annotations.json> --output <report.json>` | Write the deterministic local checkpoint-evaluation report. |
-| `uv run python tools/export_segments.py <video> <segments.json> --output-dir <dir>` | Export manually selected corpus segments. |
-
-Use `uv run python` for ad-hoc Python commands rather than an unversioned system `python`. Keep user labels and generated annotation manifests under local `refs/annotations/`; use decoded source timestamps, never `frame / assumed_fps`. Large source videos, downloaded models, caches, and generated artifacts are kept out of normal source changes.
+For individual cutting, one-attempt analysis, and development tools, run
+`mise run help`; the [documentation index](docs/README.md) links to the
+corresponding references.
 
 Historical iOS-first and superseded remediation plans are retained in [`docs/archive/`](docs/archive/) for reference only; they are not active implementation specifications. For current stage-checkpoint behavior, use [Serve stage-checkpoint analysis](docs/reference/serve-stage-checkpoint-analysis.md).
 
