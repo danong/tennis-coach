@@ -16,6 +16,7 @@ import pytest
 
 from serve_review.checkpoints import composite_anchors as ca
 from serve_review.checkpoints import kinematic_waveforms as kw
+from serve_review.checkpoints import scene_features as scene_features_module
 from serve_review.checkpoints import six_anchor_solver as six_module
 from serve_review.checkpoints.kinematic_waveforms import KinematicWaveformsConfig
 from serve_review.checkpoints.phase_solver import PhaseSolverConfig
@@ -123,7 +124,7 @@ def test_scene_features_are_aligned_and_available_to_candidate_scoring() -> None
         frozenset({"body_2d", "ball_2d", "racket_2d"}),
     )
 
-    features = ca.build_scene_feature_series(scene, times)
+    features = scene_features_module.build_scene_feature_series(scene)
 
     assert features.left_wrist_ball_distance[0] == pytest.approx(0.1)
     assert features.racket_hoop_ball_distance[0] == pytest.approx(math.sqrt(0.05))
@@ -131,7 +132,9 @@ def test_scene_features_are_aligned_and_available_to_candidate_scoring() -> None
     assert features.left_wrist_ball_distance[1] is None
     assert features.racket_hoop_ball_distance[1] is None
     assert features.racket_handle_hoop_vertical_orientation[1] is None
-    anchor_set = ca.build_composite_anchor_set(_make_track(times), scene_track=scene)
+    anchor_set = ca.build_composite_anchor_set(
+        _make_track(times), scene_features=features
+    )
     assert anchor_set.for_stage("release")[0].cue_values[
         "ball_left_wrist_separation_onset"
     ] is None
@@ -156,6 +159,14 @@ def test_scene_features_are_aligned_and_available_to_candidate_scoring() -> None
         "finish": None,
     }
     assert solution.total_score == pytest.approx(-1.15)
+    mismatched = scene_features_module.SceneFeatureSeries(
+        time_seconds=(0.0, 0.2),
+        racket_handle_hoop_vertical_orientation=features.racket_handle_hoop_vertical_orientation,
+        left_wrist_ball_distance=features.left_wrist_ball_distance,
+        racket_hoop_ball_distance=features.racket_hoop_ball_distance,
+    )
+    with pytest.raises(ca.CompositeAnchorsError, match="scene-feature PTS"):
+        ca.build_composite_anchor_set(_make_track(times), scene_features=mismatched)
 
 
 # --- config -------------------------------------------------------------------

@@ -85,6 +85,7 @@ import numpy as np
 
 from serve_review.checkpoints import composite_anchors as composite_module
 from serve_review.checkpoints import kinematic_waveforms as waveforms_module
+from serve_review.checkpoints import scene_features as scene_features_module
 from serve_review.checkpoints import six_anchor_solver as six_anchor_module
 from serve_review.checkpoints import world_filter as filter_module
 from serve_review.checkpoints.composite_anchors import (
@@ -1806,8 +1807,11 @@ def run_analyze_serve(
                     "solve", f"3D waveform construction failed: {exc}."
                 ) from exc
         try:
+            scene_features = scene_features_module.build_scene_feature_series(
+                scene_track
+            )
             anchor_set = composite_module.build_composite_anchor_set(
-                track, cfg_composite, scene_track=scene_track
+                track, cfg_composite, scene_features=scene_features
             )
         except Exception as exc:
             raise _fail(
