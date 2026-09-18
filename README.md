@@ -22,11 +22,11 @@ A local command-line tool for finding and reviewing tennis serve attempts in sou
 
 - [Design](docs/architecture/offline-pipeline.md): offline behavior, media rules, architecture, detection, checkpoints, and evaluation.
 - [Deferred roadmap](docs/plans/offline-roadmap.md): earlier single-run leaves, dependencies, allowed scope, checks, and milestone gates.
-- [Serve stage-checkpoint analysis](docs/reference/serve-phase-analysis.md): current native-PTS 3D checkpoint pipeline, cues, weights, filtering, artifacts, limitations, and code pointers.
+- [Serve stage-checkpoint analysis](docs/reference/serve-stage-checkpoint-analysis.md): current native-PTS 3D checkpoint pipeline, cues, weights, filtering, artifacts, limitations, and code pointers.
 - [Archive](docs/archive/): superseded M4 remediation and iOS-first planning documents.
 - [M5 TCN proposal](docs/proposals/m5-tcn-phase-detection.md): deferred learned multi-view phase-detection experiment.
 
-The design is the general behavioral source of truth. [Serve stage-checkpoint analysis](docs/reference/serve-phase-analysis.md) is the operational source of truth for the current native-3D checkpoint path; the deferred roadmap records its earlier delivery order and gates. If maintained documents conflict, resolve and update them before implementation.
+The design is the general behavioral source of truth. [Serve stage-checkpoint analysis](docs/reference/serve-stage-checkpoint-analysis.md) is the operational source of truth for the current native-3D checkpoint path; the deferred roadmap records its earlier delivery order and gates. If maintained documents conflict, resolve and update them before implementation.
 
 ## Offline development setup
 
@@ -76,7 +76,7 @@ Current development commands:
 
 Use `uv run python` for ad-hoc Python commands rather than an unversioned system `python`. Keep user labels and generated annotation manifests under local `refs/annotations/`; use decoded source timestamps, never `frame / assumed_fps`. Large source videos, downloaded models, caches, and generated artifacts are kept out of normal source changes.
 
-Historical iOS-first and superseded remediation plans are retained in [`docs/archive/`](docs/archive/) for reference only; they are not active implementation specifications. For current stage-checkpoint behavior, use [Serve stage-checkpoint analysis](docs/reference/serve-phase-analysis.md).
+Historical iOS-first and superseded remediation plans are retained in [`docs/archive/`](docs/archive/) for reference only; they are not active implementation specifications. For current stage-checkpoint behavior, use [Serve stage-checkpoint analysis](docs/reference/serve-stage-checkpoint-analysis.md).
 
 ## Footage and local storage
 

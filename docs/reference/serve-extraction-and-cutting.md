@@ -2,7 +2,7 @@
 
 > **Status:** Current · **State:** Maintained · **Work:** None · **As of:** 2026-09-14
 
-This document describes the operational pipeline for finding serve attempts in longer sources and exporting reviewable clips or compilations. It is the counterpart to [serve stage-checkpoint analysis](serve-phase-analysis.md): `cut` finds attempt ranges, while stage-checkpoint analysis works inside one attempt range. Terminology follows the [glossary](glossary.md).
+This document describes the operational pipeline for finding serve attempts in longer sources and exporting reviewable clips or compilations. It is the counterpart to [serve stage-checkpoint analysis](serve-stage-checkpoint-analysis.md): `cut` finds attempt ranges, while stage-checkpoint analysis works inside one attempt range. Terminology follows the [glossary](glossary.md).
 
 The current implementation is a deterministic, local, audio-visual heuristic. It is useful for personal review, not a claim of general serve recognition.
 
@@ -156,7 +156,7 @@ The relevant identities are recorded in `run.json`: `cut-v1`, `candidate-ranges-
 2. Open `output/<stem>/serves.mov` for source-level review, or inspect the numbered clips individually.
 3. Review `attempts.json` against the original source, paying attention to unpadded versus padded ranges.
 4. Inspect `shadows.json` for tosses, silent overhead motions, truncated hypotheses, and other suppressed candidates.
-5. If stage checkpoints are needed, use `mise run process -- VIDEO` or run `uv run --locked serve-review analyze-serve VIDEO [--start-seconds S --end-seconds E]` as documented in [serve stage-checkpoint analysis](serve-phase-analysis.md).
+5. If stage checkpoints are needed, use `mise run process -- VIDEO` or run `uv run --locked serve-review analyze-serve VIDEO [--start-seconds S --end-seconds E]` as documented in [serve stage-checkpoint analysis](serve-stage-checkpoint-analysis.md).
 
 A compilation is a review aid, not ground truth. Confirm false positives and misses in the source before changing thresholds.
 

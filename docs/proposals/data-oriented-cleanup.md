@@ -182,7 +182,7 @@ or artifact that consumes those modules.
 ### C. Add one current data-flow reference (about 30–45 minutes)
 
 Replace the stale body-only section of
-`docs/reference/serve-phase-analysis.md` with the actual table flow above:
+`docs/reference/serve-stage-checkpoint-analysis.md` with the actual table flow above:
 raw body/racket caches, `SceneTrack`, body/audio and scene feature tables,
 composites, DP, final stages. Link to this proposal only if the cleanup is
 still in progress; otherwise fold the diagram directly into the reference.

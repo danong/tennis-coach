@@ -90,6 +90,22 @@ def _times(count: int, dt: float = DT) -> list[float]:
     return [i * dt for i in range(count)]
 
 
+def _scene_features(track: kw.KinematicWaveformTrack) -> scene_features_module.SceneFeatureSeries:
+    return scene_features_module.SceneFeatureSeries(
+        time_seconds=tuple(sample.time_seconds for sample in track.samples),
+        racket_handle_hoop_vertical_orientation=(None,) * len(track.samples),
+        left_wrist_ball_distance=(None,) * len(track.samples),
+        racket_hoop_ball_distance=(None,) * len(track.samples),
+    )
+
+
+def _anchor_set(track: kw.KinematicWaveformTrack) -> ca.CompositeAnchorSet:
+    return ca.build_composite_anchor_set(
+        track,
+        scene_features=_scene_features(track),
+    )
+
+
 def test_scene_features_are_aligned_and_available_to_candidate_scoring() -> None:
     times = [0.0, 0.1]
     keypoints = [BodyKeypoint(x=0.2, y=0.4, visibility=0.9) for _ in range(33)]
@@ -248,7 +264,7 @@ def test_dense_grid_preserves_every_frame_pts_and_order() -> None:
     count = 12
     times = _times(count)
     track = _make_track(times)
-    anchor_set = ca.build_composite_anchor_set(track)
+    anchor_set = _anchor_set(track)
     assert len(anchor_set.candidates) == count * len(ca.COMPOSITE_ANCHOR_STAGES)
     for stage in ca.COMPOSITE_ANCHOR_STAGES:
         rows = anchor_set.for_stage(stage)
@@ -276,7 +292,7 @@ def test_no_chronology_or_selection_dense_for_all_stages() -> None:
     times = _times(count)
     dy = [1.0 if i == 1 else 0.0 for i in range(count)]
     track = _make_track(times, {"right_wrist_rel_shoulder_dy": dy})
-    anchor_set = ca.build_composite_anchor_set(track)
+    anchor_set = _anchor_set(track)
     for stage in ca.COMPOSITE_ANCHOR_STAGES:
         assert len(anchor_set.for_stage(stage)) == count
     assert hasattr(anchor_set, "for_stage")
@@ -292,14 +308,14 @@ def test_start_score_prioritizes_low_arm_over_elevation_rise() -> None:
     times = _times(count)
     elev = [0.0 if i < 10 else (i - 10) * 0.1 for i in range(count)]
     track = _make_track(times, {"left_arm_elevation": elev})
-    anchor_set = ca.build_composite_anchor_set(track)
+    anchor_set = _anchor_set(track)
     rows = anchor_set.for_stage("start")
     late = sum(c.score for c in rows[12:18]) / 6
     early = sum(c.score for c in rows[1:7]) / 6
     assert early > late
     # Score equals the availability-weighted mean over available cues.
     config = ca.CompositeAnchorConfig()
-    normalized = ca.compute_composite_anchor_scores(track)["start"]
+    normalized = ca.compute_composite_anchor_scores(track, _scene_features(track))["start"]
     weights = config.weight_for("start")
     for index, candidate in enumerate(rows):
         expected_num = sum(
@@ -316,7 +332,7 @@ def test_contact_score_rewards_elevation_apex() -> None:
     times = _times(count)
     dy = [1.0 - abs(i - 10) * 0.1 for i in range(count)]
     track = _make_track(times, {"right_wrist_rel_shoulder_dy": dy})
-    anchor_set = ca.build_composite_anchor_set(track)
+    anchor_set = _anchor_set(track)
     rows = anchor_set.for_stage("contact")
     assert rows[10].cue_values["right_wrist_elevation_apex"] == pytest.approx(1.0)
     assert rows[0].cue_values["right_wrist_elevation_apex"] == pytest.approx(0.0)
@@ -337,7 +353,7 @@ def test_finish_score_rewards_settling() -> None:
             "right_wrist_acceleration": accel,
         },
     )
-    rows = ca.build_composite_anchor_set(track).for_stage("finish")
+    rows = _anchor_set(track).for_stage("finish")
     assert rows[-1].score > rows[0].score
     assert rows[-1].cue_values["whole_body_settling"] == pytest.approx(1.0)
     assert rows[0].cue_values["whole_body_settling"] == pytest.approx(0.0)
@@ -367,8 +383,8 @@ def test_contradictory_cue_lowers_score_honestly() -> None:
             "right_wrist_acceleration": [0.1] * count,
         },
     )
-    calm_rows = ca.build_composite_anchor_set(calm).for_stage("finish")
-    wild_rows = ca.build_composite_anchor_set(wild).for_stage("finish")
+    calm_rows = _anchor_set(calm).for_stage("finish")
+    wild_rows = _anchor_set(wild).for_stage("finish")
     # Constant series carry no discriminative evidence (guards -> 0.0),
     # so both are honest zeros rather than fabricated separation...
     for candidate in (*calm_rows, *wild_rows):
@@ -394,8 +410,8 @@ def test_contradictory_cue_lowers_score_honestly() -> None:
             "right_wrist_acceleration": [0.1] * count,
         },
     )
-    calm_scores = [c.score for c in ca.build_composite_anchor_set(varying_calm).for_stage("finish")]
-    wild_scores = [c.score for c in ca.build_composite_anchor_set(varying_wild).for_stage("finish")]
+    calm_scores = [c.score for c in _anchor_set(varying_calm).for_stage("finish")]
+    wild_scores = [c.score for c in _anchor_set(varying_wild).for_stage("finish")]
     # At the last frame calm has explicit wrist-trough support while
     # wild has identical non-wrist settling support but no trough.
     assert wild_scores[-1] < calm_scores[-1]
@@ -431,7 +447,7 @@ def test_fully_missing_support_is_honest_zero() -> None:
         "audio_transient_flag": [None] * count,
     }
     track = _make_track(times, overrides)
-    anchor_set = ca.build_composite_anchor_set(track)
+    anchor_set = _anchor_set(track)
     for candidate in anchor_set.candidates:
         assert candidate.score == 0.0
         assert candidate.coverage == 0.0
@@ -443,13 +459,13 @@ def test_partial_missing_coverage_is_mean_available_weight() -> None:
     times = _times(count)
     # Kill only the settling proxy: start stillness cue drops out.
     track = _make_track(times, {"whole_body_settling_energy": [None] * count})
-    rows = ca.build_composite_anchor_set(track).for_stage("start")
+    rows = _anchor_set(track).for_stage("start")
     for candidate in rows:
         assert candidate.cue_values["stillness"] is None
         assert candidate.coverage == pytest.approx(0.65, abs=1e-12)
         assert candidate.score >= 0.0
     # Loading stillness weight is 0.10 -> coverage 0.90.
-    loading = ca.build_composite_anchor_set(track).for_stage("loading")
+    loading = _anchor_set(track).for_stage("loading")
     for candidate in loading:
         assert candidate.coverage == pytest.approx(0.90, abs=1e-12)
 
@@ -477,8 +493,8 @@ def test_determinism_identical_rebuild() -> None:
     times = _times(count)
     elev = [math.sin(i * 0.5) for i in range(count)]
     track = _make_track(times, {"left_arm_elevation": elev})
-    first = ca.build_composite_anchor_set(track)
-    second = ca.build_composite_anchor_set(track)
+    first = _anchor_set(track)
+    second = _anchor_set(track)
     assert first.to_dict() == second.to_dict()
     assert first.to_json() == second.to_json()
 
@@ -487,7 +503,7 @@ def test_candidate_and_set_json_schema_roundtrip() -> None:
     count = 6
     times = _times(count)
     track = _make_track(times)
-    anchor_set = ca.build_composite_anchor_set(track)
+    anchor_set = _anchor_set(track)
     restored = ca.CompositeAnchorSet.from_dict(anchor_set.to_dict())
     assert restored == anchor_set
     assert ca.CompositeAnchorSet.from_json(anchor_set.to_json()) == anchor_set
@@ -558,7 +574,7 @@ def test_synthetic_geometry_waveform_pts_flows_verbatim() -> None:
         frames.append(_frame_at(t, overrides))
     filtered = wf.build_filtered_world_track(frames)
     wave = kw.build_kinematic_waveform_track(filtered)
-    anchor_set = ca.build_composite_anchor_set(wave)
+    anchor_set = _anchor_set(wave)
     wave_times = [s.time_seconds for s in wave.samples]
     for stage in ca.COMPOSITE_ANCHOR_STAGES:
         assert [c.time_seconds for c in anchor_set.for_stage(stage)] == pytest.approx(wave_times)
@@ -581,7 +597,7 @@ def test_contact_audio_cue_unavailable_without_audio() -> None:
             "audio_transient_flag": [None] * count,
         },
     )
-    rows = ca.build_composite_anchor_set(silent).for_stage("contact")
+    rows = _anchor_set(silent).for_stage("contact")
     for candidate in rows:
         assert candidate.cue_values["audio_transient"] is None
     # The audio and unavailable visual cue weights are absent.
@@ -612,8 +628,8 @@ def test_contact_audio_cue_rewards_transient_and_shifts_score() -> None:
             "audio_transient_flag": flags,
         },
     )
-    silent_rows = ca.build_composite_anchor_set(silent).for_stage("contact")
-    loud_rows = ca.build_composite_anchor_set(loud).for_stage("contact")
+    silent_rows = _anchor_set(silent).for_stage("contact")
+    loud_rows = _anchor_set(loud).for_stage("contact")
     # Flag-preferred cue normalizes the lone spike to 1.0 at contact.
     assert loud_rows[10].cue_values["audio_transient"] == pytest.approx(1.0)
     assert loud_rows[0].cue_values["audio_transient"] == pytest.approx(0.0)
@@ -624,7 +640,7 @@ def test_contact_audio_cue_rewards_transient_and_shifts_score() -> None:
     # The coincident transient deterministically raises the contact score.
     assert loud_rows[10].score > silent_rows[10].score
     # Diagnostic helper exposes the same normalized cue series.
-    normalized = ca.compute_composite_anchor_scores(loud)["contact"]["audio_transient"]
+    normalized = ca.compute_composite_anchor_scores(loud, _scene_features(loud))["contact"]["audio_transient"]
     assert normalized[10] == pytest.approx(1.0)
     assert normalized[0] == pytest.approx(0.0)
 
@@ -646,10 +662,10 @@ def test_rare_single_audio_flag_retains_score_one() -> None:
             "audio_transient_flag": flags,
         },
     )
-    normalized = ca.compute_composite_anchor_scores(track)["contact"]["audio_transient"]
+    normalized = ca.compute_composite_anchor_scores(track, _scene_features(track))["contact"]["audio_transient"]
     assert normalized[10] == pytest.approx(1.0)
     assert normalized[0] == pytest.approx(0.0)
-    rows = ca.build_composite_anchor_set(track).for_stage("contact")
+    rows = _anchor_set(track).for_stage("contact")
     assert rows[10].cue_values["audio_transient"] == pytest.approx(1.0)
     assert rows[0].cue_values["audio_transient"] == pytest.approx(0.0)
     # Energy-only fallback still normalizes continuously when no flag exists.
@@ -660,7 +676,7 @@ def test_rare_single_audio_flag_retains_score_one() -> None:
             "audio_transient_flag": [None] * count,
         },
     )
-    fallback = ca.compute_composite_anchor_scores(no_flag)["contact"]["audio_transient"]
+    fallback = ca.compute_composite_anchor_scores(no_flag, _scene_features(no_flag))["contact"]["audio_transient"]
     assert fallback[0] == pytest.approx(0.0)
     assert fallback[-1] == pytest.approx(1.0)
 
@@ -706,7 +722,7 @@ def test_low_valleys_do_not_receive_peak_flags_or_contact_reward() -> None:
             "audio_transient_flag": [None] * count,
         },
     )
-    rows = ca.build_composite_anchor_set(wired).for_stage("contact")
+    rows = _anchor_set(wired).for_stage("contact")
     assert rows[6].cue_values["right_wrist_speed_peak"] == pytest.approx(1.0)
     assert rows[3].cue_values["right_wrist_speed_peak"] == pytest.approx(0.0)
     assert rows[6].score > rows[3].score
@@ -744,8 +760,8 @@ def test_arm_down_extension_contributes_zero_arm_up_contributes() -> None:
             "audio_transient_flag": [None] * count,
         },
     )
-    down_rows = ca.build_composite_anchor_set(down).for_stage("contact")
-    up_rows = ca.build_composite_anchor_set(up).for_stage("contact")
+    down_rows = _anchor_set(down).for_stage("contact")
+    up_rows = _anchor_set(up).for_stage("contact")
     for candidate in down_rows:
         assert candidate.cue_values["right_arm_extension"] == pytest.approx(0.0)
     # Arm-up extension varies with reach and carries positive evidence.

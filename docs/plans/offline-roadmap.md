@@ -292,7 +292,7 @@ M3 improvement is out of scope for this M4 remediation. This remediation neither
 ### M4.7 — Native 3D kinematic track
 
 - **Objective:** For one explicit serve video/range, run the approved Heavy model once on every native frame and persist a reusable source-bound 3D kinematic track: `pose_world_landmarks`, quality, missingness, and exact presentation timestamps (PTS). Normalized 2D landmarks are optional review-overlay payload only, never phase evidence.
-- **Dependency:** archived 3D waveform implementation plan; see [`serve-phase-analysis.md`](../reference/serve-phase-analysis.md) for the current operational reference.
+- **Dependency:** archived 3D waveform implementation plan; see [`serve-stage-checkpoint-analysis.md`](../reference/serve-stage-checkpoint-analysis.md) for the current operational reference.
 - **Exit:** synthetic/cache tests prove identity, native support, missingness, cancellation, exact PTS, and optional 2D overlay alignment.
 
 ### M4.8 — Segment-safe Butterworth filtering

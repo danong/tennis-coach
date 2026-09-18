@@ -109,7 +109,7 @@ These changes are intentionally deferred until their code, schemas, CLI compatib
 
 | Current name | Preferred future name | Notes |
 | --- | --- | --- |
-| `docs/reference/serve-phase-analysis.md` | `docs/reference/serve-stage-analysis.md` | The maintained document describes stage checkpoints, not continuous phase intervals. |
+| `docs/reference/serve-stage-checkpoint-analysis.md` | `docs/reference/serve-stage-analysis.md` | The maintained document describes stage checkpoints, not continuous phase intervals. |
 | `phase-annotate` / `phase-evaluate` | `checkpoint-annotate` / `checkpoint-evaluate` | Coordinate with filenames and annotation schemas. |
 | `PhaseDocument`, `AttemptPhase`, `StagePhase` | checkpoint-oriented domain names | Requires a versioned schema/API migration; do not rename prose literals first. |
 | `phase-annotations.json` / `phase-evaluation.json` | checkpoint-oriented artifact names | Preserve readers for old local manifests where practical. |

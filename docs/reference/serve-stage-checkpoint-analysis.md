@@ -140,18 +140,11 @@ The implementation currently submits a checkpoint candidate at every native wave
 
 The active table flow is `SceneTrack -> SceneFeatureSeries` and `FilteredWorldTrack -> KinematicWaveformTrack`; `build_composite_anchor_set` rejects the two feature tables unless their complete PTS sequences match exactly, then owns cue transforms, weights, normalization, and candidate construction. The authoritative scoring code is [`scene_features.py`](../../src/serve_review/checkpoints/scene_features.py) and [`composite_anchors.py`](../../src/serve_review/checkpoints/composite_anchors.py).
 
-### Latest development cue weights
+### Cue ownership
 
-| Stage | Cues and weights | Operational interpretation |
-| --- | --- | --- |
-| Start | arm low `.45`; stillness `.35`; arm-elevation rise `.15`; left-elbow extension `.05` | low/still toss setup is favored over the instantaneous rise peak. It is still a dense static score, not yet a low-before-sustained-rise event rule. |
-| Release | left-arm elevation `.30`; elevation rise `.30`; extension `.25`; preparation `.15` | toss-arm elevation/rise/extension estimate; no ball tracking claim. |
-| Loading | knee flexion `.20`; shoulder--hip separation `.20`; tilt `.15`; left arm `.20`; right-elbow flexion `.15`; stillness `.10` | trophy/loading configuration proxy. |
-| Cocking | wrist-elevation trough `.25`; wrist acceleration `.20`; torso verticality `.15`; knee unload `.15`; loading unwind `.25` | pre-contact dominant-arm/loading transition proxy. |
-| Contact | wrist-elevation apex `.25`; wrist-speed peak `.20`; wrist-acceleration peak `.15`; torso verticality `.10`; directional arm extension `.10`; audio transient `.20` | body-pose contact estimate with optional qualified raw-audio support. `body_pose_audio` provenance is assigned only for a strictly positive selected audio cue. |
-| Finish | right-wrist speed trough `.60`; whole-body settling `.25`; torso-settling proxy `.15` | early follow-through/recovery trough proxy, not eventual standing rest. |
+The scorer combines body-waveform cues for every searched stage with experimental scene cues when their required observations are available: ball/left-wrist separation onset for release, handle-to-hoop orientation for cocking, and ball-to-hoop proximity for contact. Missing observations are omitted rather than fabricated. Audio transient support remains a contact cue.
 
-For contact, arm extension contributes only while the right wrist is above the shoulder under the upward-positive convention. Speed and acceleration **peaks** are distinct from troughs; contact does not reward low-motion valleys.
+Exact cue names, transforms, and weights intentionally live only in [`composite_anchors.py`](../../src/serve_review/checkpoints/composite_anchors.py): `COMPOSITE_CUE_NAMES`, `COMPOSITE_DEFAULT_WEIGHTS`, and `CompositeAnchorConfig`. Scene geometry lives in [`scene_features.py`](../../src/serve_review/checkpoints/scene_features.py).
 
 ## Chronology and finish bound
 
@@ -169,7 +162,7 @@ Current production outputs identify the relevant contracts:
 
 ```text
 waveforms:  kinematic-waveforms-default-v3 / kinematic-waveforms-v3
-composites: composite-anchors-default-v5 / composite-anchors-v4
+composites: composite-anchors-default-v7 / composite-anchors-v5
 M4 solver:  phase-solver-serve-default-v2
 filter:     world-butterworth-default-v1 / butterworth-sos-zerophase-v1
 ```
@@ -182,7 +175,7 @@ These IDs distinguish current outputs from earlier coordinate, cue, and configur
 
 A high score means that the current waveform heuristic prefers the frame. It is useful alongside source playback, the review page, and diagnostics rather than as an authoritative biomechanical measurement. In particular:
 
-- no ball, racket, foot-contact, court-height, or jump-height claim is made;
+- ball/racket observations are experimental, confidence-limited image-space evidence; they are not court-calibrated physical measurements;
 - 3D depth/angle estimates can be unreliable even when image appearance looks plausible;
 - filter-edge derivative channels have reduced recorded quality that is not yet score-weighted;
 - finish is currently bounded after contact but is not yet a robust “first meaningful trough” event;
@@ -197,8 +190,8 @@ The latest configuration deliberately leaves these out of the current production
 3. arbitrary-time diagnostic inspection output;
 4. sparse, stage-specific event eligibility, including low-before-rise start and first meaningful post-contact-trough finish rules;
 5. broader native-FPS processing/performance work for longer sources containing multiple attempts. The current path seeks to the attempt range before decoding every native frame;
-6. ball and racket tracking, including explicit toss/release and racket-contact evidence;
+6. reliability calibration for the existing ball/racket observations, including confidence-aware scoring;
 7. ground-plane or tennis-court grounding for foot contact, landing, and absolute body-height claims;
-8. a formally designed 3D--2D hybrid/observation-quality contract. At present, 2D remains overlay-only and cannot affect filtering, features, candidates, or DP;
+8. a formally designed 3D--2D hybrid/observation-quality contract beyond the current experimental scene cues;
 9. camera calibration, multi-view processing, and stronger viewpoint/handedness handling; and
 10. learned or corpus-trained stage-checkpoint models, including the separately proposed M5 experiment.

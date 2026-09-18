@@ -1366,46 +1366,60 @@ def _validate_track(name: str, track: Any) -> KinematicWaveformTrack:
     return track
 
 
+def _normalized_composite_cues(
+    track: KinematicWaveformTrack,
+    scene_features: SceneFeatureSeries,
+    *,
+    name: str,
+) -> Mapping[str, Mapping[str, tuple[float | None, ...]]]:
+    _validate_track(name, track)
+    if not isinstance(scene_features, SceneFeatureSeries):
+        raise CompositeAnchorsError(
+            f"{name}: 'scene_features' must be a SceneFeatureSeries, "
+            f"got {type(scene_features).__name__}."
+        )
+    if scene_features.time_seconds != tuple(sample.time_seconds for sample in track.samples):
+        raise CompositeAnchorsError(
+            f"{name}: scene-feature PTS must exactly match the waveform PTS grid."
+        )
+    raw = _extract_raw_cues(track, scene_features)
+    normalized: dict[str, dict[str, tuple[float | None, ...]]] = {}
+    for stage in COMPOSITE_ANCHOR_STAGES:
+        normalized[stage] = {
+            cue: quantile_normalize_series(raw[stage][cue])
+            for cue in COMPOSITE_CUE_NAMES[stage]
+        }
+    normalized["contact"]["audio_transient"] = _normalize_audio_transient_cue(
+        _optional_series(track, "audio_transient_flag"),
+        _optional_series(track, "audio_transient_energy"),
+    )
+    return MappingProxyType(
+        {stage: MappingProxyType(dict(cues)) for stage, cues in normalized.items()}
+    )
+
+
 def compute_composite_anchor_scores(
     track: KinematicWaveformTrack,
+    scene_features: SceneFeatureSeries,
     config: CompositeAnchorConfig | None = None,
 ) -> Mapping[str, Mapping[str, tuple[float | None, ...]]]:
-    """Compute normalized cue series per stage (diagnostic helper).
-
-    Returns ``{stage: {cue: tuple[normalized|None ...]}}`` aligned with
-    ``track.samples``. Pure and deterministic;same quantile
-    normalization the builder uses.
-    """
+    """Return the same normalized cue table consumed by candidate building."""
     cfg = config if config is not None else CompositeAnchorConfig()
     if not isinstance(cfg, CompositeAnchorConfig):
         raise CompositeAnchorsError(
             "compute_composite_anchor_scores: 'config' must be a "
             f"CompositeAnchorConfig, got {type(config).__name__}."
         )
-    _validate_track("compute_composite_anchor_scores", track)
-    raw = _extract_raw_cues(track)
-    normalized: dict[str, dict[str, tuple[float | None, ...]]] = {}
-    for stage in COMPOSITE_ANCHOR_STAGES:
-        staged: dict[str, tuple[float | None, ...]] = {}
-        for cue in COMPOSITE_CUE_NAMES[stage]:
-            staged[cue] = quantile_normalize_series(raw[stage][cue])
-        normalized[stage] = staged
-    # Preserve explicit binary audio flags verbatim (never p5/p95-normalize).
-    normalized["contact"]["audio_transient"] = _normalize_audio_transient_cue(
-        _optional_series(track, "audio_transient_flag"),
-        _optional_series(track, "audio_transient_energy"),
+    return _normalized_composite_cues(
+        track, scene_features, name="compute_composite_anchor_scores"
     )
-    outer: dict[str, Mapping[str, tuple[float | None, ...]]] = {
-        stage: MappingProxyType(dict(staged)) for stage, staged in normalized.items()
-    }
-    return MappingProxyType(outer)
 
 
 def build_composite_anchor_set(
     track: KinematicWaveformTrack,
     config: CompositeAnchorConfig | None = None,
     *,
-    scene_features: SceneFeatureSeries | None = None,
+    scene_features: SceneFeatureSeries,
 ) -> CompositeAnchorSet:
     """Build the dense six-anchor candidate set for one waveform track.
 
@@ -1419,25 +1433,8 @@ def build_composite_anchor_set(
             "build_composite_anchor_set: 'config' must be a CompositeAnchorConfig, "
             f"got {type(config).__name__}."
         )
-    _validate_track("build_composite_anchor_set", track)
-    if scene_features is not None:
-        waveform_times = tuple(sample.time_seconds for sample in track.samples)
-        if scene_features.time_seconds != waveform_times:
-            raise CompositeAnchorsError(
-                "build_composite_anchor_set: scene-feature PTS must exactly "
-                "match the waveform PTS grid."
-            )
-    raw = _extract_raw_cues(track, scene_features)
-    normalized: dict[str, dict[str, tuple[float | None, ...]]] = {}
-    for stage in COMPOSITE_ANCHOR_STAGES:
-        staged: dict[str, tuple[float | None, ...]] = {}
-        for cue in COMPOSITE_CUE_NAMES[stage]:
-            staged[cue] = quantile_normalize_series(raw[stage][cue])
-        normalized[stage] = staged
-    # Preserve explicit binary audio flags verbatim (never p5/p95-normalize).
-    normalized["contact"]["audio_transient"] = _normalize_audio_transient_cue(
-        _optional_series(track, "audio_transient_flag"),
-        _optional_series(track, "audio_transient_energy"),
+    normalized = _normalized_composite_cues(
+        track, scene_features, name="build_composite_anchor_set"
     )
 
     candidates: list[CompositeAnchorCandidate] = []
@@ -1503,7 +1500,7 @@ def generate_composite_anchor_candidates(
     track: KinematicWaveformTrack,
     config: CompositeAnchorConfig | None = None,
     *,
-    scene_features: SceneFeatureSeries | None = None,
+    scene_features: SceneFeatureSeries,
 ) -> CompositeAnchorSet:
     """Alias for :func:`build_composite_anchor_set` (dense, no selection)."""
     return build_composite_anchor_set(track, config, scene_features=scene_features)
