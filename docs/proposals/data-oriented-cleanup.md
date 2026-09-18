@@ -24,13 +24,14 @@ source video + requested attempt range
   -> kinematic-track-v1.jsonl
   -> native-PTS RacketVision ball/racket observations
   -> racketvision-track-v1.jsonl
-  -> SceneTrack (strict PTS join of raw body, ball, racket observations)
+  -> aligned native-PTS audio energy/transient observations
+  -> SceneTrack (strict PTS join of raw body, ball, racket, audio observations)
 
 body-world observations -> FilteredWorldTrack -> KinematicWaveformTrack
-raw source audio --------------------------------------------^ 
+SceneTrack audio ----------------------------------------------^
 
-SceneTrack -> unweighted scene feature series
-KinematicWaveformTrack + scene features -> CompositeAnchorSet
+SceneTrack -> SceneFeatureSeries
+KinematicWaveformTrack + SceneFeatureSeries -> CompositeAnchorSet
 CompositeAnchorSet -> SixAnchorSolution -> AttemptPhase
 AttemptPhase -> checkpoints.json + review JPEGs/HTML
 ```
@@ -47,6 +48,7 @@ The core data values already have useful names:
 | Dense body observations | `pose/world.py` |
 | Ball/racket observations | `tracking/racketvision.py` |
 | Strict raw multimodal join | `scene.py` |
+| Aligned audio sampling/qualification | currently `analyze_serve.py` + `media/audio.py` |
 | Filtered body track | `checkpoints/world_filter.py` |
 | Body/audio waveform table | `checkpoints/kinematic_waveforms.py` |
 | Scene-derived feature series | currently `checkpoints/composite_anchors.py` |
@@ -66,7 +68,14 @@ There are also two sources of avoidable confusion:
 
 The just-added visual features expose a smaller version of the same issue:
 `SceneFeatureSeries` is a real intermediate table, but it is currently built
-inside the composite scorer because that was the smallest MVP insertion.
+inside the composite scorer and takes the waveform PTS sequence as an input.
+That makes the feature projection depend on the table it should later be
+combined with, rather than preserving SceneTrack's own canonical timeline.
+
+There is a related canonical-data gap: `SceneTrack` can represent aligned
+audio, but active orchestration builds it before audio sampling and passes
+audio directly to the waveform builder. The result is two parallel views of
+the attempt timeline rather than one raw multimodal row sequence.
 
 ## 2. Where we should go
 
@@ -88,13 +97,17 @@ The rules are simple:
   PTS-aligned view of body, ball, racket, and optional audio. Do not add
   scores, stage labels, smoothing, or selection state to it.
 - **Feature tables derive values, not decisions.** A scene-feature table owns
-  handle/hoop orientation, ball/wrist distance, and ball/hoop distance. A
-  waveform table owns 3D body and audio quantities. Missing inputs remain
-  `None`; no interpolation or fallback policy is hidden here.
-- **The scorer owns only cue transforms and weights.** It can turn a distance
-  into a forward separation-onset cue or negate it for proximity, normalize
-  it within an attempt, and make dense candidates. It must not decode media,
-  inspect caches, or join observations.
+  handle/hoop orientation, ball/wrist distance, and ball/hoop distance. It
+  takes only `SceneTrack` and preserves its PTS verbatim. A waveform table
+  owns 3D body and audio quantities, using the audio rows already represented
+  by `SceneTrack`. Missing inputs remain `None`; no interpolation or fallback
+  policy is hidden here.
+- **The scorer owns only cue transforms and weights.** It first rejects a
+  waveform table and scene-feature table whose complete PTS sequences are not
+  exactly equal. It can then turn a distance into a forward
+  separation-onset cue or negate it for proximity, normalize it within an
+  attempt, and make dense candidates. It must not decode media, inspect
+  caches, or join observations.
 - **The DP owns only chronology.** It consumes candidate scores and PTS; it
   must not know whether a score came from a wrist, microphone, ball, or
   racket.
@@ -114,8 +127,8 @@ context, or another layer of factories.
 Move `SceneFeatureSeries` and `build_scene_feature_series()` out of
 `composite_anchors.py` into a small `checkpoints/scene_features.py` module.
 
-Its only input is `SceneTrack` plus the expected waveform PTS sequence; its
-only output is the aligned immutable table:
+Its only input is `SceneTrack`; its only output is an immutable table carrying
+that exact PTS sequence:
 
 ```text
 PTS
@@ -124,11 +137,20 @@ left-wrist-to-ball distance
 hoop-center-to-ball distance
 ```
 
-`analyze_serve.py` builds this table after building the waveform track, then
-passes it to `build_composite_anchor_set(track, config, scene_features=...)`.
+`analyze_serve.py` builds this table from `SceneTrack` and passes it to
+`build_composite_anchor_set(track, config, scene_features=...)`.
+`build_composite_anchor_set()` owns the exact full-sequence PTS equality
+check, because it is the first place that combines the two tables.
 `composite_anchors.py` no longer imports `SceneTrack` or MediaPipe joint
 indices. This makes the boundary between raw observations, derived features,
 and weighted scoring visible without changing behavior or caches.
+
+In the same small change, move SceneTrack construction until after aligned
+source-audio sampling and transient qualification. Extend the scene builder to
+accept one optional audio row per PTS (rather than requiring audio to be
+all-or-nothing), then build the waveform's audio inputs from those same scene
+rows. Audio sampling failure remains an honestly absent audio modality; it
+must not prevent body/ball/racket analysis.
 
 ### B. Remove the unreachable sparse stage stack (about 2–3 hours)
 
@@ -169,12 +191,15 @@ At the end of the day:
 
 1. A reader can trace one `process` attempt through no more than these values:
    raw observations, scene/waveform features, candidates, solution, output.
-2. `SceneTrack` remains raw aligned data, and the scorer consumes feature
-   tables rather than raw model representations.
-3. No production-reachable code imports the removed sparse stage stack.
-4. `mise run process refs/anchors/single-serve-01.mov --force` still creates
+2. `SceneTrack` remains raw aligned data, including optional audio rows, and
+   `build_scene_feature_series()` depends only on it.
+3. The composite builder rejects unequal waveform/scene-feature PTS sequences
+   before scoring; it consumes feature tables rather than raw model
+   representations.
+4. No production-reachable code imports the removed sparse stage stack.
+5. `mise run process refs/anchors/single-serve-01.mov --force` still creates
    the same artifact layout and successfully reaches a selected stage result.
-5. No new generic framework, persistence format, fallback mode, or process
+6. No new generic framework, persistence format, fallback mode, or process
    behavior is introduced.
 
 This leaves room for later experimental weight tuning, but makes that tuning
