@@ -15,6 +15,7 @@ from serve_review.analyze_serve import (
     REVIEW_DIRNAME,
     REVIEW_JSON_FILENAME,
 )
+from serve_review.fingerprint import ARTIFACT_FILENAME, ServeFingerprintV1
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,10 @@ class AttemptAnalysisArtifacts:
         return self.directory / DIAGNOSTICS_FILENAME
 
     @property
+    def fingerprint_path(self) -> Path:
+        return self.directory / ARTIFACT_FILENAME
+
+    @property
     def review_dir(self) -> Path:
         return self.directory / REVIEW_DIRNAME
 
@@ -54,10 +59,16 @@ class AttemptAnalysisArtifacts:
         diagnostics = _json_object(self.diagnostics_path)
         review = _json_object(self.review_dir / REVIEW_JSON_FILENAME)
         try:
+            fingerprint = ServeFingerprintV1.from_json(
+                self.fingerprint_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, UnicodeError):
+            fingerprint = None
+        try:
             html = self.index_html_path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             return False
-        if checkpoints is None or diagnostics is None or review is None or not html.strip():
+        if checkpoints is None or diagnostics is None or review is None or fingerprint is None or not html.strip():
             return False
         entries = review.get("entries")
         if not isinstance(entries, list):

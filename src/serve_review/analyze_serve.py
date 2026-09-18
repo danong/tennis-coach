@@ -109,6 +109,8 @@ from serve_review.domain import (
     SourceMetadata,
     StagePhase,
 )
+from serve_review.fingerprint import ARTIFACT_FILENAME as FINGERPRINT_FILENAME
+from serve_review.fingerprint import build_serve_fingerprint_v1
 from serve_review.media import audio as audio_module
 from serve_review.media import color as color_module
 from serve_review.media import frames as frames_module
@@ -231,6 +233,7 @@ class AnalyzeServeResult:
     attempt_phase: AttemptPhase
     checkpoints_path: Path
     diagnostics_path: Path
+    fingerprint_path: Path
     review_dir: Path
     index_html: Path
     review_json: Path
@@ -996,6 +999,7 @@ def run_analyze_serve(
             raise _fail("validate", "invalid output directory: expected a non-blank path.")
     checkpoints_out = session_dir / CHECKPOINTS_FILENAME
     diagnostics_out = session_dir / DIAGNOSTICS_FILENAME
+    fingerprint_out = session_dir / FINGERPRINT_FILENAME
     review_dir = session_dir / REVIEW_DIRNAME
     if cache_path is not None:
         cache_target = Path(cache_path).expanduser()
@@ -2084,6 +2088,17 @@ def run_analyze_serve(
                 "solve", f"could not build serve-001 phase: {exc}."
             ) from exc
         try:
+            serve_fingerprint = build_serve_fingerprint_v1(
+                track,
+                attempt_phase,
+                source_fingerprint=fingerprint,
+                body_model_name=model_name,
+                body_model_version=model_version,
+            )
+            fingerprint_text = serve_fingerprint.to_json()
+        except Exception as exc:
+            raise _fail("solve", f"could not build ServeFingerprintV1: {exc}.") from exc
+        try:
             phase_document = PhaseDocument(
                 source_fingerprint=fingerprint,
                 source_duration_seconds=duration,
@@ -2247,6 +2262,12 @@ def run_analyze_serve(
                 f"output collision: {diagnostics_out} already exists. Pass "
                 f"--force to replace outputs in {session_dir}. ",
             )
+        if fingerprint_out.exists() and not force_flag:
+            raise _fail(
+                "write",
+                f"output collision: {fingerprint_out} already exists. Pass "
+                f"--force to replace outputs in {session_dir}. ",
+            )
         if review_dir.exists() and not force_flag:
             raise _fail(
                 "review",
@@ -2254,7 +2275,7 @@ def run_analyze_serve(
                 "--force to replace the review directory. ",
             )
         if force_flag:
-            for path in (checkpoints_out, diagnostics_out):
+            for path in (checkpoints_out, diagnostics_out, fingerprint_out):
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:
@@ -2695,6 +2716,7 @@ def run_analyze_serve(
                 checkpoints_out, phase_document.to_json(), "write"
             )
             _write_text_atomic(diagnostics_out, diagnostics_text, "write")
+            _write_text_atomic(fingerprint_out, fingerprint_text, "write")
         except AnalyzeServeError as exc:
             raise _fail("write", str(exc.message)) from exc
         except Exception as exc:
@@ -2715,6 +2737,7 @@ def run_analyze_serve(
             attempt_phase=attempt_phase,
             checkpoints_path=checkpoints_out,
             diagnostics_path=diagnostics_out,
+            fingerprint_path=fingerprint_out,
             review_dir=review_dir,
             index_html=review_dir / INDEX_HTML_FILENAME,
             review_json=review_dir / REVIEW_JSON_FILENAME,
@@ -2731,10 +2754,10 @@ def run_analyze_serve(
             empty=False,
         )
     except AnalyzeServeCancelled as exc:
-        for stem in (CHECKPOINTS_FILENAME, DIAGNOSTICS_FILENAME):
+        for stem in (CHECKPOINTS_FILENAME, DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME):
             _remove_tmp_siblings(session_dir, stem)
         raise
     except AnalyzeServeError:
-        for stem in (CHECKPOINTS_FILENAME, DIAGNOSTICS_FILENAME):
+        for stem in (CHECKPOINTS_FILENAME, DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME):
             _remove_tmp_siblings(session_dir, stem)
         raise

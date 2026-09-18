@@ -14,6 +14,7 @@ See [Document status](document-status.md) for lifecycle, state, work-priority, a
 - [Minimal local processing workflow](plans/minimal-local-workflow.md)
 - [Serve extraction and cutting](reference/serve-extraction-and-cutting.md)
 - [Serve stage-checkpoint analysis](reference/serve-stage-checkpoint-analysis.md)
+- [Serve fingerprints](reference/serve-fingerprints.md)
 - [Glossary](reference/glossary.md)
 - [Architecture](architecture/README.md)
 - [Processing lifecycle](architecture/processing-lifecycle.md)

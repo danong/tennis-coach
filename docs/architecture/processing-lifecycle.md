@@ -25,6 +25,7 @@ source video
        SceneFeatureSeries + KinematicWaveformTrack -> CompositeAnchorSet
        -> SixAnchorSolver
        -> checkpoints, review frames, diagnostics
+       KinematicWaveformTrack + AttemptPhase -> ServeFingerprintV1
   -> metadata/index.html
 ```
 
@@ -67,6 +68,9 @@ KinematicWaveformTrack + SceneFeatureSeries
   -> CompositeAnchorSet         # exact PTS sequences must match
   -> SixAnchorSolution          # chronology only
   -> eight checkpoint stages    # two are derived midpoints
+
+KinematicWaveformTrack + AttemptPhase
+  -> ServeFingerprintV1         # fixed body-only metrics and phase sequence
 ```
 
 `SceneTrack` owns aligned observations, not scoring: it has no normalized cues,
@@ -96,14 +100,16 @@ metadata/<video>/
   attempts.json
   attempts/<serve-id>/checkpoints.json
   attempts/<serve-id>/serve-3d-diagnostics.json
+  attempts/<serve-id>/serve-fingerprint-v1.json
   attempts/<serve-id>/review-serve-3d/
   index.html
 exports/<video>/serves.mov
 ```
 
-The final index links the attempt reviews. Checkpoint/review artifacts are
-regenerated output; the two cache files are the reusable model-observation
-artifacts.
+The final index links the attempt reviews. Checkpoint/review/fingerprint
+artifacts are regenerated output; the two cache files are the reusable
+model-observation artifacts. Fingerprint contents and its supported comparison
+domain are documented in [serve fingerprints](../reference/serve-fingerprints.md).
 
 ## Module boundaries
 

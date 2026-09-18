@@ -27,12 +27,19 @@ Outputs are written atomically beneath `<output-dir>/<video-stem>/`:
 ```text
 checkpoints.json                 selected checkpoints for eight stages
 serve-3d-diagnostics.json        versions, PTS, candidate counts, selected cues
+serve-fingerprint-v1.json        fixed body-only serve description
 review-serve-3d/index.html       source-frame review page
 review-serve-3d/review.json      deterministic review manifest
 review-serve-3d/*.jpg            selected frames; manual frames when requested
 cache/kinematic-track-v1.jsonl    reusable native body-world cache
 cache/racketvision-track-v1.jsonl  reusable native ball/racket observation cache
 ```
+
+`checkpoints.json` supplies the six selected direct anchors used to align the
+body-only [`ServeFingerprintV1`](serve-fingerprints.md). The fingerprint is a
+separate output and does not change checkpoint scoring or selection. Its fixed
+metrics, sequence, missingness rules, comparison domain, and completeness
+behavior are described in the [fingerprint reference](serve-fingerprints.md).
 
 A compatible cache avoids native-frame inference. The backend is still initialized to establish model identity, so MediaPipe startup logging does not itself prove a cache miss. `AnalyzeServeResult.cache_hit` and `inferred_frames` are authoritative for programmatic callers.
 

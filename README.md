@@ -16,7 +16,11 @@ A local command-line tool for finding and reviewing tennis serve attempts in sou
 
 **iOS app:** Process, cut, and analyze videos from my phone directly on the tennis court.
 
-**Automated analysis:** Maybe some transformer based thing? TBD.
+Serve analysis also writes a deterministic, body-only fingerprint for each
+attempt, combining fixed interpretable measurements with a phase-aligned motion
+sequence. V1 supports comparison only among right-handed serves under
+compatible rear-view capture conditions; see the [serve fingerprint
+reference](docs/reference/serve-fingerprints.md).
 
 ## Documents
 
@@ -25,6 +29,7 @@ Start with the [documentation index](docs/README.md). The main operational refer
 - [Processing lifecycle](docs/architecture/processing-lifecycle.md): what happens when `mise run process` runs.
 - [Serve extraction and cutting](docs/reference/serve-extraction-and-cutting.md): attempt detection and export.
 - [Serve stage-checkpoint analysis](docs/reference/serve-stage-checkpoint-analysis.md): multimodal checkpoint analysis.
+- [Serve fingerprints](docs/reference/serve-fingerprints.md): persisted body-only attempt description and comparison domain.
 
 If maintained documents conflict, resolve and update them before implementation.
 

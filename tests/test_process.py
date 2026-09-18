@@ -6,6 +6,10 @@ import pytest
 
 from serve_review.domain import Attempt, AttemptDocument, MediaRange, SourceMetadata
 from serve_review.process import FingerprintMismatch, ProcessError, discover, process
+from serve_review.fingerprint import (
+    ANCHOR_NAMES, CHANNEL_NAMES, METRIC_UNITS, SEGMENT_LAYOUT,
+    AnchorValue, MetricValue, SequenceSegment, ServeFingerprintV1,
+)
 
 
 def metadata(fingerprint: str = "sha256:test") -> SourceMetadata:
@@ -55,6 +59,25 @@ def write_analysis(destination: Path) -> None:
     review.mkdir(parents=True, exist_ok=True)
     (destination / "checkpoints.json").write_text("{}")
     (destination / "serve-3d-diagnostics.json").write_text("{}")
+    anchors = {name: AnchorValue(False, None) for name in ANCHOR_NAMES}
+    metrics = {name: MetricValue(False, None, unit) for name, unit in METRIC_UNITS.items()}
+    segments = tuple(
+        SequenceSegment(name, False, f"{name}_duration",
+                        tuple((None,) * len(CHANNEL_NAMES) for _ in range(16)),
+                        tuple((False,) * len(CHANNEL_NAMES) for _ in range(16)))
+        for name, _, _ in SEGMENT_LAYOUT
+    )
+    fingerprint = ServeFingerprintV1(
+        "sha256:test", 1.0, 1.5,
+        {"coordinate_convention": "mediapipe-world-hip-centered-v2",
+         "waveform_method_version": "kinematic-waveforms-v3",
+         "waveform_config_id": "kinematic-waveforms-default-v3",
+         "checkpoint_method_version": "serve-waveform-v1",
+         "checkpoint_config_id": "phase-solver-serve-default-v2",
+         "body_model_name": "pose", "body_model_version": "1"},
+        anchors, metrics, segments,
+    )
+    (destination / "serve-fingerprint-v1.json").write_text(fingerprint.to_json())
     (review / "review.json").write_text(json.dumps({"entries": []}))
     (review / "index.html").write_text("<html>review</html>")
     cache = destination / "cache"
@@ -305,6 +328,24 @@ def test_summary_links_raw_compilation_and_checkpoint(tmp_path: Path) -> None:
     assert "00:01.0" in text
     assert "review-serve-3d" in text
     assert "<script" not in text.lower()
+
+
+def test_missing_or_invalid_fingerprint_makes_attempt_incomplete(tmp_path: Path) -> None:
+    video = tmp_path / "serve.mov"
+    video.write_bytes(b"video")
+    document = attempts()
+    write_cut(video, document)
+    destination = tmp_path / "metadata" / "serve" / "attempts" / "serve-001"
+    write_analysis(destination)
+    fingerprint = destination / "serve-fingerprint-v1.json"
+    fingerprint.unlink()
+    result = process(video, probe_fn=lambda path: metadata(), cut_fn=_boom,
+                     analyze_fn=lambda _path, **kwargs: write_analysis(kwargs["output_dir"]))
+    assert _actions(result, "serve-001") == ["clear"]
+    fingerprint.write_text("{}")
+    result = process(video, probe_fn=lambda path: metadata(), cut_fn=_boom,
+                     analyze_fn=lambda _path, **kwargs: write_analysis(kwargs["output_dir"]))
+    assert _actions(result, "serve-001") == ["clear"]
 
 
 def _boom(*args, **kwargs):

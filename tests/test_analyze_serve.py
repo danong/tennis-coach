@@ -224,6 +224,7 @@ def _run(
     sampled_holder: list | None = None,
     encoded_holder: list | None = None,
     audio: str = "absent",
+    is_cancelled=None,
 ):
     from serve_review.analyze_serve import run_analyze_serve as _run_fn
 
@@ -273,6 +274,7 @@ def _run(
         sample_frame_fn=_sample,
         encode_jpeg_fn=_encode,
         audio_energies_fn=audio_hook,
+        is_cancelled=is_cancelled,
     )
     return result, backend
 
@@ -781,6 +783,12 @@ def test_local_default_without_nested_stem(tmp_path: Path, no_legacy_sparse: Non
     expected = tmp_path / "metadata" / "serve" / "manual-analysis"
     assert result.session_dir == expected
     assert result.checkpoints_path == expected / "checkpoints.json"
+    assert result.fingerprint_path == expected / "serve-fingerprint-v1.json"
+    fingerprint = json.loads(result.fingerprint_path.read_text(encoding="utf-8"))
+    assert fingerprint["identity"]["source_fingerprint"] == result.source_metadata.fingerprint
+    assert fingerprint["identity"]["attempt_start_seconds"] == result.attempt_range.start_seconds
+    assert fingerprint["identity"]["attempt_end_seconds"] == result.attempt_range.end_seconds
+    assert fingerprint["normalized_sequence"]["shape"] == [5, 16, 12]
     assert result.cache_path == expected / "cache" / "kinematic-track-v1.jsonl"
     assert result.cache_path.parent.parent == expected
 
@@ -870,3 +878,36 @@ def test_force_boundary_for_existing_output(tmp_path: Path, no_legacy_sparse: No
     result2, backend2 = _run(tmp_path, force=True)
     assert result2 is not None
     assert result2.checkpoints_path.is_file()
+    assert result2.fingerprint_path.is_file()
+
+
+def test_cancellation_before_publish_leaves_no_fingerprint(tmp_path: Path) -> None:
+    from serve_review.analyze_serve import AnalyzeServeCancelled
+
+    cancelled = False
+
+    def progress(message: str) -> None:
+        nonlocal cancelled
+        if message == "analyze-serve: writing checkpoints":
+            cancelled = True
+
+    video = tmp_path / "serve.mov"
+    video.write_bytes(b"fake-video-bytes")
+    with pytest.raises(AnalyzeServeCancelled):
+        run_analyze_serve(
+            video,
+            output_dir=tmp_path / "analysis",
+            probe_fn=lambda path: _metadata(),
+            native_times_fn=lambda _v, s, e: tuple(t for t in TIMES if t >= s - 1e-9 and t < e),
+            native_frame_factory=lambda remaining, _meta: _native_frames(tuple(remaining)),
+            backend_factory=_FakeBackend,
+            sample_frame_fn=lambda vp, m, md: SampledFrame(
+                time_seconds=float(m), timestamp_ms=int(round(float(m) * 1000)),
+                width=16, height=16, image=np.zeros((16, 16, 3), dtype=np.uint8)),
+            encode_jpeg_fn=lambda image, dest: (dest.parent.mkdir(parents=True, exist_ok=True), dest.write_bytes(b"x")),
+            audio_energies_fn=_absent_audio_energies,
+            progress_callback=progress,
+            is_cancelled=lambda: cancelled,
+        )
+    assert not (tmp_path / "analysis" / "serve-fingerprint-v1.json").exists()
+    assert not list((tmp_path / "analysis").glob("serve-fingerprint-v1.json.tmp-*"))
