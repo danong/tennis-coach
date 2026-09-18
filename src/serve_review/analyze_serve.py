@@ -731,6 +731,36 @@ def _attach_shared_transient_flags(
     return explicit
 
 
+def _scene_audio_rows(
+    aligned: Sequence[Any] | None,
+    frame_times: Sequence[float],
+) -> tuple[tuple[audio_module.AudioEnergy | None, ...] | None, tuple[bool | None, ...] | None]:
+    """Project qualified aligned audio into SceneTrack row observations."""
+    if aligned is None:
+        return (None, None)
+    if len(aligned) != len(frame_times):
+        raise AnalyzeServeError(
+            "solve", "qualified audio must contain one row per scene PTS."
+        )
+    energies: list[audio_module.AudioEnergy | None] = []
+    transients: list[bool | None] = []
+    for moment, row in zip(frame_times, aligned):
+        if row is None:
+            energies.append(None)
+            transients.append(None)
+            continue
+        if not isinstance(row, (tuple, list)) or len(row) != 2:
+            raise AnalyzeServeError("solve", "invalid qualified audio row.")
+        energy, flag = row
+        if energy is None:
+            energies.append(None)
+            transients.append(None)
+            continue
+        energies.append(audio_module.AudioEnergy(float(moment), float(energy)))
+        transients.append(bool(flag) if flag is not None else None)
+    return (tuple(energies), tuple(transients))
+
+
 def _structural_status(availabilities: Sequence[str]) -> str:
     available = sum(1 for value in availabilities if value == "available")
     unavailable = sum(1 for value in availabilities if value == "unavailable")
@@ -1647,18 +1677,6 @@ def run_analyze_serve(
             except Exception as exc:
                 raise _fail("tracking", f"RacketVision tracking failed: {exc}.") from exc
 
-        try:
-            scene_track = build_scene_track_with_racketvision_observations(
-                world_module.WorldCacheSnapshot(
-                    identity=identity,
-                    frames=tuple(observations),
-                    complete=True,
-                ),
-                racketvision_observations,
-            )
-        except Exception as exc:
-            raise _fail("tracking", f"could not build SceneTrack: {exc}.") from exc
-
         # --- 3D waveform chain with optional audio cue (never 2D, never sparse) ---
         _progress("analyze-serve: building 3D waveforms")
         if _cancelled():
@@ -1737,8 +1755,39 @@ def run_analyze_serve(
                 aligned_audio = None
                 audio_status = "unavailable"
         try:
+            scene_audio, scene_transients = _scene_audio_rows(
+                aligned_audio, tuple(expected)
+            )
+            scene_track = build_scene_track_with_racketvision_observations(
+                world_module.WorldCacheSnapshot(
+                    identity=identity,
+                    frames=tuple(observations),
+                    complete=True,
+                ),
+                racketvision_observations,
+                audio=scene_audio,
+                audio_transients=scene_transients,
+            )
+        except Exception as exc:
+            raise _fail("tracking", f"could not build SceneTrack: {exc}.") from exc
+        waveform_audio = (
+            [
+                None
+                if frame.audio_energy is None
+                else (
+                    frame.audio_energy,
+                    None
+                    if frame.audio_transient is None
+                    else float(frame.audio_transient),
+                )
+                for frame in scene_track.frames
+            ]
+            if scene_audio is not None
+            else None
+        )
+        try:
             track = waveforms_module.build_kinematic_waveform_track(
-                filtered, cfg_waveforms, audio_energies=aligned_audio
+                filtered, cfg_waveforms, audio_energies=waveform_audio
             )
         except Exception as exc:
             if aligned_audio is not None:

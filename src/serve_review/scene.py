@@ -192,7 +192,7 @@ def build_scene_track_with_racketvision_observations(
     world_snapshot: WorldCacheSnapshot,
     observations: Sequence[object],
     *,
-    audio: Sequence[AudioEnergy] | None = None,
+    audio: Sequence[AudioEnergy | None] | None = None,
     audio_transients: Sequence[bool | None] | None = None,
 ) -> SceneTrack:
     """Build a scene with one typed RacketVision observation per world frame.
@@ -247,7 +247,7 @@ def build_scene_track_with_racketvision_observations(
 def build_scene_track(
     world_snapshot: WorldCacheSnapshot,
     *,
-    audio: Sequence[AudioEnergy] | None = None,
+    audio: Sequence[AudioEnergy | None] | None = None,
     audio_transients: Sequence[bool | None] | None = None,
 ) -> SceneTrack:
     """Join existing dense-world frames and already-aligned audio by PTS."""
@@ -256,15 +256,15 @@ def build_scene_track(
     frames = world_snapshot.frames
     if audio is not None:
         if not isinstance(audio, (tuple, list)):
-            raise TypeError("audio must be a list or tuple of AudioEnergy values.")
+            raise TypeError("audio must be a list or tuple of AudioEnergy or None values.")
         if len(audio) != len(frames) or any(
-            not isinstance(item, AudioEnergy) for item in audio
+            item is not None and not isinstance(item, AudioEnergy) for item in audio
         ):
             raise ValueError(
-                "audio must contain exactly one AudioEnergy per scene frame."
+                "audio must contain exactly one AudioEnergy or None per scene frame."
             )
         for frame, item in zip(frames, audio):
-            if item.time_seconds != frame.time_seconds:
+            if item is not None and item.time_seconds != frame.time_seconds:
                 raise ValueError("audio timestamps must exactly match scene frame PTS.")
     if audio_transients is not None:
         if len(audio_transients) != len(frames):
@@ -281,7 +281,7 @@ def build_scene_track(
             time_seconds=frame.time_seconds,
             body_2d=frame.frame_2d,
             body_3d=frame.world_landmarks,
-            audio_energy=item.energy if audio is not None else None,
+            audio_energy=item.energy if item is not None else None,
             audio_transient=(
                 audio_transients[index] if audio_transients is not None else None
             ),
