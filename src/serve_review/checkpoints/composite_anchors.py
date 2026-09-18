@@ -140,7 +140,7 @@ COMPOSITE_ANCHORS_SCHEMA_VERSION = 5
 #: Method identity recorded on every candidate and set.
 COMPOSITE_ANCHORS_METHOD_VERSION = "composite-anchors-v5"
 #: Default configuration identity for multimodal experimental scoring.
-COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v6"
+COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v7"
 #: Provenance recorded on every candidate (pure waveform evidence only).
 COMPOSITE_ANCHOR_PROVENANCE = "kinematic_waveform"
 
@@ -235,22 +235,22 @@ COMPOSITE_DEFAULT_WEIGHTS: Mapping[str, Mapping[str, float]] = MappingProxyType(
         ),
         "cocking": MappingProxyType(
             {
-                "right_wrist_elevation_trough": 0.1875,
-                "right_wrist_acceleration": 0.15,
-                "torso_verticality": 0.1125,
-                "knee_unload": 0.1125,
-                "loading_unwind": 0.1875,
-                "racket_handle_hoop_vertical_orientation": 0.25,
+                "right_wrist_elevation_trough": 0.2375,
+                "right_wrist_acceleration": 0.19,
+                "torso_verticality": 0.1425,
+                "knee_unload": 0.1425,
+                "loading_unwind": 0.2375,
+                "racket_handle_hoop_vertical_orientation": 0.05,
             }
         ),
         "contact": MappingProxyType(
             {
                 "right_wrist_elevation_apex": 0.175,
-                "right_wrist_speed_peak": 0.14,
-                "right_wrist_acceleration_peak": 0.105,
+                "right_wrist_speed_peak": 0.04,
+                "right_wrist_acceleration_peak": 0.005,
                 "torso_verticality": 0.07,
                 "right_arm_extension": 0.07,
-                "audio_transient": 0.14,
+                "audio_transient": 0.34,
                 "racket_hoop_ball_proximity": 0.30,
             }
         ),

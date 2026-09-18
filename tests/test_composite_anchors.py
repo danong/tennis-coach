@@ -167,20 +167,20 @@ def test_default_weights_match_exact_initial_generic_values() -> None:
         "stillness": 0.10,
     }
     assert dict(config.weight_for("cocking")) == {
-        "right_wrist_elevation_trough": 0.1875,
-        "right_wrist_acceleration": 0.15,
-        "torso_verticality": 0.1125,
-        "knee_unload": 0.1125,
-        "loading_unwind": 0.1875,
-        "racket_handle_hoop_vertical_orientation": 0.25,
+        "right_wrist_elevation_trough": 0.2375,
+        "right_wrist_acceleration": 0.19,
+        "torso_verticality": 0.1425,
+        "knee_unload": 0.1425,
+        "loading_unwind": 0.2375,
+        "racket_handle_hoop_vertical_orientation": 0.05,
     }
     assert dict(config.weight_for("contact")) == {
         "right_wrist_elevation_apex": 0.175,
-        "right_wrist_speed_peak": 0.14,
-        "right_wrist_acceleration_peak": 0.105,
+        "right_wrist_speed_peak": 0.04,
+        "right_wrist_acceleration_peak": 0.005,
         "torso_verticality": 0.07,
         "right_arm_extension": 0.07,
-        "audio_transient": 0.14,
+        "audio_transient": 0.34,
         "racket_hoop_ball_proximity": 0.30,
     }
     assert dict(config.weight_for("finish")) == {
@@ -557,7 +557,7 @@ def test_contact_audio_cue_unavailable_without_audio() -> None:
         assert candidate.cue_values["audio_transient"] is None
     # The audio and unavailable visual cue weights are absent.
     for candidate in rows:
-        assert candidate.coverage == pytest.approx(0.56, abs=1e-12)
+        assert candidate.coverage == pytest.approx(0.36, abs=1e-12)
 
 
 def test_contact_audio_cue_rewards_transient_and_shifts_score() -> None:
@@ -591,7 +591,7 @@ def test_contact_audio_cue_rewards_transient_and_shifts_score() -> None:
     assert all(c.cue_values["audio_transient"] is None for c in silent_rows)
     # Audio is present; the unavailable visual cue leaves 0.70 coverage.
     assert loud_rows[10].coverage == pytest.approx(0.70, abs=1e-12)
-    assert silent_rows[10].coverage == pytest.approx(0.56, abs=1e-12)
+    assert silent_rows[10].coverage == pytest.approx(0.36, abs=1e-12)
     # The coincident transient deterministically raises the contact score.
     assert loud_rows[10].score > silent_rows[10].score
     # Diagnostic helper exposes the same normalized cue series.
