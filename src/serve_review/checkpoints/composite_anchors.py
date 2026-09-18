@@ -1,8 +1,7 @@
 """Pure composite six-anchor candidate generation (M4.10a).
 
 Pure, deterministic, in-memory generation of dense composite anchor
-candidates from one M4.9
-:class:`~serve_review.checkpoints.kinematic_waveforms.KinematicWaveformTrack`.
+candidates from aligned M4.9 waveform and scene-feature tables.
 
 Non-goals (never done here):
 
@@ -11,7 +10,7 @@ Non-goals (never done here):
   sample yields exactly one candidate per anchor stage (dense grid);
   downstream M4.10b maps these dense candidates into solver evidence.
 - No sparse M4.2 phase features, no CLI, no media decoding, no audio
-  extraction, no pose cache I/O, no private footage inspection.
+  extraction, no pose cache I/O, or private-footage inspection.
 - No weight tuning: :class:`CompositeAnchorConfig` pins one set of
   initial generic weights verbatim (documented as untuned).
 
@@ -138,7 +137,7 @@ COMPOSITE_ANCHORS_SCHEMA_VERSION = 5
 COMPOSITE_ANCHORS_METHOD_VERSION = "composite-anchors-v5"
 #: Default configuration identity for multimodal experimental scoring.
 COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v7"
-#: Provenance recorded on every candidate (pure waveform evidence only).
+#: Serialized candidate provenance value (retained output contract).
 COMPOSITE_ANCHOR_PROVENANCE = "kinematic_waveform"
 
 #: Canonical six-anchor order (subset of Kovacs keys; no reordering).
@@ -981,8 +980,8 @@ class CompositeAnchorCandidate:
     ``[0, 1]`` (``None`` when the cue lacked qualified waveform support
     at this frame). ``score`` is the availability-weighted mean over the
     available cues; ``coverage`` is the mean available cue weight.
-    ``provenance`` is always ``"kinematic_waveform"`` (pure waveform
-    evidence; no audio, no manual labels).
+    ``provenance`` retains the serialized ``"kinematic_waveform"`` value;
+    candidate evidence may include waveform, audio, and scene cues.
     ``temporal_uncertainty_seconds`` is the maximum per-channel waveform
     uncertainty at this PTS (honest bound, never narrower than support).
     """

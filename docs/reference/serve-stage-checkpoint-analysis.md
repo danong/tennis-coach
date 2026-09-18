@@ -161,7 +161,7 @@ Exact cue names, transforms, and weights intentionally live only in [`composite_
 selected_finish - selected_contact <= 0.80 s
 ```
 
-It applies only to the direct six-anchor `contact -> finish` pair. It does not alter the shared legacy solver's default behavior or other stage transitions. See `transition_feasible`; the M4 configuration is created in `analyze_serve.py` as `phase-solver-serve-default-v2`.
+It applies only to the direct six-anchor `contact -> finish` pair; other `SixAnchorSolverConfig` transitions retain their normal gap semantics. See `transition_feasible`; the persisted configuration ID remains `phase-solver-serve-default-v2`.
 
 ## Version provenance
 

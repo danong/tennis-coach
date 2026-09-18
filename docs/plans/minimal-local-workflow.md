@@ -94,7 +94,8 @@ Serve Review owns two plainly named child directories:
       attempts/                        # process: accepted-attempt analysis grouping
         serve-001/                     # run_analyze_serve: exact output destination
           cache/
-            kinematic-track-v1.jsonl   # analyze: dense world-landmark cache
+            kinematic-track-v1.jsonl    # analyze: dense world-landmark cache
+            racketvision-track-v1.jsonl # analyze: ball/racket observation cache
           checkpoints.json             # analyze: selected stage checkpoints
           serve-3d-diagnostics.json    # analyze: scoring/solver diagnostics
           review-serve-3d/             # analyze: static checkpoint review
@@ -151,7 +152,7 @@ Its source metadata, detection documents, diagnostic result, and sparse pose cac
 VIDEO.parent / "metadata" / VIDEO.stem / "manual-analysis"
 ```
 
-Its default kinematic cache is `cache/kinematic-track-v1.jsonl` beneath that exact destination. The process coordinator supplies `metadata/STEM/attempts/serve-NNN/` as the exact destination for detected attempts.
+Its reusable analysis caches are `cache/kinematic-track-v1.jsonl` and `cache/racketvision-track-v1.jsonl` beneath that exact destination. The process coordinator supplies `metadata/STEM/attempts/serve-NNN/` as the exact destination for detected attempts.
 
 Accordingly, the direct partial commands remain simple and use the same control flags:
 

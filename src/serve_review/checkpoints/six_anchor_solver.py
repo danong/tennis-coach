@@ -8,12 +8,9 @@ composite candidates
 
 This module performs no filtering, no waveform construction, no
 candidate scoring, no media decoding, no cache I/O, no audio handling,
-and no CLI. It consumes only the dense per-stage candidate lists plus
-an existing :class:`~serve_review.checkpoints.phase_solver.PhaseSolverConfig`
-(which owns the skip penalties, transition gap bounds, and transition
-bonus), so the recurrence, chronology constraints, transition logic,
-and explicit skip behavior are identical to the accepted M4.4 solver
-rather than a new greedy selector.
+and no CLI. It consumes only dense per-stage candidate lists plus
+:class:`SixAnchorSolverConfig`, which owns skip penalties, transition gap
+bounds, the optional contact-to-finish cap, and transition bonus.
 
 Adaptation notes (point candidates carry no intervals):
 

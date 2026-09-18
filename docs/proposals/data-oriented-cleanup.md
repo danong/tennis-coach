@@ -1,6 +1,9 @@
 # A one-day, data-oriented cleanup of the serve analyzer
 
-> **Status:** Proposed · **State:** Draft · **Work:** Next · **As of:** 2026-09-16
+> **Status:** Historical · **State:** Complete · **Work:** None · **As of:** 2026-09-16
+
+> **Implementation note:** completed by the data-oriented cleanup commits. The
+> following rationale records the pre-cleanup state and intended work.
 
 ## The point of this cleanup
 
@@ -51,7 +54,7 @@ The core data values already have useful names:
 | Aligned audio sampling/qualification | currently `analyze_serve.py` + `media/audio.py` |
 | Filtered body track | `checkpoints/world_filter.py` |
 | Body/audio waveform table | `checkpoints/kinematic_waveforms.py` |
-| Scene-derived feature series | currently `checkpoints/composite_anchors.py` |
+| Scene-derived feature series | `checkpoints/scene_features.py` |
 | Dense scored candidates | `checkpoints/composite_anchors.py` |
 | Chronological selected anchors | `checkpoints/six_anchor_solver.py` |
 | I/O orchestration and final projection | `analyze_serve.py` |

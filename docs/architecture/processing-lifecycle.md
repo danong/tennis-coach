@@ -20,9 +20,9 @@ source video
   -> detect serve attempts and export compilation
   -> for every accepted attempt:
        body-world observations + RacketVision observations + aligned audio
-       -> SceneTrack
-       -> SceneFeatureSeries + KinematicWaveformTrack
-       -> CompositeAnchorSet
+       -> SceneTrack -> SceneFeatureSeries
+       body-world observations -> filtered world -> KinematicWaveformTrack
+       SceneFeatureSeries + KinematicWaveformTrack -> CompositeAnchorSet
        -> SixAnchorSolver
        -> checkpoints, review frames, diagnostics
   -> metadata/index.html
