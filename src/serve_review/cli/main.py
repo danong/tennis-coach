@@ -126,6 +126,59 @@ def anchor2_comparison(**values: Any) -> None:
     _run(commands.analyze_serve, anchor2comparison=True, **values)
 
 
+@dev.command("compare-pairwise")
+@click.argument("candidate", type=click.Path(path_type=Path))
+@click.argument("reference", type=click.Path(path_type=Path))
+@click.option("--policy-id", required=True)
+@click.option(
+    "--capture-context",
+    type=click.Choice(["asserted_compatible", "not_asserted", "asserted_incompatible"]),
+    required=True,
+)
+def compare_pairwise(
+    candidate: Path,
+    reference: Path,
+    policy_id: str,
+    capture_context: str,
+) -> None:
+    """Emit JSON for one explicitly selected candidate/reference pair."""
+    _run(
+        commands.compare_pairwise_cmd,
+        candidate=candidate,
+        reference=reference,
+        policy_id=policy_id,
+        capture_context=capture_context,
+    )
+
+
+@dev.command("compare-baseline")
+@click.argument("candidate", type=click.Path(path_type=Path))
+@click.argument("cohort", type=click.Path(path_type=Path), nargs=-1, required=True)
+@click.option("--cohort-id", required=True)
+@click.option("--policy-id", required=True)
+@click.option(
+    "--capture-context",
+    type=click.Choice(["asserted_compatible", "not_asserted", "asserted_incompatible"]),
+    required=True,
+)
+def compare_baseline(
+    candidate: Path,
+    cohort: tuple[Path, ...],
+    cohort_id: str,
+    policy_id: str,
+    capture_context: str,
+) -> None:
+    """Emit JSON for one candidate against repeated explicit cohort paths."""
+    _run(
+        commands.compare_baseline_cmd,
+        candidate=candidate,
+        cohort=cohort,
+        cohort_id=cohort_id,
+        policy_id=policy_id,
+        capture_context=capture_context,
+    )
+
+
 @dev.command("phase-annotate")
 @click.argument("video", type=click.Path(path_type=Path))
 @click.option("--attempts", type=click.Path(path_type=Path), required=True)

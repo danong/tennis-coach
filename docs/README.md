@@ -6,8 +6,7 @@ See [Document status](document-status.md) for lifecycle, state, work-priority, a
 
 ## Work queue
 
-- **Complete:** The [multimodal scene track](proposals/multimodal-scene-track.md), [minimal local processing workflow](plans/minimal-local-workflow.md), and [ServeFingerprintV1](proposals/serve-fingerprint-v1.md).
-- **Next:** Review and implement the [first interpretable serve comparisons](proposals/serve-comparison-v1.md).
+- **Complete:** The [multimodal scene track](proposals/multimodal-scene-track.md), [minimal local processing workflow](plans/minimal-local-workflow.md), [ServeFingerprintV1](proposals/serve-fingerprint-v1.md), and [first interpretable serve comparisons](proposals/serve-comparison-v1.md).
 - **Deferred:** The previous [offline roadmap](plans/offline-roadmap.md) and [M5 TCN proposal](proposals/m5-tcn-phase-detection.md).
 
 ## Index
@@ -16,6 +15,7 @@ See [Document status](document-status.md) for lifecycle, state, work-priority, a
 - [Serve extraction and cutting](reference/serve-extraction-and-cutting.md)
 - [Serve stage-checkpoint analysis](reference/serve-stage-checkpoint-analysis.md)
 - [Serve fingerprints](reference/serve-fingerprints.md)
+- [Serve comparisons](reference/serve-comparisons.md)
 - [Serve comparison V1 proposal](proposals/serve-comparison-v1.md)
 - [Glossary](reference/glossary.md)
 - [Architecture](architecture/README.md)

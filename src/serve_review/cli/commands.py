@@ -31,6 +31,71 @@ def _silence_model_output():
             os.close(saved_stderr)
 
 
+def _comparison_policy(policy_id: str, capture_context: str) -> Any:
+    from serve_review.comparison import ComparisonPolicy
+
+    return ComparisonPolicy(policy_id=policy_id, capture_context=capture_context)
+
+
+def compare_pairwise_cmd(
+    *,
+    candidate: Path,
+    reference: Path,
+    policy_id: str,
+    capture_context: str,
+) -> int:
+    """Emit one explicit ServeComparisonV1 pairwise result as JSON."""
+
+    from serve_review.comparison import (
+        ComparisonError,
+        compare_pairwise,
+        load_fingerprint,
+    )
+
+    try:
+        result = compare_pairwise(
+            load_fingerprint(candidate),
+            load_fingerprint(reference),
+            policy=_comparison_policy(policy_id, capture_context),
+        )
+    except (ComparisonError, OSError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    print(result.to_json(), end="")
+    return 0
+
+
+def compare_baseline_cmd(
+    *,
+    candidate: Path,
+    cohort: Sequence[Path],
+    cohort_id: str,
+    policy_id: str,
+    capture_context: str,
+) -> int:
+    """Emit one explicit ServeComparisonV1 baseline result as JSON."""
+
+    from serve_review.comparison import (
+        ComparisonError,
+        compare_to_baseline,
+        load_fingerprint,
+        load_fingerprints,
+    )
+
+    try:
+        result = compare_to_baseline(
+            load_fingerprint(candidate),
+            load_fingerprints(cohort),
+            cohort_id=cohort_id,
+            policy=_comparison_policy(policy_id, capture_context),
+        )
+    except (ComparisonError, OSError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    print(result.to_json(), end="")
+    return 0
+
+
 def _tool_version(executable: str) -> str | None:
     path = shutil.which(executable)
     if path is None:
@@ -463,5 +528,3 @@ def process_cmd(*, target: Path, dry_run: bool, force: bool) -> int:
     if result.summary_path is not None:
         print(f"Review: {result.summary_path.resolve().as_uri()}")
     return 1 if result.failures else 0
-
-

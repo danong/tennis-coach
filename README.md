@@ -18,6 +18,11 @@ with a `[5, 16, 12]` phase-aligned motion sequence. V1 supports comparison only
 among right-handed serves under compatible rear-view capture conditions; see
 the [serve fingerprint reference](docs/reference/serve-fingerprints.md).
 
+**Interpretable serve comparison:** Persisted fingerprints can be compared
+metric by metric or against a caller-selected robust baseline. Comparisons keep
+missingness and compatibility explicit and do not collapse mixed units into a
+single score; see the [serve comparison reference](docs/reference/serve-comparisons.md).
+
 ### Future Work
 
 **iOS app:** Process, cut, and analyze videos from my phone directly on the tennis court.

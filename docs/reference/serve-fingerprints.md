@@ -4,9 +4,9 @@
 
 `ServeFingerprintV1` is a deterministic, persisted description of one detected
 serve attempt. It reuses the existing `KinematicWaveformTrack` and the six
-selected direct serve anchors. It supports later within-person and session
-comparison, retrieval, clustering, and anomaly analysis; those consumers are
-not part of the current pipeline.
+selected direct serve anchors. The first scalar pairwise and robust-baseline
+consumer is documented in [Serve comparisons](serve-comparisons.md). Retrieval,
+sequence comparison, clustering, and anomaly analysis remain deferred.
 
 V1 is comparable only for **right-handed serves recorded under compatible
 rear-view conditions** (broadly similar camera side, orientation, framing, and

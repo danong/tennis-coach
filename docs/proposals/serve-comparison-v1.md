@@ -1,6 +1,10 @@
 # ServeComparisonV1
 
-> **Status:** Proposed · **State:** Draft · **Work:** Next · **As of:** 2026-09-18
+> **Status:** Current · **State:** Complete · **Work:** None · **As of:** 2026-09-18
+
+Implemented in September 2026. The maintained operational contract lives in
+[Serve comparisons](../reference/serve-comparisons.md); this document remains
+the approved design and implementation record for V1.
 
 ## 1. Product contract
 
@@ -575,7 +579,7 @@ No required acceptance threshold is placed on how similar an amateur is to a
 professional, how many metrics differ, or which metric ranks first. Those are
 observations, not correctness criteria.
 
-## 9. Ordered implementation work
+## 9. Completed implementation work
 
 ### 1. Add comparison value types and compatibility policy
 
