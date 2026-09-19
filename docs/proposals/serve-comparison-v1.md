@@ -60,9 +60,11 @@ A fingerprint identity is the tuple:
 
 Synthetic directory names such as `serve-001` are display context, not
 identity. Pairwise comparison rejects identical candidate and reference
-identities. A baseline cohort rejects duplicate identities, then excludes the
-candidate identity if it is present. This makes within-session comparison
-leave-one-out by definition.
+identities. Duplicate identities within a supplied baseline cohort are an input
+error; the comparator does not silently deduplicate malformed caller input. The
+candidate identity, if present once in an otherwise valid cohort, is excluded
+and reported as leave-one-out. Different identities that happen to contain the
+same photographed serve remain a caller-curation responsibility.
 
 The caller may attach non-semantic display labels, session IDs, player labels,
 and source locations outside the comparison value. Local filesystem paths are
@@ -88,6 +90,10 @@ Structural compatibility is determined from persisted contracts. V1 requires:
 Successfully parsing the current `ServeFingerprintV1` already establishes most
 fixed-schema and inventory requirements. The comparator still reports the
 checked structural signature rather than relying on parser behavior implicitly.
+The persisted comparison domain
+`right-handed-compatible-rear-view-v1` declares the intended supported domain;
+it is not evidence that the capture context of a particular recording was
+verified.
 
 Raw extractor/config provenance is not automatically a hard gate. A harmless
 implementation revision must not fragment an otherwise compatible historical
@@ -96,10 +102,44 @@ hard constraints only when the comparison policy declares that a difference
 changes measurement semantics beyond what the fingerprint schema captures.
 All provenance mismatches remain visible in compatibility diagnostics.
 
-The initial policy supports the currently implemented V1 identities. Adding a
-new identity requires an explicit policy decision: compatible, semantically
-incompatible, or unsupported. Unknown semantic identities do not pass by
-accident.
+### Comparison policy
+
+V1 uses one small frozen policy value rather than a general policy framework:
+
+```python
+ComparisonPolicy(
+    policy_id="personal-session-2026-09-15",
+    capture_context="asserted_compatible",
+    semantic_provenance="require-equal-measurement-provenance-v1",
+)
+```
+
+`policy_id` is a non-blank caller-owned audit label. `capture_context` is one
+of the three values below. `semantic_provenance` is fixed in this milestone to
+`require-equal-measurement-provenance-v1`.
+
+That semantic rule requires exact equality across compared fingerprints for:
+
+```text
+waveform_method_version
+waveform_config_id
+checkpoint_method_version
+checkpoint_config_id
+body_model_name
+body_model_version
+```
+
+These fields directly govern waveform values, selected anchors, or body-model
+outputs. A mismatch is `semantic_provenance_mismatch` and fails structural
+compatibility. The coordinate convention is already a separate structural
+check. Fingerprint extractor method/config identities are not an additional
+comparison gate: the current parser already accepts only the fixed V1 schema
+contract, and a future harmless extractor implementation revision must not
+fragment cohorts merely because its provenance string changed.
+
+Supporting a future semantically equivalent measurement-provenance identity
+requires an explicit revision of this comparison policy contract and tests. V1
+does not guess equivalence or accept another semantic-policy string.
 
 ### Capture-context compatibility
 
@@ -204,9 +244,9 @@ ServePairwiseComparison(
 
 `compare_to_baseline(candidate, cohort, policy)` returns a
 `ServeBaselineComparison`. Cohort membership is entirely caller supplied.
-The comparison layer filters only for duplicate/candidate identity,
-compatibility, and metric availability; it does not discover a player's
-session, history, or peer group.
+After validating that cohort identities are unique, the comparison layer
+filters only for candidate identity, compatibility, and metric availability;
+it does not discover a player's session, history, or peer group.
 
 The result distinguishes:
 
@@ -233,10 +273,20 @@ robust_scale = 1.4826 * MAD
 robust_deviation = (candidate - median) / robust_scale
 ```
 
-`robust_deviation` is available only when `usable_n >= 5` and `MAD > 0`.
-Otherwise it is null with reason `insufficient_usable_n` or `zero_mad`. There
-is no IQR fallback. The minimum of five is an operational usability threshold,
-not a claim of strong statistical inference.
+`robust_deviation` is available only when the comparison and descriptive metric
+are available, `usable_n >= 5`, and `MAD > 0`. Otherwise it is null. Its reason
+uses the first applicable value in this precedence order:
+
+```text
+comparison_incompatible
+candidate_metric_unavailable
+no_usable_cohort_values
+insufficient_usable_n
+zero_mad
+```
+
+There is no IQR fallback. The minimum of five is an operational usability
+threshold, not a claim of strong statistical inference.
 
 IQR is reported independently. Quartiles use deterministic linear empirical
 quantiles: for probability `p`, let `h = (n - 1) * p`; interpolate linearly
@@ -262,10 +312,15 @@ and `usable_n >= 1`. Its candidate value, median, MAD, IQR, and percentile are
 then present. Otherwise those values are null and the reason is:
 
 ```text
+comparison_incompatible
 candidate_metric_unavailable
 no_usable_cohort_values
-comparison_incompatible
 ```
+
+When more than one condition applies, descriptive availability uses that same
+top-to-bottom precedence. Robust-deviation availability first inherits these
+three conditions in the same order, then considers `insufficient_usable_n`,
+then `zero_mad`.
 
 Robust-deviation availability is represented separately because descriptive
 statistics can remain valid when `usable_n < 5` or `MAD == 0`.
@@ -370,6 +425,10 @@ compare_to_baseline(
 The module imports fingerprint contracts. The fingerprint module must not
 import comparison code.
 
+`ComparisonPolicy` is defined in this module with the exact three fields and
+fixed semantic rule specified above. It owns no cohort members, source paths,
+thresholds, weights, or inferred capture metadata.
+
 ### Loading and development entry point
 
 A narrow loader accepts explicit fingerprint paths and fails with the path and
@@ -395,13 +454,14 @@ Add focused tests for:
 - each pairwise missingness reason;
 - structural incompatibility and unasserted/incompatible capture context;
 - provenance differences that are diagnostic but not semantic hard gates;
-- explicitly incompatible or unknown semantic provenance;
-- duplicate identities and pairwise self-comparison;
+- semantic-provenance equality mismatches and an unsupported policy string;
+- duplicate-cohort input errors and pairwise self-comparison;
 - leave-one-out candidate exclusion;
 - per-metric `usable_n`;
 - exact odd/even median, MAD, scaled MAD, linear-quartile IQR, and midrank
   percentile behavior;
-- `usable_n < 5` and zero-MAD robust-deviation unavailability;
+- complete robust-deviation reason precedence, including `usable_n < 5` and
+  zero MAD;
 - deterministic cross-metric ranking ties;
 - deterministic JSON round trip; and
 - invalid fingerprint loading without silent skipping.
