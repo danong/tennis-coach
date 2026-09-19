@@ -1,6 +1,10 @@
 # ServeFingerprintV1
 
-> **Status:** Proposed · **State:** Ready for implementation review · **Scope:** Body-only serve description and alignment
+> **Status:** Current · **State:** Complete · **Work:** None · **As of:** 2026-09-18
+
+Implemented in September 2026. The maintained operational contract lives in
+[Serve fingerprints](../reference/serve-fingerprints.md); this document remains
+the approved design and implementation record for V1.
 
 ## 1. V1 product contract
 
@@ -399,7 +403,7 @@ This is the simplest behavior consistent with the current pipeline:
 
 No migration or backfill command will be added for V1. The consequence is that analyses created before this artifact exists will be scheduled for reanalysis. Current `process.py` clears the attempt destination before rerunning, including its colocated model caches, so this is a one-time full re-inference cost for existing attempts. The dataset is currently small, and accepting that cost is less scope than adding cache-preserving migration behavior.
 
-## 7. Ordered implementation work items
+## 7. Completed implementation work items
 
 ### 1. Add fingerprint schema and fixed inventories
 
@@ -547,7 +551,7 @@ The following are explicitly outside this milestone:
 - coaching judgments or generic technique/quality scores;
 - migration/backfill infrastructure for pre-fingerprint attempts.
 
-## Final review
+## Final implementation review
 
 No P0 findings.
 
@@ -569,10 +573,7 @@ Relevant code/docs:
 `src/serve_review/analysis_artifacts.py`
 `docs/architecture/processing-lifecycle.md`
 
-Verdict: READY TO IMPLEMENT
+Verdict: IMPLEMENTED
 
 Blocking changes:
 - None.
-
-Implementation can begin with:
-- Add the versioned fingerprint schema, fixed metric inventory, and fixed phase-layout contract in `src/serve_review/fingerprint.py` with focused schema tests.

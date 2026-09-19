@@ -12,15 +12,15 @@ A local command-line tool for finding and reviewing tennis serve attempts in sou
 
 **Stage-checkpoint analysis:** From a source containing one attempt, automatically estimate checkpoints for eight stages: start, release, loading, cocking, acceleration, contact, deceleration, and finish. While these stage names are taken from [An 8-Stage Model for Evaluating the Tennis Serve](https://pmc.ncbi.nlm.nih.gov/articles/PMC3445225/), the implemented definitions and heuristics differ slightly. On my manually labeled attempts, we achieved a mean absolute error (MAE) of about 70 ms, which is generally useful for review.
 
+**Serve fingerprints:** Serve analysis writes a deterministic, body-only
+measurement record for each attempt, combining 30 fixed interpretable metrics
+with a `[5, 16, 12]` phase-aligned motion sequence. V1 supports comparison only
+among right-handed serves under compatible rear-view capture conditions; see
+the [serve fingerprint reference](docs/reference/serve-fingerprints.md).
+
 ### Future Work
 
 **iOS app:** Process, cut, and analyze videos from my phone directly on the tennis court.
-
-Serve analysis also writes a deterministic, body-only fingerprint for each
-attempt, combining fixed interpretable measurements with a phase-aligned motion
-sequence. V1 supports comparison only among right-handed serves under
-compatible rear-view capture conditions; see the [serve fingerprint
-reference](docs/reference/serve-fingerprints.md).
 
 ## Documents
 
