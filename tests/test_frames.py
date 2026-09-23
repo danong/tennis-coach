@@ -725,7 +725,10 @@ def test_decode_args_hwaccel_before_input_and_fps_matches_schedule() -> None:
     schedule = build_uniform_schedule(1.0, 30.0)
     rate = 30.0
     filtered = build_rawvideo_decode_args("/tmp/src.mov", rate_hz=rate)
-    assert filtered.index("-hwaccel") < filtered.index("-i")
+    if sys.platform == "darwin":
+        assert filtered.index("-hwaccel") < filtered.index("-i")
+    else:
+        assert "-hwaccel" not in filtered
     assert filtered.index("-noautorotate") < filtered.index("-i")
     assert "-vf" in filtered
     vf_value = filtered[filtered.index("-vf") + 1]
@@ -881,8 +884,11 @@ def test_240fps_style_schedule_maps_filtered_outputs_to_source_times(
     )
     frames = list(iter_sampled_frames(video, schedule))
     assert len(frames) == len(schedule) == 15
-    assert captured and "-hwaccel" in captured[0]
-    assert captured[0].index("-hwaccel") < captured[0].index("-i")
+    assert captured
+    if sys.platform == "darwin":
+        assert captured[0].index("-hwaccel") < captured[0].index("-i")
+    else:
+        assert "-hwaccel" not in captured[0]
     vf_value = captured[0][captured[0].index("-vf") + 1]
     assert vf_value.startswith("fps=30") and "round=up" in vf_value
     for frame, target, source_index in zip(frames, schedule, selected):
