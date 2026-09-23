@@ -23,11 +23,27 @@ def cli() -> None:
 @cli.command()
 @click.argument("target", type=click.Path(path_type=Path))
 @click.option("--device", type=click.Choice(["auto", "cpu", "cuda"]), default="auto", show_default=True)
+@click.option("--cut-workers", type=click.IntRange(1, 2), default=1, show_default=True,
+              help="Concurrent per-video cut workers (serve analysis remains serial).")
 @click.option("--dry-run", is_flag=True)
 @click.option("--force", is_flag=True)
-def process(target: Path, device: str, dry_run: bool, force: bool) -> None:
+def process(target: Path, device: str, cut_workers: int, dry_run: bool, force: bool) -> None:
     """Process a recording directory or one video beside its source."""
-    _run(commands.process_cmd, target=target, device=device, dry_run=dry_run, force=force)
+    _run(commands.process_cmd, target=target, device=device, cut_workers=cut_workers,
+         dry_run=dry_run, force=force)
+
+
+@cli.command("annotate")
+@click.argument("directory", type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--port", type=click.IntRange(0, 65535), default=8765, show_default=True)
+def annotate(directory: Path, port: int) -> None:
+    """Review one processed recording session in a local browser."""
+    from serve_review.annotation_review import ReviewError, serve
+
+    try:
+        serve(directory, port)
+    except (ReviewError, OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @cli.command("cut")

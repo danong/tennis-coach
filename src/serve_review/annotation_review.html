@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Serve annotation review</title>
+  <style>
+    :root { font: 15px/1.45 system-ui, sans-serif; color: #e9ecef; background: #12191c; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button, input, select { font: inherit; }
+    button, select, input[type=number], input[type=text] { border: 1px solid #536369; border-radius: 6px; color: inherit; background: #263339; padding: .38rem .55rem; }
+    button { cursor: pointer; }
+    button:hover { background: #344a51; }
+    button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #8dd8ca; }
+    button.primary { background: #0a7466; border-color: #27a18c; }
+    button.primary:hover { background: #0b8b78; }
+    button.warn { border-color: #b68659; }
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { margin: 0; font-size: 1.35rem; }
+    h2 { margin: 0 0 .65rem; font-size: 1.1rem; }
+    h3 { margin: .4rem 0; font-size: 1rem; }
+    p { margin: .4rem 0; }
+    header { padding: .75rem 1rem; border-bottom: 1px solid #35474b; display: flex; gap: 1.25rem; align-items: center; justify-content: space-between; }
+    #status { color: #a9c4c4; font-size: .88rem; }
+    main { display: grid; grid-template-columns: 230px minmax(420px, 1fr) 370px; min-height: calc(100vh - 63px); }
+    aside, section { padding: 1rem; min-width: 0; }
+    aside { background: #1b262a; border-right: 1px solid #35474b; }
+    #right { border-left: 1px solid #35474b; background: #1b262a; max-height: calc(100vh - 63px); overflow: auto; }
+    .muted { color: #abc0c2; font-size: .85rem; }
+    .stack { display: flex; flex-direction: column; gap: .45rem; }
+    .row { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+    .tile { width: 100%; text-align: left; padding: .55rem; background: #263339; }
+    .tile.active { border-color: #65cbb7; background: #22554d; }
+    .tile small { display: block; color: #bfd1d0; }
+    .panel { border: 1px solid #3b5055; border-radius: 9px; padding: .8rem; margin: .8rem 0; }
+    video { display: block; width: 100%; max-height: 52vh; background: #000; border-radius: 8px; }
+    #timeline { position: relative; height: 27px; margin-top: .4rem; }
+    #seek { position: absolute; inset: 0; width: 100%; margin: 0; accent-color: #65cbb7; z-index: 2; background: transparent; }
+    #seek { appearance: none; }
+    #seek::-webkit-slider-runnable-track { height: 24px; background: transparent; }
+    #seek::-moz-range-track { height: 24px; background: transparent; }
+    #seek::-webkit-slider-thumb { appearance: none; width: 5px; height: 24px; background: #fff; border-radius: 3px; }
+    #seek::-moz-range-thumb { width: 5px; height: 24px; background: #fff; border: 0; border-radius: 3px; }
+    #markers { position: absolute; inset: 4px 9px; pointer-events: none; }
+    .marker { position: absolute; top: 0; height: 12px; min-width: 3px; border-radius: 3px; background: #65cbb7; opacity: .8; }
+    .marker.rejected { background: #8a9698; }
+    .marker.manual { background: #f2b665; height: 17px; top: -2px; }
+    #coverage { padding: .5rem .65rem; margin: .45rem 0; border-radius: 6px; background: #27383b; }
+    #coverage.outside { background: #4a3929; }
+    .mode.active { background: #22554d; border-color: #65cbb7; }
+    input[type=number] { width: 6.2rem; }
+    #queue { max-height: 33vh; overflow: auto; }
+    #labels { max-height: 24vh; overflow: auto; }
+    #phase-serves { max-height: 47vh; overflow: auto; }
+    #stage-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .35rem; margin: .7rem 0; }
+    #stage-grid button { min-width: 0; padding: .35rem .2rem; font-size: .8rem; text-align: center; }
+    #stage-grid button.active { border-color: #65cbb7; background: #22554d; }
+    #stage-grid button.done { color: #a9e5d4; }
+    #stage-preview { display: block; width: 100%; max-height: 240px; object-fit: contain; background: #111; margin: .6rem 0; border-radius: 6px; cursor: pointer; }
+    #stage-preview[hidden] { display: none; }
+    #stage-actions button { flex: 1 1 45%; }
+    #phase-timeline { margin: .5rem 0 .8rem; }
+    #phase-timeline[hidden] { display: none; }
+    #phase-rail { position: relative; height: 31px; }
+    #phase-markers { position: absolute; inset: 3px 9px; pointer-events: none; }
+    .phase-mark { position: absolute; top: 0; width: 4px; height: 18px; background: #9dacaf; border-radius: 2px; }
+    .phase-mark.saved { background: #65cbb7; }
+    .phase-mark.active { width: 7px; height: 23px; background: #f2b665; }
+    #phase-seek { appearance: none; position: absolute; inset: 0; width: 100%; margin: 0; background: transparent; }
+    #phase-seek::-webkit-slider-runnable-track { height: 26px; background: transparent; }
+    #phase-seek::-moz-range-track { height: 26px; background: transparent; }
+    #phase-seek::-webkit-slider-thumb { appearance: none; width: 5px; height: 26px; background: #fff; border-radius: 3px; }
+    #phase-seek::-moz-range-thumb { width: 5px; height: 26px; background: #fff; border: 0; border-radius: 3px; }
+    .chip { display: inline-block; padding: .1rem .38rem; background: #3d4c4f; border-radius: 5px; font-size: .76rem; }
+    label { cursor: pointer; }
+    .help { font-size: .82rem; color: #adc6c6; }
+    @media (max-width: 1050px) { main { grid-template-columns: 180px 1fr; } #right { grid-column: 1 / -1; max-height: none; border-left: 0; border-top: 1px solid #35474b; } }
+    @media (max-width: 650px) { main { display: block; } aside, #right { max-height: none; } }
+  </style>
+</head>
+<body>
+  <header><h1>Serve annotation review</h1><span id="status">Loading session…</span></header>
+  <main>
+    <aside>
+      <h2 id="session">Session</h2>
+      <p class="muted">Classify attempts, scan for misses, then label each real serve’s checkpoints.</p>
+      <button id="refresh">Refresh processed videos</button>
+      <div id="videos" class="stack"></div>
+    </aside>
+    <section>
+      <h2 id="video-name">Video</h2>
+      <video id="player" controls preload="metadata" playsinline></video>
+      <div id="timeline"><div id="markers"></div><input id="seek" type="range" min="0" max="1" step="0.001" value="0" aria-label="Video timeline"></div>
+      <div id="phase-timeline" hidden><strong>Selected serve · fine scrubber</strong><div id="phase-rail"><div id="phase-markers"></div><input id="phase-seek" type="range" min="0" max="1" step="0.001" value="0" aria-label="Selected serve timeline"></div><p class="help">Gray ticks are generated checkpoints; teal ticks are your timed labels; orange is the active stage.</p></div>
+      <p class="help">Timeline: teal = detected attempt, gray = detected but labeled non-serve, orange = manually added serve.</p>
+      <p id="coverage" aria-live="polite">Move through the video to check detection coverage.</p>
+      <div class="row"><strong id="clock">0.000 s</strong><button id="back" title="Previous approximate frame (←)">◀ frame</button><button id="forward" title="Next approximate frame (→)">frame ▶</button><button id="play">Play / pause</button><label>Speed <select id="speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option><option value="3">3×</option></select></label></div>
+      <p class="help">Space play · ←/→ frame · Shift+←/→ 0.25 s · M add missed serve · [ start · ] end. Frame seeking is approximate.</p>
+      <div class="panel">
+        <h3>Review mode</h3>
+        <div class="row"><button id="mode-detect" class="mode active">1 · Classify detected attempts</button><button id="mode-scan" class="mode">2 · Scan for missed serves</button><button id="mode-phase" class="mode">3 · Label phases</button></div>
+        <p id="progress" class="muted"></p>
+      </div>
+      <div class="panel" id="scan-panel" hidden>
+        <h3>Scan the full video</h3>
+        <p class="help">Play from the beginning. Teal ranges show what the detector found. If a real serve happens outside those ranges, pause near contact and add it. The editor lets you adjust its start and end.</p>
+        <div class="row"><button id="scan-start">Play from start</button><button id="add" class="primary">+ Missed serve at playhead (M)</button></div>
+        <p class="help">The coverage message describes the detector's time window, not a visual match to the serve you see. Watch the whole recording before marking it scanned.</p>
+        <div class="row"><label for="view">Camera view</label><select id="view"><option value="">Choose view</option><option>rear</option><option>rear-quarter</option><option>side</option><option>front</option><option>other</option></select><label><input id="fully-reviewed" type="checkbox"> I scanned the full video for missed serves</label></div>
+      </div>
+      <div class="panel" id="detect-panel">
+        <h3>Detected attempts</h3>
+        <p class="help">Label each detection as Serve, Shadow swing, Toss / abort, Other, or Unsure. Rejected detector fragments are omitted.</p>
+        <button id="next">Next unlabeled attempt (N)</button>
+        <div id="queue" class="stack"></div>
+      </div>
+      <div class="panel" id="phase-panel" hidden>
+        <h3>Real serves in this video</h3>
+        <p class="help">Review release, cocking, and contact for each real serve. Existing labels for the other five checkpoints remain saved. Generated times and images appear where available; manually added serves have no proposals.</p>
+        <button id="next-serve">Next incomplete serve, across videos (N)</button>
+        <div id="phase-serves" class="stack"></div>
+      </div>
+      <div class="panel" id="labels-panel"><h3>Your labels</h3><div id="labels" class="stack"></div></div>
+    </section>
+    <section id="right">
+      <h2 id="right-title">Selected range</h2>
+      <p id="selection-title" class="muted">Choose a proposal or add a missed serve.</p>
+      <div id="editor" hidden>
+        <div class="row"><label>Start <input id="start" type="number" min="0" step="0.001"></label><button id="set-start">Use playhead [</button></div>
+        <div class="row"><label>End <input id="end" type="number" min="0" step="0.001"></label><button id="set-end">Use playhead ]</button></div>
+        <p class="help">Ranges use source-video seconds. Adjust the start and end before choosing a label.</p>
+        <div id="classification" class="row">
+          <button data-label="serve" class="primary" title="Ball struck, including faults">Serve</button>
+          <button data-label="shadow_swing" title="Serve-like swing without ball contact">Shadow swing</button>
+          <button data-label="toss_abort" title="Preparation or toss stopped before a serve-like swing">Toss / abort</button>
+          <button data-label="other">Other</button>
+          <button data-label="ambiguous">Unsure</button>
+        </div>
+        <p class="help">Serve = ball struck, including faults. Shadow swing = serve-like swing without contact. Toss/abort = stopped before a serve-like swing.</p>
+        <p id="label-state" class="muted"></p>
+        <button id="remove" class="warn" hidden>Remove my label</button>
+      </div>
+      <div id="phase-editor" hidden>
+        <p id="phase-serve-range" class="muted"></p>
+        <p class="help">This item appears here because its saved classification is <strong>Serve</strong>. If it is a shadow swing or abort, correct that classification first.</p>
+        <button id="reclassify">Change serve classification</button>
+        <div class="row"><button id="previous-stage">← Previous stage</button><button id="next-stage">Next stage →</button></div>
+        <div id="stage-grid"></div>
+        <h3 id="stage-name"></h3>
+        <p id="stage-help" class="help"></p>
+        <img id="stage-preview" hidden alt="Generated stage frame">
+        <p id="stage-proposal" class="muted"></p>
+        <p id="stage-saved" class="muted"></p>
+        <p id="stage-order-warning" class="help" hidden></p>
+        <div id="stage-actions" class="row">
+          <button id="accept-stage" class="primary">Accept proposal (A)</button>
+          <button id="set-stage" class="primary">Set at playhead (Enter)</button>
+          <button id="uncertain-stage">Unsure (U)</button>
+          <button id="unavailable-stage">Not visible (X)</button>
+          <button id="clear-stage">Clear this stage</button>
+        </div>
+        <p class="help">Selecting a checkpoint seeks to its saved or proposed frame. Use ←/→ to step through video frames, then Enter to set the current frame. Each action saves and advances to the next focused checkpoint. Revisit any checkpoint above to change or clear it.</p>
+        <div class="row"><button id="accept-remaining">Accept remaining proposals for this serve</button></div>
+        <p class="help">Bulk accept fills only unreviewed stages with generated times inside this serve’s range. Review them individually if the proposal looks wrong.</p>
+      </div>
+    </section>
+  </main>
+  <script>
+    "use strict";
+    const $ = id => document.getElementById(id);
+    const LABEL_NAMES = {serve:"Serve", shadow_swing:"Shadow swing", toss_abort:"Toss / abort", other:"Other", ambiguous:"Unsure"};
+    const STAGES = ["release","cocking","contact"];
+    const STAGE_HELP = {
+      start:"Beginning of the serve motion.",
+      release:"Ball leaves the tossing hand.",
+      loading:"Deepest loading before the upward drive.",
+      cocking:"Racket arm reaches the cocked position before acceleration.",
+      acceleration:"Midpoint between cocking and contact in the current model.",
+      contact:"Racket strikes the ball.",
+      deceleration:"Midpoint between contact and finish in the current model.",
+      finish:"End of the serve motion.",
+    };
+    let session, video, selected = null, saveChain = Promise.resolve(), reviewMode = "detect", activeStage = 0;
+    const player = $("player");
+    function el(tag, text, className) { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; }
+    function fmt(t) { return Number(t).toFixed(3); }
+    function rangeOf(proposal) { return proposal.kind === "attempt" ? proposal.raw.detected_range : proposal.raw; }
+    function proposalId(proposal) { return `${proposal.kind}:${proposal.kind === "attempt" ? proposal.raw.attempt_id : proposal.index}`; }
+    function annotation() { return video.annotation; }
+    function labelFor(id) { return annotation().labels.find(item => item.source_id === id); }
+    function currentLabel() { return selected?.label || (selected?.proposal ? labelFor(proposalId(selected.proposal)) : null); }
+    function serveLabels(item=video) { return item.annotation.labels.filter(label => label.label === "serve").sort((a,b) => a.start_seconds-b.start_seconds); }
+    function stageProposal(label,stage) {
+      const attempt = label.source_id?.startsWith("attempt:") ? label.source_id.slice(8) : null;
+      return attempt ? video.stages?.[attempt]?.[stage] : null;
+    }
+    function phaseCount(label) { return STAGES.filter(stage => label.checkpoints[stage]).length; }
+    function proposals() {
+      return video.attempts.map(raw => ({kind:"attempt", raw}));
+    }
+    function priority(a,b) {
+      const markedA = !!labelFor(proposalId(a)), markedB = !!labelFor(proposalId(b));
+      if (markedA !== markedB) return markedA ? 1 : -1;
+      return a.raw.detected_range.start_seconds-b.raw.detected_range.start_seconds;
+    }
+    function notify(message, bad=false) { $("status").textContent = message; $("status").style.color = bad ? "#ffa99e" : "#a9c4c4"; }
+    function save() {
+      const name = video.name;
+      const snapshot = JSON.parse(JSON.stringify(annotation()));
+      notify("Saving…");
+      saveChain = saveChain.then(async () => {
+        const result = await fetch("/api/annotations", {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({video:name,annotation:snapshot})});
+        const answer = await result.json();
+        if (!result.ok) throw Error(answer.error || "Save failed");
+        notify("Saved · " + name);
+      }).catch(error => { notify(error.message + " · changes are still on this page", true); });
+    }
+    function selectVideo(name) {
+      video = session.videos.find(item => item.name === name);
+      selected = null;
+      player.src = "/media/" + encodeURIComponent(name);
+      player.load();
+      player.playbackRate = Number($("speed").value);
+      $("seek").max = video.duration_seconds;
+      $("view").value = video.annotation.view;
+      $("fully-reviewed").checked = video.annotation.fully_reviewed;
+      if (reviewMode === "phase") {
+        const serves = serveLabels();
+        if (serves.length) { selected = {label:serves.find(label => phaseCount(label)<STAGES.length) || serves[0]}; activeStage = Math.max(0,STAGES.findIndex(stage => !selected.label.checkpoints[stage])); }
+      }
+      render();
+      if (reviewMode === "phase" && selected) selectStage(activeStage);
+    }
+    function seekTo(t) {
+      player.currentTime = Math.max(0,Math.min(video.duration_seconds,Number(t)));
+      player.pause();
+      updateClock();
+    }
+    function selectProposal(proposal) {
+      selected = {proposal};
+      const range = rangeOf(proposal);
+      seekTo(Math.max(0,range.start_seconds-.35));
+      render();
+    }
+    function selectLabel(label) {
+      selected = {label};
+      if (reviewMode === "phase" && label.label === "serve") {
+        activeStage = Math.max(0,STAGES.findIndex(stage => !label.checkpoints[stage]));
+        selectStage(activeStage);
+        return;
+      }
+      seekTo(Math.max(0,label.start_seconds-.35));
+      render();
+    }
+    function addMiss() {
+      const start = Math.max(0,player.currentTime-2.5);
+      const end = Math.min(video.duration_seconds,player.currentTime+1);
+      if (end <= start) return;
+      const label = {id:crypto.randomUUID(),source_id:null,start_seconds:start,end_seconds:end,label:"serve",checkpoints:{}};
+      annotation().labels.push(label);
+      selected = {label};
+      save(); render();
+    }
+    function editorRange() {
+      const start = Number($("start").value), end = Number($("end").value);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end > video.duration_seconds+.001 || start >= end) {
+        notify("Start and end must define a range within this video",true); return null;
+      }
+      return {start_seconds:start,end_seconds:end};
+    }
+    function classify(kind) {
+      if (!selected) return;
+      const range = editorRange(); if (!range) return;
+      let label = currentLabel();
+      if (!label) {
+        label = {id:crypto.randomUUID(),source_id:selected.proposal ? proposalId(selected.proposal) : null,checkpoints:{},...range,label:kind};
+        annotation().labels.push(label);
+      } else {
+        Object.assign(label,range,{label:kind});
+        if (kind !== "serve") label.checkpoints = {};
+        for (const [stage,mark] of Object.entries(label.checkpoints)) {
+          if (mark.time_seconds !== null && (mark.time_seconds < range.start_seconds || mark.time_seconds > range.end_seconds)) delete label.checkpoints[stage];
+        }
+      }
+      selected = {label}; save(); render();
+      if (reviewMode === "detect") nextUnreviewed();
+    }
+    function changeRange() {
+      const label = currentLabel(); if (!label) return;
+      const range = editorRange(); if (!range) return;
+      Object.assign(label,range);
+      for (const [stage,mark] of Object.entries(label.checkpoints)) {
+        if (mark.time_seconds !== null && (mark.time_seconds < range.start_seconds || mark.time_seconds > range.end_seconds)) delete label.checkpoints[stage];
+      }
+      save(); render();
+    }
+    function removeLabel() {
+      const label = currentLabel(); if (!label) return;
+      annotation().labels = annotation().labels.filter(item => item.id !== label.id);
+      selected = null; save(); render();
+    }
+    function nextUnreviewed() {
+      const items = proposals().filter(p => !labelFor(proposalId(p)));
+      items.sort(priority);
+      if (items.length) selectProposal(items[0]);
+      else { setMode("scan"); notify("All detected attempts are labeled. Scan the full video for misses."); }
+    }
+    function selectStage(index) {
+      const label = currentLabel(); if (!label || label.label !== "serve") return;
+      activeStage = Math.max(0,Math.min(STAGES.length-1,index));
+      const stage = STAGES[activeStage], saved = label.checkpoints[stage], proposal = stageProposal(label,stage);
+      const prior = STAGES.slice(0,activeStage).reverse().map(name => label.checkpoints[name]?.time_seconds).find(time => time != null);
+      const proposed = proposal?.keyframe_seconds;
+      const time = saved?.time_seconds ?? (proposed != null && proposed>=label.start_seconds && proposed<=label.end_seconds ? proposed : null) ?? prior ?? label.start_seconds;
+      seekTo(time);
+      renderPhaseEditor();
+    }
+    function selectPhaseServe(label) {
+      selected = {label};
+      activeStage = Math.max(0,STAGES.findIndex(stage => !label.checkpoints[stage]));
+      render(); selectStage(activeStage);
+    }
+    function nextIncompleteServe() {
+      const items = session.videos.flatMap(item => serveLabels(item).map(label => ({item,label}))).filter(row => phaseCount(row.label)<STAGES.length);
+      if (!items.length) { notify("Every real serve has all three focused checkpoints reviewed."); return; }
+      const current = session.videos.flatMap(item => serveLabels(item).map(label => ({item,label}))).findIndex(row => row.item===video && row.label.id===currentLabel()?.id);
+      const all = session.videos.flatMap(item => serveLabels(item).map(label => ({item,label})));
+      const next = all.slice(current+1).concat(all.slice(0,current+1)).find(row => phaseCount(row.label)<STAGES.length) || items[0];
+      if (next.item !== video) selectVideo(next.item.name);
+      selectPhaseServe(next.label);
+    }
+    function markStage(status,time) {
+      const label = currentLabel(); if (reviewMode !== "phase" || !label || label.label !== "serve") return;
+      if (time !== null && (time < label.start_seconds || time > label.end_seconds)) {
+        notify("Checkpoint must lie inside this serve range",true); return;
+      }
+      label.checkpoints[STAGES[activeStage]] = {status,time_seconds:time};
+      save(); render();
+      const next = STAGES.findIndex((stage,index) => index>activeStage && !label.checkpoints[stage]);
+      if (next !== -1) selectStage(next);
+      else {
+        const earlier = STAGES.findIndex(stage => !label.checkpoints[stage]);
+        if (earlier !== -1) selectStage(earlier);
+        else nextIncompleteServe();
+      }
+    }
+    function acceptCurrentStage() {
+      const label = currentLabel(); if (!label) return;
+      const time = stageProposal(label,STAGES[activeStage])?.keyframe_seconds;
+      if (time == null || time < label.start_seconds || time > label.end_seconds) { notify("No usable generated proposal for this stage",true); return; }
+      markStage("accepted",time);
+    }
+    function acceptRemainingStages() {
+      const label = currentLabel(); if (!label || label.label !== "serve") return;
+      let changed=0;
+      for (const stage of STAGES) {
+        const time=stageProposal(label,stage)?.keyframe_seconds;
+        if (!label.checkpoints[stage] && time != null && time>=label.start_seconds && time<=label.end_seconds) {
+          label.checkpoints[stage]={status:"accepted",time_seconds:time}; changed++;
+        }
+      }
+      if (!changed) { notify("No remaining generated proposals for this serve"); return; }
+      save(); render();
+      const next=STAGES.findIndex(stage => !label.checkpoints[stage]);
+      if (next!==-1) selectStage(next); else nextIncompleteServe();
+    }
+    function clearCurrentStage() {
+      const label=currentLabel(); if (!label || !label.checkpoints[STAGES[activeStage]]) return;
+      delete label.checkpoints[STAGES[activeStage]];
+      save(); render();
+    }
+    function renderVideos() {
+      const list = $("videos"); list.replaceChildren();
+      for (const item of session.videos) {
+        const done = item.annotation.labels.filter(label => label.label === "serve").length;
+        const stages=serveLabels(item).reduce((count,label)=>count+phaseCount(label),0);
+        const button = el("button",item.name,"tile"+(item===video?" active":""));
+        button.append(el("small",`${done} confirmed · ${item.attempts.length} detected${item.annotation.fully_reviewed?" · full scan ✓":""} · focus ${stages}/${done*STAGES.length}`));
+        button.onclick = () => selectVideo(item.name);
+        list.append(button);
+      }
+      for (const name of session.pending) {
+        const button = el("button",name,"tile"); button.disabled = true;
+        button.append(el("small","Still processing")); list.append(button);
+      }
+    }
+    function renderQueue() {
+      const list = $("queue"); list.replaceChildren();
+      const items = proposals();
+      items.sort(priority);
+      if (!items.length) list.append(el("p","No detected attempts. Scan the full video for serves.","muted"));
+      for (const item of items) {
+        const range = rangeOf(item), labeled = labelFor(proposalId(item));
+        const score = item.kind === "attempt" && item.raw.confidence != null ? ` · score ${Number(item.raw.confidence).toFixed(2)}` : "";
+        const title = `${item.raw.attempt_id} · ${fmt(range.start_seconds)}–${fmt(range.end_seconds)}${score}`;
+        const button = el("button",title,"tile");
+        button.append(el("small",labeled ? `✓ ${LABEL_NAMES[labeled.label]}` : "Needs review"));
+        button.onclick = () => selectProposal(item); list.append(button);
+      }
+    }
+    function renderMarkers() {
+      const markers = $("markers"); markers.replaceChildren();
+      for (const proposal of proposals()) {
+        const range = rangeOf(proposal), label = labelFor(proposalId(proposal));
+        const marker = el("span",undefined,"marker"+(label && label.label !== "serve" ? " rejected" : ""));
+        marker.style.left = `${100*range.start_seconds/video.duration_seconds}%`;
+        marker.style.width = `${100*(range.end_seconds-range.start_seconds)/video.duration_seconds}%`;
+        marker.title = `${proposal.raw.attempt_id} · ${fmt(range.start_seconds)}–${fmt(range.end_seconds)} s`;
+        markers.append(marker);
+      }
+      for (const label of annotation().labels.filter(item => item.source_id === null && item.label === "serve")) {
+        const marker = el("span",undefined,"marker manual");
+        marker.style.left = `${100*label.start_seconds/video.duration_seconds}%`;
+        marker.style.width = `${100*(label.end_seconds-label.start_seconds)/video.duration_seconds}%`;
+        marker.title = `Added serve · ${fmt(label.start_seconds)}–${fmt(label.end_seconds)} s`;
+        markers.append(marker);
+      }
+    }
+    function updateCoverage() {
+      if (!video) return;
+      const time = player.currentTime;
+      const detected = proposals().find(item => { const range = rangeOf(item); return range.start_seconds <= time && time <= range.end_seconds; });
+      const manual = annotation().labels.find(item => item.source_id === null && item.label === "serve" && item.start_seconds <= time && time <= item.end_seconds);
+      const coverage = $("coverage");
+      coverage.classList.toggle("outside",!detected && !manual);
+      coverage.textContent = detected ? `Inside detector window ${detected.raw.attempt_id} · ${LABEL_NAMES[labelFor(proposalId(detected))?.label] || "not labeled yet"} · check that it is the same motion` : manual ? "Inside a manually added serve" : "Outside all detected attempts · if this is a real serve, press M to add it";
+    }
+    function setMode(mode) {
+      reviewMode = mode;
+      $("detect-panel").hidden = mode !== "detect";
+      $("scan-panel").hidden = mode !== "scan";
+      $("phase-panel").hidden = mode !== "phase";
+      $("labels-panel").hidden = mode === "phase";
+      $("mode-detect").classList.toggle("active",mode === "detect");
+      $("mode-scan").classList.toggle("active",mode === "scan");
+      $("mode-phase").classList.toggle("active",mode === "phase");
+      $("right-title").textContent = mode === "phase" ? "Serve checkpoints" : "Selected range";
+      if (mode === "phase") {
+        const serves=serveLabels();
+        selected=serves.length ? {label:serves.find(label => phaseCount(label)<STAGES.length) || serves[0]} : null;
+        activeStage=selected ? Math.max(0,STAGES.findIndex(stage => !selected.label.checkpoints[stage])) : 0;
+      } else selected=null;
+      render();
+      if (mode === "phase" && selected) selectStage(activeStage);
+    }
+    function renderLabels() {
+      const list = $("labels"); list.replaceChildren();
+      const labels = [...annotation().labels].sort((a,b) => a.start_seconds-b.start_seconds);
+      if (!labels.length) list.append(el("p","No labels yet. Choose a proposal or add a missed serve.","muted"));
+      for (const label of labels) {
+        const button = el("button",`${fmt(label.start_seconds)}–${fmt(label.end_seconds)} · ${LABEL_NAMES[label.label]}`,"tile");
+        button.append(el("small",label.source_id || "Added manually"));
+        button.onclick = () => selectLabel(label); list.append(button);
+      }
+    }
+    function renderPhaseServes() {
+      const list=$("phase-serves"); list.replaceChildren();
+      const serves=serveLabels();
+      if (!serves.length) list.append(el("p","No real serves labeled in this video.","muted"));
+      for (const label of serves) {
+        const count=phaseCount(label);
+        const button=el("button",`${fmt(label.start_seconds)}–${fmt(label.end_seconds)} · ${label.source_id || "Added manually"}`,"tile"+(currentLabel()?.id===label.id ? " active" : ""));
+        button.append(el("small",`${count}/${STAGES.length} focused checkpoints reviewed${count===STAGES.length ? " ✓" : ""}${label.source_id && !video.stages?.[label.source_id.slice(8)] ? " · no generated checkpoints" : ""}`));
+        button.onclick=() => selectPhaseServe(label);
+        list.append(button);
+      }
+    }
+    function renderPhaseTimeline() {
+      const label=currentLabel(), panel=$("phase-timeline");
+      panel.hidden=reviewMode!=="phase" || !label || label.label!=="serve";
+      if (panel.hidden) return;
+      const seek=$("phase-seek"), markers=$("phase-markers");
+      seek.min=label.start_seconds; seek.max=label.end_seconds;
+      seek.value=player.currentTime;
+      markers.replaceChildren();
+      for (const [index,stage] of STAGES.entries()) {
+        const saved=label.checkpoints[stage];
+        const time=saved?.time_seconds ?? stageProposal(label,stage)?.keyframe_seconds;
+        if (time==null || time<label.start_seconds || time>label.end_seconds) continue;
+        const marker=el("span",undefined,"phase-mark"+(saved?.time_seconds!=null ? " saved" : "")+(index===activeStage ? " active" : ""));
+        marker.style.left=`${100*(time-label.start_seconds)/(label.end_seconds-label.start_seconds)}%`;
+        marker.title=`${stage}: ${fmt(time)} s`;
+        markers.append(marker);
+      }
+    }
+    function renderPhaseEditor() {
+      const panel=$("phase-editor"), label=currentLabel();
+      panel.hidden=reviewMode!=="phase" || !label || label.label!=="serve";
+      if (panel.hidden) { renderPhaseTimeline(); return; }
+      $("phase-serve-range").textContent=`${video.name} · ${fmt(label.start_seconds)}–${fmt(label.end_seconds)} s · ${phaseCount(label)}/${STAGES.length} focused checkpoints reviewed`;
+      const grid=$("stage-grid"); grid.replaceChildren();
+      for (const [index,name] of STAGES.entries()) {
+        const saved=label.checkpoints[name];
+        const button=el("button",`${index+1}. ${name}${saved ? " ✓" : ""}`,index===activeStage ? "active" : saved ? "done" : "");
+        button.title=saved ? `${saved.status}${saved.time_seconds===null ? "" : " at "+fmt(saved.time_seconds)+" s"}` : "Unreviewed";
+        button.onclick=() => selectStage(index);
+        grid.append(button);
+      }
+      const stage=STAGES[activeStage], saved=label.checkpoints[stage], proposal=stageProposal(label,stage);
+      const estimate=proposal?.keyframe_seconds, usable=estimate!=null && estimate>=label.start_seconds && estimate<=label.end_seconds;
+      $("stage-name").textContent=`${activeStage+1}/${STAGES.length} · ${stage}`;
+      $("stage-help").textContent=STAGE_HELP[stage];
+      const preview=$("stage-preview");
+      preview.hidden=!proposal?.thumbnail;
+      if (proposal?.thumbnail) {
+        const attempt=label.source_id.slice(8);
+        preview.src=`/thumb?video=${encodeURIComponent(video.name)}&attempt=${encodeURIComponent(attempt)}&stage=${stage}`;
+        preview.onclick=() => { if (estimate!=null) seekTo(estimate); };
+      } else preview.removeAttribute("src");
+      $("stage-proposal").textContent=usable ? `Generated proposal: ${fmt(estimate)} s. Click the image or stage button to inspect it in the video.` : estimate!=null ? "Generated proposal lies outside the labeled serve range." : "No generated proposal. Set this checkpoint from the video, or mark it unsure/not visible.";
+      $("stage-saved").textContent=saved ? `Your label: ${saved.status}${saved.time_seconds===null ? "" : " · "+fmt(saved.time_seconds)+" s"}` : "Your label: unreviewed";
+      const timed=STAGES.map(name => ({name,time:label.checkpoints[name]?.time_seconds})).filter(item => item.time!=null);
+      const backwards=timed.some((item,index) => index>0 && item.time<timed[index-1].time);
+      $("stage-order-warning").hidden=!backwards;
+      $("stage-order-warning").textContent=backwards ? "Some timed checkpoints are out of stage order. Recheck their frames before finishing this serve." : "";
+      $("accept-stage").disabled=!usable;
+      $("clear-stage").disabled=!saved;
+      $("accept-remaining").disabled=!STAGES.some(name => !label.checkpoints[name] && stageProposal(label,name)?.keyframe_seconds!=null && stageProposal(label,name).keyframe_seconds>=label.start_seconds && stageProposal(label,name).keyframe_seconds<=label.end_seconds);
+      $("previous-stage").disabled=activeStage===0;
+      $("next-stage").disabled=activeStage===STAGES.length-1;
+      renderPhaseTimeline();
+    }
+    function renderEditor() {
+      const editor = $("editor"); editor.hidden = reviewMode==="phase" || !selected;
+      $("selection-title").hidden=reviewMode==="phase";
+      if (editor.hidden) { $("selection-title").textContent = "Choose a proposal or add a missed serve."; return; }
+      const label = currentLabel(), range = label || rangeOf(selected.proposal);
+      $("selection-title").textContent = label ? (label.source_id || "Manually added") : proposalId(selected.proposal);
+      $("start").value = fmt(range.start_seconds); $("end").value = fmt(range.end_seconds);
+      $("label-state").textContent = label ? `Your label: ${LABEL_NAMES[label.label]}` : "Choose a label to save this proposal.";
+      $("remove").hidden = !label;
+    }
+    function render() {
+      if (!video) return;
+      $("session").textContent = session.session_id;
+      $("video-name").textContent = video.name;
+      const a = video.annotation;
+      const checked = proposals().filter(p => labelFor(proposalId(p)));
+      const misses = a.labels.filter(l => l.source_id === null && l.label === "serve").length;
+      $("progress").textContent = `${checked.length}/${video.attempts.length} detected attempts labeled · ${misses} missed serves added${a.fully_reviewed ? " · full video scanned ✓" : ""}`;
+      const serves=serveLabels(), reviewed=serves.reduce((count,label)=>count+phaseCount(label),0);
+      if (reviewMode==="phase") $("progress").textContent=`${reviewed}/${serves.length*STAGES.length} focused checkpoints reviewed in this video · ${serves.length} real serves`;
+      renderVideos(); renderQueue(); renderLabels(); renderPhaseServes(); renderEditor(); renderPhaseEditor(); renderMarkers(); updateCoverage();
+    }
+    function updateClock() { if (!video) return; $("clock").textContent = fmt(player.currentTime)+" / "+fmt(video.duration_seconds)+" s"; $("seek").value = player.currentTime; if (!$("phase-timeline").hidden) $("phase-seek").value=player.currentTime; updateCoverage(); }
+    $("view").onchange = () => { annotation().view = $("view").value; save(); };
+    $("fully-reviewed").onchange = () => { annotation().fully_reviewed = $("fully-reviewed").checked; save(); render(); };
+    $("mode-detect").onclick = () => setMode("detect");
+    $("mode-scan").onclick = () => setMode("scan");
+    $("mode-phase").onclick = () => setMode("phase");
+    $("reclassify").onclick = () => {
+      const label=currentLabel(); if (!label) return;
+      setMode("detect"); selected={label}; seekTo(Math.max(0,label.start_seconds-.35)); render();
+    };
+    $("next-serve").onclick = nextIncompleteServe;
+    $("previous-stage").onclick = () => selectStage(activeStage-1);
+    $("next-stage").onclick = () => selectStage(activeStage+1);
+    $("accept-stage").onclick = acceptCurrentStage;
+    $("set-stage").onclick = () => markStage("corrected",Number(player.currentTime.toFixed(6)));
+    $("uncertain-stage").onclick = () => markStage("uncertain",null);
+    $("unavailable-stage").onclick = () => markStage("unavailable",null);
+    $("clear-stage").onclick = clearCurrentStage;
+    $("accept-remaining").onclick = acceptRemainingStages;
+    $("scan-start").onclick = () => { player.currentTime = 0; player.play(); };
+    $("next").onclick = nextUnreviewed;
+    $("refresh").onclick = async () => {
+      try {
+        const response = await fetch("/api/refresh"); const data = await response.json();
+        if (!response.ok) throw Error(data.error);
+        const previous = video?.name; session = data;
+        selectVideo(data.videos.some(item => item.name === previous) ? previous : data.videos[0].name);
+        notify("Video list refreshed");
+      } catch (error) { notify(error.message,true); }
+    };
+    $("seek").oninput = () => seekTo($("seek").value);
+    $("phase-seek").oninput = () => seekTo($("phase-seek").value);
+    player.ontimeupdate = updateClock;
+    $("back").onclick = () => seekTo(player.currentTime-1/video.frame_rate);
+    $("forward").onclick = () => seekTo(player.currentTime+1/video.frame_rate);
+    $("play").onclick = () => player.paused ? player.play() : player.pause();
+    $("speed").onchange = () => { player.playbackRate = Number($("speed").value); };
+    $("add").onclick = addMiss;
+    $("set-start").onclick = () => { $("start").value = fmt(player.currentTime); changeRange(); };
+    $("set-end").onclick = () => { $("end").value = fmt(player.currentTime); changeRange(); };
+    $("start").onchange = changeRange; $("end").onchange = changeRange;
+    $("remove").onclick = removeLabel;
+    document.querySelectorAll("#classification button").forEach(button => button.onclick = () => classify(button.dataset.label));
+    document.onkeydown = event => {
+      if (["INPUT","SELECT","TEXTAREA"].includes(document.activeElement.tagName)) return;
+      if (document.activeElement.tagName==="BUTTON" && (event.key===" " || event.key==="Enter")) return;
+      if (event.key === " ") { event.preventDefault(); player.paused ? player.play() : player.pause(); }
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); seekTo(player.currentTime+(event.key==="ArrowRight"?1:-1)*(event.shiftKey ? 0.25 : 1/video.frame_rate)); }
+      if (reviewMode==="phase" && currentLabel()?.label==="serve") {
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); selectStage(activeStage+(event.key==="ArrowDown"?1:-1)); }
+        if (event.key === "Enter") { event.preventDefault(); markStage("corrected",Number(player.currentTime.toFixed(6))); }
+        if (event.key.toLowerCase() === "a") acceptCurrentStage();
+        if (event.key.toLowerCase() === "u") markStage("uncertain",null);
+        if (event.key.toLowerCase() === "x") markStage("unavailable",null);
+      }
+      if (reviewMode!=="phase" && event.key === "[" && selected) { $("start").value=fmt(player.currentTime); changeRange(); }
+      if (reviewMode!=="phase" && event.key === "]" && selected) { $("end").value=fmt(player.currentTime); changeRange(); }
+      if (event.key.toLowerCase() === "n" && reviewMode === "detect") nextUnreviewed();
+      if (event.key.toLowerCase() === "n" && reviewMode === "phase") nextIncompleteServe();
+      if (event.key.toLowerCase() === "m" && reviewMode === "scan") addMiss();
+    };
+    fetch("/api/state").then(async response => { const data=await response.json(); if(!response.ok) throw Error(data.error); session=data; selectVideo(data.videos[0].name); notify("Ready · annotations save automatically"); }).catch(error => notify(error.message,true));
+  </script>
+</body>
+</html>

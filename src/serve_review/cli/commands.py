@@ -496,7 +496,9 @@ def analyze_serve(*, video: Path, start_seconds: float | None, end_seconds: floa
     return 0
 
 
-def process_cmd(*, target: Path, device: str = "auto", dry_run: bool, force: bool) -> int:
+def process_cmd(
+    *, target: Path, device: str = "auto", cut_workers: int = 1, dry_run: bool, force: bool
+) -> int:
     from serve_review.process import FingerprintMismatch, ProcessError
     from serve_review.process import process as run_process
 
@@ -514,6 +516,7 @@ def process_cmd(*, target: Path, device: str = "auto", dry_run: bool, force: boo
                 device=device,
                 force=force,
                 dry_run=dry_run,
+                cut_workers=cut_workers,
                 progress_callback=_progress,
             )
     except FingerprintMismatch as exc:

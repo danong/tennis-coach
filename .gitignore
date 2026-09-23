@@ -23,6 +23,7 @@ build/
 # Local reference material and private/high-volume footage
 # Keep these outside version control until an explicit fixture policy is chosen.
 refs/
+corpus/
 NeuraSkill.html
 private-footage/
 

@@ -32,6 +32,10 @@ depends = ["doctor", "test"]
 description = "Process a recording directory or single video beside its sources"
 run = "uv run --locked serve-review process \"$@\""
 
+[tasks.annotate]
+description = "Review and correct one processed recording session locally"
+run = "uv run --locked serve-review annotate \"$@\""
+
 [tasks.help]
 description = "Show serve-review command help"
 run = "uv run --locked serve-review --help"
