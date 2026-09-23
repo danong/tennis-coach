@@ -92,15 +92,51 @@ mise run process -- TARGET --dry-run
 mise run process -- TARGET --force
 ```
 
+For a multi-video session on a CPU-rich WSL machine, opt into two concurrent
+video cuts with `mise run process -- TARGET --cut-workers 2`. The default stays
+at one worker, and per-serve GPU analysis remains serial. Measure the wall-time
+effect on the next uncached session before making two workers the default.
+
 For individual cutting, one-attempt analysis, and development tools, run
 `mise run help`; the [documentation index](docs/README.md) links to the
 corresponding references.
+
+To review serve detection for one processed recording session, launch the local
+review site:
+
+```sh
+mise run annotate -- corpus/2026-09-08
+```
+
+Open the printed localhost address in your browser. First classify each detected
+attempt as a serve, shadow swing, toss/abort, other, or unsure. Then scan the
+full source video for missed serves. The timeline marks detector windows, and
+the playhead message shows whether the current moment falls inside one; press
+`M` to add a serve that the detector missed. Rejected detector fragments are
+too noisy to review and are omitted from the site. Labels save under the
+session's ignored `annotations/` directory, separate from regenerable
+`attempts.json`. In step 3, review release, cocking, and contact for each
+confirmed serve. Progress counts only these three focused checkpoints; saved
+labels for the other five checkpoints remain in the annotation data untouched.
+Generated times and preview frames are offered for detected serves when
+analysis succeeded; missed serves and failed analyses can be labeled directly
+from the video. The serve-length scrubber, frame stepping, keyboard shortcuts,
+and automatic advance keep this stage review quick. Each focused checkpoint
+can be accepted, set at the playhead, marked unsure/not visible, or cleared,
+and can be revisited to change its label.
 
 Historical iOS-first and superseded remediation plans are retained in [`docs/archive/`](docs/archive/) for reference only; they are not active implementation specifications. For current stage-checkpoint behavior, use [Serve stage-checkpoint analysis](docs/reference/serve-stage-checkpoint-analysis.md).
 
 ## Footage and local storage
 
 Development footage and downloaded reference videos live in local `refs/` storage because they are large. Keep source videos, absolute machine paths, credentials, and generated media out of normal source changes; a future Git LFS setup can provide versioned media provenance when useful. Synthetic fixtures, annotation schemas, and aggregate test results are suitable for the repository.
+
+Google Photos exports of slow-motion footage may bake speed ramps into the
+video. Source timestamps then describe playback time, not original capture
+time. Serve occurrence and visual checkpoint labels remain usable on that
+timeline, but velocity, acceleration, and duration measurements from the
+export should not be interpreted as physical-time measurements. Prefer the
+original capture when those metrics matter.
 
 ## Working with models
 

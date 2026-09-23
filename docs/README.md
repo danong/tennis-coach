@@ -1,6 +1,6 @@
 # Documentation
 
-> **Status:** Current · **State:** Maintained · **Work:** None · **As of:** 2026-09-18
+> **Status:** Current · **State:** Maintained · **Work:** None · **As of:** 2026-09-23
 
 See [Document status](document-status.md) for lifecycle, state, work-priority, and dating conventions. Use the [glossary](reference/glossary.md) for canonical product and stage-analysis terminology.
 
@@ -20,6 +20,8 @@ See [Document status](document-status.md) for lifecycle, state, work-priority, a
 - [Glossary](reference/glossary.md)
 - [Architecture](architecture/README.md)
 - [Processing lifecycle](architecture/processing-lifecycle.md)
+- [Current project handoff](development/2026-09-23-handoff.md)
+- [Datasets and annotations](evaluation/datasets-and-annotations.md)
 - [Evaluation](evaluation/detection.md)
 - [Research](research/)
 - [Deferred offline roadmap](plans/offline-roadmap.md)
