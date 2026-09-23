@@ -1614,6 +1614,10 @@ def run_analyze_serve(
         if not isinstance(rv_config, RacketVisionConfig):
             raise _fail("tracking", "invalid racketvision_config.")
         try:
+            rv_config = rv_config.resolved_device()
+        except Exception as exc:
+            raise _fail("tracking", str(exc)) from exc
+        try:
             rv_identity = RacketVisionCacheIdentity(
                 source_fingerprint=fingerprint,
                 attempt_start_seconds=req_start,

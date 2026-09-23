@@ -54,6 +54,7 @@ import json
 import math
 import shutil
 import subprocess
+import sys
 from bisect import bisect_left
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -393,9 +394,10 @@ def build_rawvideo_decode_args(
     """Build the FFmpeg argument array decoding stored frames to ``rgb24``.
 
     Uses ``-fps_mode passthrough`` so each filter-graph output frame
-    crosses the pipe once in decode order. ``-hwaccel videotoolbox``
+    crosses the pipe once in decode order. On macOS, ``-hwaccel videotoolbox``
     (input option, before ``-i``) offloads HEVC decode to the Media
-    Engine. ``-noautorotate`` (input option, before ``-i``) disables
+    Engine; other platforms use FFmpeg's software decoder. ``-noautorotate``
+    (input option, before ``-i``) disables
     FFmpeg's automatic display-rotation so the pipe always carries
     stored-orientation ``rgb24`` bytes; the caller then applies the
     single manual upright rotation. Without it, rotated phone footage
@@ -430,13 +432,13 @@ def build_rawvideo_decode_args(
         filters.append(f"fps={rate:g}:round=up")
     filt = ["-vf", ",".join(filters)] if filters else []
     seek = [] if seek_seconds is None else ["-ss", f"{seek_seconds:.17g}"]
+    hwaccel = ["-hwaccel", "videotoolbox"] if sys.platform == "darwin" else []
     return [
         executable,
         "-hide_banner",
         "-loglevel",
         "error",
-        "-hwaccel",
-        "videotoolbox",
+        *hwaccel,
         "-noautorotate",
         *seek,
         "-i",

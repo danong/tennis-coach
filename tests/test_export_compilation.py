@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -119,9 +120,15 @@ def test_build_compilation_args_concatenates_in_order_without_gaps() -> None:
     assert "copy" not in args
     assert "adelay" not in script and "aevalsrc" not in script
     assert args[args.index("-c:v") + 1] == DEFAULT_VIDEO_ENCODER
-    assert DEFAULT_VIDEO_ENCODER == "h264_videotoolbox"
-    assert args[args.index("-b:v") + 1] == DEFAULT_VIDEO_BITRATE
-    assert "-preset" not in args and "-crf" not in args
+    assert DEFAULT_VIDEO_ENCODER == (
+        "h264_videotoolbox" if sys.platform == "darwin" else "libx264"
+    )
+    if DEFAULT_VIDEO_ENCODER == "h264_videotoolbox":
+        assert args[args.index("-b:v") + 1] == DEFAULT_VIDEO_BITRATE
+        assert "-preset" not in args and "-crf" not in args
+    else:
+        assert args[args.index("-preset") + 1] == "veryfast"
+        assert args[args.index("-crf") + 1] == "18"
     assert "-an" in args
     assert args[-1] == "out.mov"
 
@@ -530,7 +537,7 @@ def _hardware_available() -> bool:
 
 
 NEEDS_VIDEOTOOLBOX = pytest.mark.skipif(
-    not ffmpeg_available() or not _hardware_available(),
+    sys.platform != "darwin" or not ffmpeg_available() or not _hardware_available(),
     reason="h264_videotoolbox encoder is required for hardware export tests",
 )
 
@@ -635,7 +642,13 @@ def test_hardware_compilation_failure_names_encoder_and_cleans_up(
 
     monkeypatch.setattr(export_module.subprocess, "run", _fail)
     with pytest.raises(ExportError) as excinfo:
-        export_compilation(video, plan, out_dir / COMPILATION_FILENAME, source=meta)
+        export_compilation(
+            video,
+            plan,
+            out_dir / COMPILATION_FILENAME,
+            source=meta,
+            video_encoder="h264_videotoolbox",
+        )
     message = str(excinfo.value)
     assert "h264_videotoolbox" in message
     assert "hardware unavailable" in message
@@ -647,18 +660,29 @@ def test_build_compilation_args_places_hwaccel_videotoolbox_before_input() -> No
     args = build_compilation_ffmpeg_args(
         "a.mov", [MediaRange(0.0, 0.5)], "t.mov"
     )
-    assert "-hwaccel" in args
-    assert args[args.index("-hwaccel") + 1] == "videotoolbox"
-    assert args.index("-hwaccel") < args.index("-i")
-    for index, part in enumerate(args):
-        if part == "-i":
-            assert args[index - 2] == "-hwaccel"
-            assert args[index - 1] == "videotoolbox"
+    if sys.platform == "darwin":
+        assert "-hwaccel" in args
+        assert args[args.index("-hwaccel") + 1] == "videotoolbox"
+        assert args.index("-hwaccel") < args.index("-i")
+        for index, part in enumerate(args):
+            if part == "-i":
+                assert args[index - 2] == "-hwaccel"
+                assert args[index - 1] == "videotoolbox"
+    else:
+        assert "-hwaccel" not in args
     # Deterministic construction still holds with the decode flags present.
     again = build_compilation_ffmpeg_args(
         "a.mov", [MediaRange(0.0, 0.5)], "t.mov"
     )
     assert again == args
+
+
+def test_compilation_decode_uses_software_on_linux(monkeypatch) -> None:
+    monkeypatch.setattr(export_module.sys, "platform", "linux")
+    args = build_compilation_ffmpeg_args(
+        "a.mov", [MediaRange(0.0, 0.5)], "out.mov", video_encoder="libx264"
+    )
+    assert "-hwaccel" not in args
 
 
 @NEEDS_TOOLS
@@ -680,15 +704,18 @@ def test_export_compilation_passes_hwaccel_decode_to_ffmpeg(
         video, plan, tmp_path / "serves.mov", source=meta
     )
     args = captured["args"]
-    assert "-hwaccel" in args
-    assert args[args.index("-hwaccel") + 1] == "videotoolbox"
-    assert args.index("-hwaccel") < args.index("-i")
+    if sys.platform == "darwin":
+        assert args[args.index("-hwaccel") + 1] == "videotoolbox"
+        assert args.index("-hwaccel") < args.index("-i")
+    else:
+        assert "-hwaccel" not in args
 
 
 @NEEDS_TOOLS
 def test_hwaccel_decode_compilation_failure_names_videotoolbox(
     tmp_path: Path, monkeypatch
 ) -> None:
+    monkeypatch.setattr(export_module.sys, "platform", "darwin")
     video, meta = _make_source(tmp_path)
     out_dir = tmp_path / "out"
     plan = ExportPlan.for_source(meta, [MediaRange(0.0, 0.5), MediaRange(1.0, 1.5)])

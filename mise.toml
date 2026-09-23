@@ -8,6 +8,10 @@ uv = "0.12.9"
 description = "Create the locked Python environment"
 run = "uv sync --locked --all-groups"
 
+[tasks.bootstrap]
+description = "Fetch the pinned RacketVision source and verify model artifacts"
+run = "uv run --locked python tools/bootstrap_runtime.py"
+
 [tasks.doctor]
 description = "Check Python, FFmpeg, and project prerequisites"
 run = "uv run --locked serve-review doctor"

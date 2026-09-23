@@ -289,6 +289,7 @@ def _write_index(
 def process(
     target: Path | str,
     *,
+    device: str = "auto",
     force: bool = False,
     dry_run: bool = False,
     probe_fn: Callable[[Path], SourceMetadata] | None = None,
@@ -301,6 +302,7 @@ def process(
     probe = probe_fn or probe_source
     cut = cut_fn or run_cut
     analyze = analyze_fn or run_analyze_serve
+    racketvision_config = RacketVisionConfig(device=device)
     actions: list[Action] = []
     failures: list[Failure] = []
     current_sources: dict[Path, SourceMetadata] = {}
@@ -405,6 +407,7 @@ def process(
                     end_seconds=attempt.detected_range.end_seconds,
                     output_dir=destination,
                     force=force,
+                    racketvision_config=racketvision_config,
                     racketvision_tracker_factory=racketvision_tracker_factory,
                 )
             except Exception as error:

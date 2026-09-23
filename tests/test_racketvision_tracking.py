@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,7 @@ from serve_review.tracking.racketvision import (
     RacketVisionFrameObservation,
     _map_ball,
     _map_racket,
+    resolve_racketvision_device,
 )
 
 
@@ -26,6 +28,39 @@ def test_config_rejects_bad_threshold_and_reports_missing_files(tmp_path: Path) 
     )
     with pytest.raises(RacketVisionError, match="missing RacketVision"):
         config.require_files()
+
+
+@pytest.mark.parametrize(("available", "expected"), [(True, "cuda"), (False, "cpu")])
+def test_auto_device_uses_cuda_only_when_pytorch_reports_it_available(
+    monkeypatch, available: bool, expected: str
+) -> None:
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "torch",
+        SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: available)),
+    )
+    assert resolve_racketvision_device("auto") == expected
+
+
+def test_explicit_device_override_does_not_probe_cuda(monkeypatch) -> None:
+    def unexpected_import(name: str, *args, **kwargs):
+        if name == "torch":
+            raise AssertionError("explicit device should not probe PyTorch")
+        return original_import(name, *args, **kwargs)
+
+    original_import = __import__
+    monkeypatch.setattr("builtins.__import__", unexpected_import)
+    assert resolve_racketvision_device("cpu") == "cpu"
+
+
+def test_explicit_cuda_reports_an_actionable_error_when_unavailable(monkeypatch) -> None:
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "torch",
+        SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
+    )
+    with pytest.raises(RacketVisionError, match="CUDA-enabled PyTorch"):
+        resolve_racketvision_device("cuda")
 
 
 def test_ball_mapping_reverses_letterbox_and_preserves_confidence() -> None:

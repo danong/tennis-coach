@@ -112,9 +112,23 @@ def _tool_version(executable: str) -> str | None:
     return first_line[0] if first_line else path
 
 
-def doctor() -> int:
+def doctor(*, device: str = "auto") -> int:
     failures: list[str] = []
     print(f"Python {sys.version.split()[0]} ({sys.executable})")
+
+    from serve_review.tracking.racketvision import (
+        RacketVisionError,
+        racketvision_cuda_available,
+        resolve_racketvision_device,
+    )
+
+    cuda_available = racketvision_cuda_available()
+    print(f"RacketVision CUDA: {'available' if cuda_available else 'unavailable'}")
+    try:
+        selected_device = resolve_racketvision_device(device)
+        print(f"RacketVision device: {selected_device}")
+    except RacketVisionError as exc:
+        failures.append(str(exc))
 
     if sys.version_info[:2] != (3, 11):
         failures.append("Python 3.11 is required; run `mise install` then `mise run setup`.")
@@ -419,12 +433,13 @@ def cut(*, video: Path, padding: float, output: str, metadata_dir: Path | None, 
     return 0
 
 
-def analyze_serve(*, video: Path, start_seconds: float | None, end_seconds: float | None, output_dir: Path | None, cache: Path | None, model: Path, dry_run: bool, force: bool, ffmpeg: str, ffprobe: str, anchor2comparison: bool = False) -> int:
+def analyze_serve(*, video: Path, start_seconds: float | None, end_seconds: float | None, output_dir: Path | None, cache: Path | None, model: Path, device: str = "auto", dry_run: bool, force: bool, ffmpeg: str, ffprobe: str, anchor2comparison: bool = False) -> int:
     from serve_review.analyze_serve import (
         AnalyzeServeCancelled,
         AnalyzeServeError,
         run_analyze_serve,
     )
+    from serve_review.tracking.racketvision import RacketVisionConfig
 
     source = video.expanduser()
     if not source.is_file():
@@ -441,6 +456,7 @@ def analyze_serve(*, video: Path, start_seconds: float | None, end_seconds: floa
             end_seconds=end_seconds,
             output_dir=output_dir,
             cache_path=cache,
+            racketvision_config=RacketVisionConfig(device=device),
             model_path=model,
             dry_run=dry_run,
             force=force,
@@ -480,7 +496,7 @@ def analyze_serve(*, video: Path, start_seconds: float | None, end_seconds: floa
     return 0
 
 
-def process_cmd(*, target: Path, dry_run: bool, force: bool) -> int:
+def process_cmd(*, target: Path, device: str = "auto", dry_run: bool, force: bool) -> int:
     from serve_review.process import FingerprintMismatch, ProcessError
     from serve_review.process import process as run_process
 
@@ -495,6 +511,7 @@ def process_cmd(*, target: Path, dry_run: bool, force: bool) -> int:
         with progress_stream, _silence_model_output():
             result = run_process(
                 target,
+                device=device,
                 force=force,
                 dry_run=dry_run,
                 progress_callback=_progress,

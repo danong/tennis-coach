@@ -5,26 +5,29 @@ video and a per-frame CSV. This is intentionally a small, CPU-only prototype.
 
 ## Setup
 
-RacketVision and MediaPipe share the project's locked uv environment. The
-RacketVision dependency group pins Torch/OpenMMLab, NumPy 1.26, and the older
-Setuptools API still required by MMPose:
+Create the project's Python environment, then fetch the pinned, ignored
+RacketVision source and model files:
 
 ```bash
 mise run setup
+mise run bootstrap
 ```
 
-The ignored upstream RacketVision checkout lives at
-`vendor/racketvision/`. Download its checkpoints, then place them
-under the project's common model directory:
+Bootstrap checks out RacketVision commit
+`c44af2a08524d3cb54d818f19686f4cdea4d2793` under `vendor/racketvision/` and
+downloads the four artifacts in `models/manifest.json`. It verifies each
+artifact's SHA-256 before keeping it. Valid local files are reused. If an
+existing vendor checkout is at another commit, bootstrap stops and asks you to
+move it aside; it does not overwrite local source changes. The vendor source
+and downloaded models are ignored by Git.
 
-```text
-models/racketvision/balltrack.pth
-models/racketvision/racket-detector.pth
-models/racketvision/racket-keypoints.pth
-```
+The current environment configuration pins Torch/OpenMMLab, NumPy 1.26, and
+the older Setuptools API required by MMPose. It selects a CUDA 12.1 MMCV wheel
+on Linux, but the full locked environment has not yet been verified on WSL2.
+`mise run setup` creates the environment; `ffmpeg` must also be available on
+`PATH`.
 
-Their expected SHA-256 identities are recorded in `models/manifest.json`.
-`ffmpeg` must also be available on `PATH`.
+To recreate just these ignored runtime assets later, run `mise run bootstrap`.
 
 ## Run
 

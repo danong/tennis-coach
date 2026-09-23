@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -61,11 +62,9 @@ __all__ = [
     "export_outputs",
 ]
 
-#: Explicit default video encoder: VideoToolbox hardware H.264.
-#: Always re-encoded; never stream-copied. ``libx264`` (see
-#: :data:`SOFTWARE_VIDEO_ENCODER`) remains selectable via the existing
-#: ``video_encoder`` parameter for the software path.
-DEFAULT_VIDEO_ENCODER = "h264_videotoolbox"
+#: Platform default: VideoToolbox hardware H.264 on macOS, software H.264
+#: elsewhere. Always re-encoded; never stream-copied.
+DEFAULT_VIDEO_ENCODER = "h264_videotoolbox" if sys.platform == "darwin" else "libx264"
 #: Software H.264 encoder kept selectable via ``video_encoder``.
 SOFTWARE_VIDEO_ENCODER = "libx264"
 #: Explicit default target video bitrate for the hardware encoder.
@@ -283,14 +282,14 @@ def build_ffmpeg_args(
         f"trim=start={_format_seconds(start)}:end={_format_seconds(end)},"
         "setpts=PTS-STARTPTS"
     )
+    hwaccel = ["-hwaccel", "videotoolbox"] if sys.platform == "darwin" else []
     args = [
         ffmpeg.strip(),
         "-hide_banner",
         "-loglevel",
         "error",
         "-y",
-        "-hwaccel",
-        "videotoolbox",
+        *hwaccel,
         "-i",
         source,
         "-map",
@@ -722,14 +721,14 @@ def build_compilation_ffmpeg_args(
             f"{audio_inputs}concat=n={len(items)}:v=0:a=1[outa]"
         )
     filter_complex = ";".join(filter_parts)
+    hwaccel = ["-hwaccel", "videotoolbox"] if sys.platform == "darwin" else []
     args = [
         ffmpeg.strip(),
         "-hide_banner",
         "-loglevel",
         "error",
         "-y",
-        "-hwaccel",
-        "videotoolbox",
+        *hwaccel,
         "-i",
         source,
         "-filter_complex",

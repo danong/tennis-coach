@@ -14,7 +14,7 @@ import math
 import sys
 import tempfile
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -43,6 +43,39 @@ class RacketVisionError(RuntimeError):
     """RacketVision cannot be configured or run safely."""
 
 
+def resolve_racketvision_device(device: str = "auto") -> str:
+    """Resolve ``auto`` to CUDA when PyTorch reports it is available.
+
+    PyTorch is optional until RacketVision is actually used, so importing it
+    here is deliberately lazy. A broken or CPU-only PyTorch installation
+    safely selects CPU in automatic mode.
+    """
+    normalized = device.strip().lower() if isinstance(device, str) else ""
+    if normalized != "auto":
+        if not normalized:
+            raise RacketVisionError("device must be a non-blank string.")
+        if normalized == "cuda" or normalized.startswith("cuda:"):
+            if not racketvision_cuda_available():
+                raise RacketVisionError(
+                    "CUDA was requested but PyTorch cannot access a CUDA device; "
+                    "install a CUDA-enabled PyTorch build and verify the NVIDIA "
+                    "driver, or select --device cpu."
+                )
+        return device.strip()
+    return "cuda" if racketvision_cuda_available() else "cpu"
+
+
+def racketvision_cuda_available() -> bool:
+    """Return whether the installed PyTorch can access CUDA."""
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        # Preserve the CPU path when PyTorch cannot inspect CUDA on this host.
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class RacketVisionConfig:
     """Paths and thresholds for the two RacketVision pipelines."""
@@ -54,7 +87,7 @@ class RacketVisionConfig:
     ball_threshold: float = 0.10
     racket_bbox_threshold: float = 0.30
     ball_batch_size: int = 20
-    device: str = "cpu"
+    device: str = "auto"
 
     def __post_init__(self) -> None:
         for field in (
@@ -102,6 +135,11 @@ class RacketVisionConfig:
     @property
     def racket_keypoints_config(self) -> Path:
         return self.racket_source / "configs" / "pose" / "rtmpose_m_racket_infer.py"
+
+    def resolved_device(self) -> RacketVisionConfig:
+        """Return a copy with automatic device selection frozen for caching."""
+        resolved = resolve_racketvision_device(self.device)
+        return self if resolved == self.device else replace(self, device=resolved)
 
     def require_files(self) -> None:
         required = (
@@ -281,9 +319,10 @@ class RacketVisionTracker:
     """Load both RacketVision pipelines and infer timestamped RGB frames."""
 
     def __init__(self, config: RacketVisionConfig | None = None) -> None:
-        self.config = config or RacketVisionConfig()
-        if not isinstance(self.config, RacketVisionConfig):
+        selected_config = config or RacketVisionConfig()
+        if not isinstance(selected_config, RacketVisionConfig):
             raise TypeError("config must be RacketVisionConfig or None.")
+        self.config = selected_config.resolved_device()
         self.config.require_files()
         try:
             import cv2

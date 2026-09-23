@@ -21,6 +21,13 @@ def test_development_help_lists_development_commands() -> None:
     assert "phase-evaluate" in result.output
 
 
+def test_inference_commands_expose_automatic_device_selection() -> None:
+    for command in ("process", "analyze-serve", "doctor"):
+        result = CliRunner().invoke(cli, [command, "--help"])
+        assert result.exit_code == 0
+        assert "--device [auto|cpu|cuda]" in result.output
+
+
 def test_analyze_rejects_removed_anchor2_option() -> None:
     result = CliRunner().invoke(cli, ["analyze-serve", "session.mov", "--anchor2comparison"])
     assert result.exit_code != 0

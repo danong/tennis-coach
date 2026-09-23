@@ -85,6 +85,12 @@ Development footage and downloaded reference videos live in local `refs/` storag
 
 ## Working with models
 
+Run `mise run bootstrap` after cloning to fetch the pinned, ignored RacketVision
+checkout and download model artifacts from `models/manifest.json`; every
+artifact is checked against its recorded SHA-256. See the
+[RacketVision setup notes](tools/racketvision/README.md#setup) for environment
+and GPU setup details.
+
 Roadmap leaves are designed as single isolated Tau runs using the explicitly authorized free model `opencode/muse-spark-1.3-contributor-free`. Run one leaf at a time. The orchestrator reviews and integrates exact candidate diffs and owns architecture, model selection, local-footage evaluation, and milestone gates.
 
 For work performed under the deferred roadmap, follow its [Tau execution contract](docs/plans/offline-roadmap.md#tau-execution-contract); its tickets require a verifier, exact-diff review, integrated checks, dogfood record, and cleanup evidence.

@@ -22,11 +22,12 @@ def cli() -> None:
 
 @cli.command()
 @click.argument("target", type=click.Path(path_type=Path))
+@click.option("--device", type=click.Choice(["auto", "cpu", "cuda"]), default="auto", show_default=True)
 @click.option("--dry-run", is_flag=True)
 @click.option("--force", is_flag=True)
-def process(target: Path, dry_run: bool, force: bool) -> None:
+def process(target: Path, device: str, dry_run: bool, force: bool) -> None:
     """Process a recording directory or one video beside its source."""
-    _run(commands.process_cmd, target=target, dry_run=dry_run, force=force)
+    _run(commands.process_cmd, target=target, device=device, dry_run=dry_run, force=force)
 
 
 @cli.command("cut")
@@ -51,6 +52,7 @@ def cut(**values: Any) -> None:
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None)
 @click.option("--cache", type=click.Path(path_type=Path), default=None)
 @click.option("--model", type=click.Path(path_type=Path), default=Path("models/pose_landmarker_heavy.task"))
+@click.option("--device", type=click.Choice(["auto", "cpu", "cuda"]), default="auto", show_default=True)
 @click.option("--dry-run", is_flag=True)
 @click.option("--force", is_flag=True)
 @click.option("--ffmpeg", default="ffmpeg")
@@ -61,9 +63,10 @@ def analyze_serve(**values: Any) -> None:
 
 
 @cli.command()
-def doctor() -> None:
+@click.option("--device", type=click.Choice(["auto", "cpu", "cuda"]), default="auto", show_default=True)
+def doctor(device: str) -> None:
     """Check local prerequisites."""
-    result = commands.doctor()
+    result = commands.doctor(device=device)
     if result:
         raise click.exceptions.Exit(result)
 

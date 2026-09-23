@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import shutil
+import sys
 from pathlib import Path
 from typing import Iterator
 
@@ -708,9 +709,12 @@ def test_decode_args_hwaccel_before_input_and_fps_matches_schedule() -> None:
 
     args = build_rawvideo_decode_args("/tmp/src.mov")
     assert args[0] == "ffmpeg"
-    assert "-hwaccel" in args
-    assert args[args.index("-hwaccel") + 1] == "videotoolbox"
-    assert args.index("-hwaccel") < args.index("-i")
+    if sys.platform == "darwin":
+        assert "-hwaccel" in args
+        assert args[args.index("-hwaccel") + 1] == "videotoolbox"
+        assert args.index("-hwaccel") < args.index("-i")
+    else:
+        assert "-hwaccel" not in args
     assert "-noautorotate" in args
     assert args.index("-noautorotate") < args.index("-i")
     assert "-vf" not in args  # arbitrary schedules stay passthrough
@@ -735,6 +739,16 @@ def test_decode_args_hwaccel_before_input_and_fps_matches_schedule() -> None:
         build_rawvideo_decode_args("/tmp/src.mov", rate_hz=1000.0)
     assert build_rawvideo_decode_args("/tmp/src.mov", rate_hz=10.0) == \
         build_rawvideo_decode_args("/tmp/src.mov", rate_hz=10.0)
+
+
+def test_decode_args_selects_hardware_only_on_macos(monkeypatch) -> None:
+    monkeypatch.setattr(frames_module.sys, "platform", "linux")
+    linux_args = build_rawvideo_decode_args("/tmp/src.mov")
+    assert "-hwaccel" not in linux_args
+
+    monkeypatch.setattr(frames_module.sys, "platform", "darwin")
+    mac_args = build_rawvideo_decode_args("/tmp/src.mov")
+    assert mac_args[mac_args.index("-hwaccel") + 1] == "videotoolbox"
 
 
 @NEEDS_TOOLS
@@ -900,7 +914,10 @@ def test_filtered_orientation_matches_autorotate_at_90_270(tmp_path: Path) -> No
         )
         assert mad < 8.0, f"rotation {rotation}: MAD={mad:.2f}"
         args = build_rawvideo_decode_args(str(video), rate_hz=10.0)
-        assert args.index("-hwaccel") < args.index("-i")
+        if sys.platform == "darwin":
+            assert args.index("-hwaccel") < args.index("-i")
+        else:
+            assert "-hwaccel" not in args
         assert args.index("-noautorotate") < args.index("-i")
 
 
@@ -951,6 +968,8 @@ def test_hwaccel_unavailable_fails_actionably(
             pass
 
     seen: list[list[str]] = []
+
+    monkeypatch.setattr(frames_module.sys, "platform", "darwin")
 
     class _FailProc:
         def __init__(self, args: list[str]) -> None:
