@@ -42,6 +42,20 @@ racketvision = [
 
 [tool.uv]
 find-links = ["https://download.openmmlab.com/mmcv/dist/cpu/torch2.1/index.html"]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv.sources]
+mmcv = [
+    { url = "https://download.openmmlab.com/mmcv/dist/cpu/torch2.1.0/mmcv-2.1.0-cp311-cp311-macosx_10_9_universal2.whl", marker = "sys_platform == 'darwin'" },
+    { url = "https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/mmcv-2.1.0-cp311-cp311-manylinux1_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+]
+
+[tool.uv.extra-build-dependencies]
+# chumpy's legacy setup imports pip without declaring it.
+chumpy = ["pip"]
 
 [build-system]
 requires = ["uv_build>=0.12.9,<0.13.0"]
