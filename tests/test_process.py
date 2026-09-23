@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -182,6 +184,71 @@ def test_incomplete_cut_clears_source_tree_and_uses_unpadded_range(tmp_path: Pat
     assert analyze_call[1]["start_seconds"] == 1
     assert analyze_call[1]["end_seconds"] == 1.5
     assert analyze_call[1]["output_dir"] == old / "attempts" / "serve-001"
+
+
+def test_cut_workers_parallelize_independent_cuts_and_keep_result_order(tmp_path: Path) -> None:
+    for name in ("b.mov", "a.mov"):
+        (tmp_path / name).write_bytes(b"video")
+    document = attempts(count=0)
+    lock = threading.Lock()
+    active = 0
+    peak_active = 0
+
+    def cut(video_path: Path, **kwargs):
+        nonlocal active, peak_active
+        with lock:
+            active += 1
+            peak_active = max(peak_active, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return SimpleNamespace(attempts_document=document)
+
+    result = process(
+        tmp_path,
+        probe_fn=lambda path: metadata(),
+        cut_fn=cut,
+        analyze_fn=lambda *args, **kwargs: None,
+        cut_workers=2,
+    )
+
+    assert peak_active == 2
+    assert [action.filename for action in result.actions] == ["a.mov", "b.mov"]
+    assert result.failures == ()
+
+
+def test_mixed_cached_and_new_cuts_analyze_in_source_order(tmp_path: Path) -> None:
+    first = tmp_path / "a-new.mov"
+    second = tmp_path / "b-cached.mov"
+    first.write_bytes(b"video")
+    second.write_bytes(b"video")
+    document = attempts(count=1)
+    write_cut(second, document)
+    analyzed: list[str] = []
+
+    def cut(video_path: Path, **kwargs):
+        write_cut(video_path, document)
+        return SimpleNamespace(attempts_document=document)
+
+    def analyze(video_path: Path, **kwargs):
+        analyzed.append(video_path.name)
+        write_analysis(kwargs["output_dir"])
+
+    result = process(
+        tmp_path,
+        probe_fn=lambda path: metadata(),
+        cut_fn=cut,
+        analyze_fn=analyze,
+        cut_workers=2,
+    )
+
+    assert analyzed == ["a-new.mov", "b-cached.mov"]
+    assert result.failures == ()
+
+
+def test_cut_workers_are_limited_to_one_or_two(tmp_path: Path) -> None:
+    with pytest.raises(ProcessError, match="cut_workers must be 1 or 2"):
+        process(tmp_path, cut_workers=3)
 
 
 def test_missing_racketvision_cache_reruns_analysis(tmp_path: Path) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -292,12 +293,19 @@ def process(
     device: str = "auto",
     force: bool = False,
     dry_run: bool = False,
+    cut_workers: int = 1,
     probe_fn: Callable[[Path], SourceMetadata] | None = None,
     cut_fn: Callable[..., Any] | None = None,
     analyze_fn: Callable[..., Any] | None = None,
     progress_callback: Callable[[str], None] | None = None,
 ) -> ProcessResult:
     """Process one video or each immediate video in its directory."""
+    if (
+        isinstance(cut_workers, bool)
+        or not isinstance(cut_workers, int)
+        or cut_workers not in (1, 2)
+    ):
+        raise ProcessError("cut_workers must be 1 or 2.")
     videos = discover(target)
     probe = probe_fn or probe_source
     cut = cut_fn or run_cut
@@ -335,6 +343,7 @@ def process(
             failures.append(_failure(video, None, "probe", error))
 
     documents: dict[Path, AttemptDocument] = {}
+    cut_jobs: list[tuple[Path, Path, Path]] = []
     for index, video in enumerate(videos, start=1):
         _emit(f"[{index}/{total} videos] {video.name}")
         if video not in current_sources:
@@ -353,31 +362,67 @@ def process(
             if complete and not force and attempts is not None:
                 documents[video] = attempts
             continue
-        try:
-            if needs_cut:
-                if not dry_run:
-                    _emit("  detecting serves\u2026")
-                _clear(metadata_dir, export_dir)
-                result = cut(
-                    video,
-                    metadata_dir=metadata_dir,
-                    export_dir=export_dir,
-                    padding_seconds=1,
-                    mode="compilation",
-                    force=False,
-                )
-                attempts = getattr(result, "attempts_document", None)
-                if attempts is None:
-                    attempts = _attempt_document(metadata_dir / "attempts.json")
-            if attempts is None:
-                raise ProcessError("cut did not produce a readable attempts document")
-            documents[video] = attempts
-            if needs_cut and not dry_run and attempts is not None:
-                _emit(f"  found {len(attempts.attempts)} serves")
-        except Exception as error:
-            failures.append(_failure(video, None, "cut", error))
+        if needs_cut:
+            _emit("  detecting serves\u2026")
+            cut_jobs.append((video, metadata_dir, export_dir))
+            continue
+        if attempts is None:
+            failures.append(
+                Failure(video.name, None, "cut", "cut did not produce a readable attempts document")
+            )
+            continue
+        documents[video] = attempts
 
-    for video, attempts in documents.items():
+    def _run_cut(job: tuple[Path, Path, Path]) -> tuple[Path, AttemptDocument]:
+        video, metadata_dir, export_dir = job
+        _clear(metadata_dir, export_dir)
+        result = cut(
+            video,
+            metadata_dir=metadata_dir,
+            export_dir=export_dir,
+            padding_seconds=1,
+            mode="compilation",
+            force=False,
+        )
+        attempts = getattr(result, "attempts_document", None)
+        if attempts is None:
+            attempts = _attempt_document(metadata_dir / "attempts.json")
+        if attempts is None:
+            raise ProcessError("cut did not produce a readable attempts document")
+        return video, attempts
+
+    def _record_cut(result: tuple[Path, AttemptDocument] | Exception, video: Path) -> None:
+        if isinstance(result, Exception):
+            failures.append(_failure(video, None, "cut", result))
+            return
+        completed_video, attempts = result
+        documents[completed_video] = attempts
+        _emit(f"  found {len(attempts.attempts)} serves")
+
+    if cut_workers == 1:
+        for job in cut_jobs:
+            video = job[0]
+            try:
+                result = _run_cut(job)
+            except Exception as error:
+                _record_cut(error, video)
+            else:
+                _record_cut(result, video)
+    elif cut_jobs:
+        with ThreadPoolExecutor(max_workers=cut_workers) as executor:
+            futures = [executor.submit(_run_cut, job) for job in cut_jobs]
+            for job, future in zip(cut_jobs, futures):
+                try:
+                    result = future.result()
+                except Exception as error:
+                    _record_cut(error, job[0])
+                else:
+                    _record_cut(result, job[0])
+
+    for video in videos:
+        attempts = documents.get(video)
+        if attempts is None:
+            continue
         metadata_dir, _ = generated_paths(video)
         total_attempts = len(attempts.attempts)
         for position, attempt in enumerate(attempts.attempts, start=1):
