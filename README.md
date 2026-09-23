@@ -40,8 +40,8 @@ If maintained documents conflict, resolve and update them before implementation.
 
 ## Offline development setup
 
-This is a local macOS workflow. Install [mise](https://mise.jdx.dev/) and
-FFmpeg (including `ffprobe`), then prepare and check the project:
+On macOS, install [mise](https://mise.jdx.dev/) and FFmpeg (including
+`ffprobe`), then prepare and check the project:
 
 ```sh
 mise install
@@ -51,6 +51,25 @@ mise run doctor
 
 Run `mise run test` before changing code, or `mise run check` for the full
 local check.
+
+On WSL2 with the RTX 5070, install FFmpeg and use
+[NVIDIA's WSL repository](https://docs.nvidia.com/cuda/wsl-user-guide/) to
+install `cuda-toolkit-12-8` without a Linux driver. Install `gcc-14` and
+`g++-14` too, then run:
+
+```sh
+mise install
+mise run setup
+mise run setup-wsl-cuda
+mise run bootstrap
+mise run check
+```
+
+The WSL task installs Torch 2.7.1 with CUDA 12.8 and builds MMCV against it.
+It writes an ignored `.mise.local.toml` that keeps `mise run process -- TARGET`
+from restoring the shared Torch 2.1 lock. The macOS setup and lockfile remain
+unchanged. If you rerun `mise run setup` on WSL, rerun `mise run setup-wsl-cuda`
+before processing footage.
 
 ## Process a recording directory
 

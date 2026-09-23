@@ -21,11 +21,12 @@ existing vendor checkout is at another commit, bootstrap stops and asks you to
 move it aside; it does not overwrite local source changes. The vendor source
 and downloaded models are ignored by Git.
 
-The current environment configuration pins Torch/OpenMMLab, NumPy 1.26, and
-the older Setuptools API required by MMPose. It selects a CUDA 12.1 MMCV wheel
-on Linux, but the full locked environment has not yet been verified on WSL2.
-`mise run setup` creates the environment; `ffmpeg` must also be available on
-`PATH`.
+The shared environment pins Torch/OpenMMLab, NumPy 1.26, and the older
+Setuptools API required by MMPose. On WSL2 with an RTX 5070, the locked
+Torch 2.1/CUDA 12.1 packages cannot run on the GPU. Follow the
+[WSL2 setup instructions](../../README.md#offline-development-setup) to
+install Torch 2.7.1/CUDA 12.8 and build MMCV locally. `ffmpeg` must also be
+available on `PATH`.
 
 To recreate just these ignored runtime assets later, run `mise run bootstrap`.
 
