@@ -228,9 +228,9 @@ def _hoop_observations(
     selected_time_seconds: float | None,
     window_seconds: float,
     min_confidence: float,
-) -> list[tuple[float, float, bool, float]]:
+) -> list[tuple[int, float, float, bool, float, int]]:
     observations = []
-    for frame in scene.frames:
+    for frame_index, frame in enumerate(scene.frames):
         if not _in_window(frame.time_seconds, selected_time_seconds, window_seconds):
             continue
         if not _valid_point(frame.ball_2d, min_confidence) or frame.racket_2d is None:
@@ -245,10 +245,12 @@ def _hoop_observations(
         )
         observations.append(
             (
+                frame_index,
                 frame.time_seconds,
                 _distance(frame.ball_2d, center),
                 _inside_convex_quad(frame.ball_2d, points),
                 confidence,
+                len(points),
             )
         )
     return observations
@@ -271,8 +273,8 @@ def ball_to_racket_hoop_evidence(
             selected_time_seconds,
             "no_qualified_observations",
         )
-    candidate, value, inside, confidence = min(
-        observations, key=lambda item: (item[1], item[0])
+    _, candidate, value, inside, confidence, _ = min(
+        observations, key=lambda item: (item[2], item[1])
     )
     return VisualEvidence(
         metric="ball_to_racket_hoop_distance",
@@ -299,14 +301,14 @@ def ball_inside_racket_hoop_evidence(
     observations = _hoop_observations(
         scene, selected_time_seconds, window_seconds, min_confidence
     )
-    inside = [item for item in observations if item[2]]
+    inside = [item for item in observations if item[3]]
     if not inside:
         return _unavailable(
             "ball_inside_racket_hoop",
             selected_time_seconds,
             "no_qualified_inside_observation",
         )
-    candidate, value, is_inside, confidence = min(inside, key=lambda item: item[0])
+    _, candidate, value, is_inside, confidence, _ = min(inside, key=lambda item: item[1])
     return VisualEvidence(
         metric="ball_inside_racket_hoop",
         available=True,
@@ -319,6 +321,79 @@ def ball_inside_racket_hoop_evidence(
         value=value,
         inside=is_inside,
     )
+
+
+def _ball_racket_hoop_track_summary(
+    scene: SceneTrack,
+    selected_contact_time_seconds: float | None,
+) -> dict[str, Any]:
+    """Persist qualified ball/hoop samples around contact without normalizing."""
+    observations = _hoop_observations(
+        scene,
+        selected_contact_time_seconds,
+        CONTACT_DIAGNOSTIC_WINDOW_SECONDS,
+        DEFAULT_MIN_OBSERVATION_CONFIDENCE,
+    )
+    raw_observations = _hoop_observations(
+        scene,
+        selected_contact_time_seconds,
+        CONTACT_DIAGNOSTIC_WINDOW_SECONDS,
+        0.0,
+    )
+    selected_index = None
+    if selected_contact_time_seconds is not None and scene.frames:
+        selected_index = min(
+            range(len(scene.frames)),
+            key=lambda index: abs(
+                scene.frames[index].time_seconds - selected_contact_time_seconds
+            ),
+        )
+    if selected_index is None:
+        return {
+            "available": False,
+            "nearest_raw_observation": None,
+            "nearest_qualified_observation": None,
+            "post_contact_observations": [],
+            "has_post_contact_distance_increase": None,
+        }
+
+    nearest = (
+        min(observations, key=lambda item: (item[2], item[1]))
+        if observations
+        else None
+    )
+    nearest_raw = (
+        min(raw_observations, key=lambda item: (item[2], item[1]))
+        if raw_observations
+        else None
+    )
+
+    def serialize(item: tuple[int, float, float, bool, float, int]) -> dict[str, Any]:
+        index, moment, distance, inside, confidence, hoop_keypoint_count = item
+        return {
+            "frame_index": index,
+            "frames_from_contact": index - selected_index,
+            "time_seconds": moment,
+            "seconds_from_contact": moment - selected_contact_time_seconds,
+            "ball_to_hoop_center_distance": distance,
+            "confidence": confidence,
+            "inside_hoop": inside,
+            "hoop_keypoint_count": hoop_keypoint_count,
+            "qualified": hoop_keypoint_count == len(_HOOP_NAMES)
+            and confidence >= DEFAULT_MIN_OBSERVATION_CONFIDENCE,
+        }
+
+    post = [item for item in observations if item[1] > selected_contact_time_seconds]
+    return {
+        "available": nearest is not None,
+        "nearest_raw_observation": serialize(nearest_raw) if nearest_raw else None,
+        "nearest_qualified_observation": serialize(nearest) if nearest else None,
+        "post_contact_observations": [serialize(item) for item in post],
+        "has_post_contact_distance_increase": (
+            any(item[2] > nearest[2] for item in post)
+            if post and nearest is not None else None
+        ),
+    }
 
 
 def build_scene_visual_diagnostics(
@@ -349,5 +424,8 @@ def build_scene_visual_diagnostics(
             "selected_time_seconds": selected_contact_time_seconds,
             "ball_to_racket_hoop": evidence[2].to_dict(),
             "ball_inside_racket_hoop": evidence[3].to_dict(),
+            "ball_racket_hoop_track": _ball_racket_hoop_track_summary(
+                scene, selected_contact_time_seconds
+            ),
         },
     }

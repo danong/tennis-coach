@@ -87,6 +87,7 @@ __all__ = [
     "Annotation",
     "AnnotationManifest",
     "MatchEntry",
+    "ContactMatch",
     "RangeMetrics",
     "OverallMetrics",
     "StratumInput",
@@ -95,6 +96,7 @@ __all__ = [
     "intersection_seconds",
     "iou",
     "match_ranges",
+    "match_contact_events",
     "evaluate_ranges",
     "evaluate_report",
     "evaluate_manifest",
@@ -658,6 +660,97 @@ class MatchEntry:
             end_error_seconds=values["end_error_seconds"],
             intersection_seconds=values["intersection_seconds"],
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ContactMatch:
+    """One truth/prediction event pairing by contact-time proximity."""
+
+    truth_index: int
+    pred_index: int
+    contact_error_seconds: float
+
+    def __post_init__(self) -> None:
+        for key in ("truth_index", "pred_index"):
+            value = getattr(self, key)
+            if not _is_int(value) or value < 0:
+                raise EvaluationError(f"contact_match: {key!r} must be an integer >= 0, got {value!r}.")
+        error = self.contact_error_seconds
+        if not _is_number(error) or not math.isfinite(error):
+            raise EvaluationError(f"contact_match: 'contact_error_seconds' must be finite, got {error!r}.")
+        object.__setattr__(self, "contact_error_seconds", float(error))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "contact_error_seconds": self.contact_error_seconds,
+            "pred_index": self.pred_index,
+            "truth_index": self.truth_index,
+        }
+
+
+def match_contact_events(
+    truth_contacts: Sequence[float | None],
+    predicted_contacts: Sequence[float | None],
+    *,
+    tolerance_seconds: float,
+) -> tuple[ContactMatch, ...]:
+    """Match serve events one-to-one by nearest contact time.
+
+    Each truth/prediction contact may be ``None`` when unavailable; such
+    events remain unmatched. Candidate pairs within the inclusive tolerance
+    are greedily claimed by smallest absolute time difference, with stable
+    truth-index then prediction-index tie-breaking. Returned indices refer to
+    input order and results are sorted by ``(truth_index, pred_index)``.
+
+    This measures event presence independently of candidate-window IoU. Use
+    the associated ranges separately to measure boundary localization.
+    """
+    name = "match_contact_events"
+    if isinstance(truth_contacts, (str, bytes)) or not isinstance(truth_contacts, (list, tuple)):
+        raise EvaluationError(f"{name}: truth_contacts must be a list or tuple.")
+    if isinstance(predicted_contacts, (str, bytes)) or not isinstance(predicted_contacts, (list, tuple)):
+        raise EvaluationError(f"{name}: predicted_contacts must be a list or tuple.")
+    if isinstance(tolerance_seconds, bool) or not isinstance(tolerance_seconds, (int, float)):
+        raise EvaluationError(f"{name}: tolerance_seconds must be a finite number >= 0.")
+    tolerance = float(tolerance_seconds)
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise EvaluationError(f"{name}: tolerance_seconds must be a finite number >= 0.")
+
+    def validated_contacts(label: str, values: Sequence[float | None]) -> tuple[float | None, ...]:
+        result: list[float | None] = []
+        for index, value in enumerate(values):
+            if value is None:
+                result.append(None)
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or value < 0:
+                raise EvaluationError(f"{name}: {label}[{index}] must be None or a finite time >= 0, got {value!r}.")
+            result.append(float(value))
+        return tuple(result)
+
+    truth = validated_contacts("truth_contacts", truth_contacts)
+    predicted = validated_contacts("predicted_contacts", predicted_contacts)
+    scored: list[tuple[float, int, int, float]] = []
+    for truth_index, truth_time in enumerate(truth):
+        if truth_time is None:
+            continue
+        for pred_index, predicted_time in enumerate(predicted):
+            if predicted_time is None:
+                continue
+            error = predicted_time - truth_time
+            absolute = abs(error)
+            if absolute <= tolerance + 1e-12:
+                scored.append((absolute, truth_index, pred_index, error))
+    scored.sort(key=lambda item: (item[0], item[1], item[2]))
+    used_truth: set[int] = set()
+    used_pred: set[int] = set()
+    matches: list[ContactMatch] = []
+    for _, truth_index, pred_index, error in scored:
+        if truth_index in used_truth or pred_index in used_pred:
+            continue
+        used_truth.add(truth_index)
+        used_pred.add(pred_index)
+        matches.append(ContactMatch(truth_index, pred_index, error))
+    return tuple(sorted(matches, key=lambda item: (item.truth_index, item.pred_index)))
 
 
 def match_ranges(

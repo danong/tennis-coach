@@ -66,6 +66,7 @@ __all__ = [
     "PIPELINE_VERSION",
     "RUN_SCHEMA_VERSION",
     "SHADOWS_FILENAME",
+    "DETECTION_DIAGNOSTICS_FILENAME",
     "CutError",
     "CutCancelled",
     "CutResult",
@@ -79,6 +80,9 @@ RUN_SCHEMA_VERSION = 1
 #: Inspectable side-log filename for non-exported shadow/abort records.
 #: ``shadows.json`` never alters the ``attempts.json`` schema.
 SHADOWS_FILENAME = "shadows.json"
+#: Versioned evidence trace produced by the macro detector.
+DETECTION_DIAGNOSTICS_FILENAME = "detection-diagnostics.json"
+DETECTION_DIAGNOSTICS_SCHEMA_VERSION = 1
 
 
 class CutError(Exception):
@@ -410,6 +414,7 @@ def run_cut(
     source_out = session_dir / "source.json"
     attempts_out = session_dir / "attempts.json"
     shadows_out = session_dir / SHADOWS_FILENAME
+    detection_diagnostics_out = session_dir / DETECTION_DIAGNOSTICS_FILENAME
     run_out = session_dir / "run.json"
     compilation_path = export_base / export_module.COMPILATION_FILENAME
     clips_dir = export_base / export_module.CLIPS_SUBDIR
@@ -432,7 +437,13 @@ def run_cut(
                     f"could not clear destination {tree}: {exc}. ",
                 ) from exc
     else:
-        for existing in (source_out, attempts_out, shadows_out, run_out):
+        for existing in (
+            source_out,
+            attempts_out,
+            shadows_out,
+            detection_diagnostics_out,
+            run_out,
+        ):
             if existing.exists():
                 raise CutError(
                     "validate",
@@ -494,6 +505,8 @@ def run_cut(
     compilation: Path | None = None
     clips: list[Path] = []
     shadows: tuple[Any, ...] = ()
+    decoder_diagnostics: dict[str, Any] = {}
+    detection_diagnostics_source = "decoder"
 
     def _write_run(status_value: str) -> Path:
         elapsed = time.monotonic() - started
@@ -506,6 +519,7 @@ def run_cut(
             "clips": [str(path) for path in clips],
             "decoder_config": decoder_config.to_dict(),
             "decoder_schema_version": DECODER_SCHEMA_VERSION,
+            "detection_diagnostics_path": str(detection_diagnostics_out),
             "error": error_text,
             "error_stage": error_stage,
             "feature_config": feature_config.to_dict(),
@@ -662,12 +676,15 @@ def run_cut(
             except Exception as exc:
                 raise _fail("detect", f"candidate detection failed: {exc}.") from exc
             shadows = ()
+            detection_diagnostics_source = "custom_candidate_detector"
             stage_timings["detect"] = time.monotonic() - detect_start
         else:
             frame_times = [frame.time_seconds for frame in feature_frames]
             try:
                 if not frame_times:
-                    decode_result = decoder_module.decode_sequence((), ())
+                    decode_result = decoder_module.decode_sequence(
+                        (), (), diagnostics_out=decoder_diagnostics
+                    )
                 else:
                     if _cancelled():
                         raise CutCancelled(
@@ -734,12 +751,14 @@ def run_cut(
                         ) from exc
                     try:
                         if decode_fn is not None:
+                            detection_diagnostics_source = "custom_decoder"
                             decode_result = decode_fn(
                                 feature_frames, aligned_audio, decoder_config
                             )
                         else:
                             decode_result = decoder_module.decode_sequence(
-                                feature_frames, aligned_audio, decoder_config
+                                feature_frames, aligned_audio, decoder_config,
+                                diagnostics_out=decoder_diagnostics,
                             )
                     except CutCancelled:
                         raise
@@ -810,6 +829,25 @@ def run_cut(
             raise _fail("shadows", str(exc.message)) from exc
         except Exception as exc:
             raise _fail("shadows", f"could not write shadows.json: {exc}.") from exc
+
+        detection_payload = {
+            "decoder_schema_version": DECODER_SCHEMA_VERSION,
+            "diagnostics_source": detection_diagnostics_source,
+            "hypotheses": decoder_diagnostics.get("hypotheses", []),
+            "audio": decoder_diagnostics.get("audio", {}),
+            "schema_version": DETECTION_DIAGNOSTICS_SCHEMA_VERSION,
+            "source_fingerprint": metadata.fingerprint,
+        }
+        try:
+            _write_text_atomic(
+                detection_diagnostics_out,
+                json.dumps(detection_payload, sort_keys=True, indent=2) + "\n",
+            )
+        except CutError as exc:
+            raise _fail("detection_diagnostics", str(exc.message)) from exc
+        except Exception as exc:
+            raise _fail("detection_diagnostics",
+                        f"could not write {DETECTION_DIAGNOSTICS_FILENAME}: {exc}.") from exc
 
         # --- empty detection: honest empty, no media ---
         if len(document) == 0 or not document.export_ranges:

@@ -40,6 +40,7 @@ Original source media is never changed.
 source metadata
   -> sampled body/audio detection evidence
   -> accepted attempt ranges
+  -> detection-diagnostics.json
   -> attempts.json
   -> exports/<video>/serves.mov
 ```
@@ -98,6 +99,8 @@ identity and exact source PTS, rather than nominal FPS, determine compatibility.
 metadata/<video>/
   source.json
   attempts.json
+  detection-diagnostics.json
+  shadows.json
   attempts/<serve-id>/checkpoints.json
   attempts/<serve-id>/serve-3d-diagnostics.json
   attempts/<serve-id>/serve-fingerprint-v1.json
@@ -108,8 +111,16 @@ exports/<video>/serves.mov
 
 The final index links the attempt reviews. Checkpoint/review/fingerprint
 artifacts are regenerated output; the two cache files are the reusable
-model-observation artifacts. Fingerprint contents and its supported comparison
-domain are documented in [serve fingerprints](../reference/serve-fingerprints.md).
+model-observation artifacts. The detection diagnostic trace records every
+qualified session audio transient and, for each detector hypothesis, exact
+overhead-acceleration trigger times, the transient timestamps that satisfied
+the audio gate, and whether the hypothesis became a candidate or a shadow.
+Per-attempt `serve-3d-diagnostics.json` also records the nearest qualified
+ball-to-hoop observation around the contact estimate, its frame/time offset
+and confidence, plus qualified post-contact distance observations. These
+artifacts expose detector evidence; they do not change the detector decision.
+Fingerprint contents and its supported comparison domain are documented in
+[serve fingerprints](../reference/serve-fingerprints.md).
 
 ## Module boundaries
 

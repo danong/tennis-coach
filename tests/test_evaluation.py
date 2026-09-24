@@ -35,6 +35,7 @@ from serve_review.evaluation import (
     intersection_seconds,
     iou,
     match_ranges,
+    match_contact_events,
     validate_session_disjoint,
     evaluate_session,
 )
@@ -96,6 +97,36 @@ def test_iou_rejects_non_ranges() -> None:
         iou("nope", rng(0.0, 1.0))  # type: ignore[arg-type]
     with pytest.raises(EvaluationError):
         intersection_seconds(rng(0.0, 1.0), None)  # type: ignore[arg-type]
+
+
+def test_contact_event_matching_is_one_to_one_by_nearest_time() -> None:
+    matches = match_contact_events(
+        [10.0, 20.0], [10.4, 10.2, 20.5, None], tolerance_seconds=0.5
+    )
+    assert [(m.truth_index, m.pred_index) for m in matches] == [(0, 1), (1, 2)]
+    assert [m.contact_error_seconds for m in matches] == pytest.approx([0.2, 0.5])
+
+
+def test_contact_event_matching_handles_ties_and_missing_contacts() -> None:
+    matches = match_contact_events(
+        [1.0, 1.0, None], [0.875, 1.125, None], tolerance_seconds=0.125
+    )
+    assert [(m.truth_index, m.pred_index) for m in matches] == [(0, 0), (1, 1)]
+
+
+@pytest.mark.parametrize(
+    "truth_contacts,predicted_contacts,tolerance",
+    [([float("nan")], [1.0], 0.5), ([True], [1.0], 0.5), ([1.0], [1.0], -0.1)],
+)
+def test_contact_event_matching_rejects_invalid_inputs(
+    truth_contacts, predicted_contacts, tolerance
+) -> None:
+    with pytest.raises(EvaluationError):
+        match_contact_events(
+            truth_contacts,
+            predicted_contacts,
+            tolerance_seconds=tolerance,
+        )
 
 
 # --- One-to-one matching ----------------------------------------------------

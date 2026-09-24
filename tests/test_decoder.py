@@ -204,6 +204,24 @@ def test_full_valid_serve_traversal() -> None:
     assert CandidateRange.from_dict(item.to_dict()) == item
 
 
+def test_diagnostics_preserve_acceleration_and_audio_gate_witness() -> None:
+    frames, audio = _valid_serve(start=1.0)
+    diagnostics: dict = {}
+
+    result = decode_sequence(frames, audio, diagnostics_out=diagnostics)
+
+    assert len(result.ranges) == 1
+    assert diagnostics["audio"]["qualified_transient_times_seconds"] == [1.35]
+    hypothesis = diagnostics["hypotheses"][0]
+    assert hypothesis["outcome"] == "candidate"
+    assert hypothesis["acceleration_trigger_times_seconds"] == [1.3]
+    assert hypothesis["qualifying_audio_transient_times_seconds"] == [1.35]
+    assert hypothesis["audio_gate_witnesses"] == [{
+        "acceleration_trigger_seconds": 1.3,
+        "audio_transient_seconds": [1.35],
+    }]
+
+
 def test_boundary_timestamps_equal_transition_times() -> None:
     frames, audio = _valid_serve(start=2.0)
     result = decode_sequence(frames, audio)

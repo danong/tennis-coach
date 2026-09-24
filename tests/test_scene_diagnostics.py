@@ -133,3 +133,48 @@ def test_visual_diagnostics_are_deterministic_and_auditable() -> None:
         "delta_selected_minus_candidate_seconds"
     ] == pytest.approx(0.0)
     assert first["contact"]["ball_to_racket_hoop"]["available"] is False
+
+
+def test_contact_track_persists_frame_offset_and_post_contact_separation() -> None:
+    scene = _scene((
+        _frame(2.0, ball=Point2D(0.5, 0.5, 0.9), racket=_racket()),
+        _frame(2.1, ball=Point2D(0.8, 0.8, 0.9), racket=_racket()),
+    ))
+
+    result = build_scene_visual_diagnostics(
+        scene, selected_release_time_seconds=None, selected_contact_time_seconds=2.0
+    )
+    track = result["contact"]["ball_racket_hoop_track"]
+    nearest = track["nearest_qualified_observation"]
+
+    assert track["available"] is True
+    assert nearest["frame_index"] == 0
+    assert nearest["frames_from_contact"] == 0
+    assert nearest["seconds_from_contact"] == pytest.approx(0.0)
+    assert nearest["confidence"] == pytest.approx(0.9)
+    assert track["post_contact_observations"][0]["frames_from_contact"] == 1
+    assert track["has_post_contact_distance_increase"] is True
+
+
+def test_contact_track_keeps_weak_raw_observation_separate_from_qualified() -> None:
+    weak_racket = Racket2D(
+        bbox=(0.35, 0.35, 0.65, 0.65),
+        bbox_confidence=0.9,
+        keypoints={
+            name: Point2D(point.x, point.y, 0.05)
+            for name, point in _racket().keypoints.items()
+        },
+    )
+    scene = _scene((
+        _frame(2.0, ball=Point2D(0.5, 0.5, 0.9), racket=weak_racket),
+    ))
+
+    result = build_scene_visual_diagnostics(
+        scene, selected_release_time_seconds=None, selected_contact_time_seconds=2.0
+    )
+    track = result["contact"]["ball_racket_hoop_track"]
+
+    assert track["available"] is False
+    assert track["nearest_qualified_observation"] is None
+    assert track["nearest_raw_observation"]["qualified"] is False
+    assert track["nearest_raw_observation"]["confidence"] == pytest.approx(0.05)

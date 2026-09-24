@@ -176,7 +176,7 @@ Current production outputs identify the relevant contracts:
 
 ```text
 waveforms:  kinematic-waveforms-default-v3 / kinematic-waveforms-v3
-composites: composite-anchors-default-v7 / composite-anchors-v5
+composites: composite-anchors-default-v8 / composite-anchors-v6
 M4 solver:  phase-solver-serve-default-v2
 filter:     world-butterworth-default-v1 / butterworth-sos-zerophase-v1
 ```
@@ -186,6 +186,12 @@ These IDs distinguish current outputs from earlier coordinate, cue, and configur
 ## Review and interpretation
 
 `review-serve-3d/index.html` is the primary review page. It renders clean source-frame JPEGs for checkpoint keyframes and, for the narrow anchor-2 comparison mode, manual keyframes and signed selected-minus-manual deltas. Labels and timestamps live in `index.html` and `review.json`; they are not burned into the JPEG pixels. `serve-3d-diagnostics.json` records selected cue values, total scores, PTS, candidate counts, and identities.
+
+The contact-anchor score no longer includes candidate-relative
+`racket_hoop_ball_proximity`: within-attempt quantile normalization could give
+a lone, distant observation the maximum score. Qualified absolute ball-to-hoop
+distance, confidence, frame offset, and post-contact observations remain in
+`visual_evidence.contact`; they are diagnostic evidence, not a contact score.
 
 A high score means that the current waveform heuristic prefers the frame. It is useful alongside source playback, the review page, and diagnostics rather than as an authoritative biomechanical measurement. In particular:
 

@@ -134,9 +134,9 @@ __all__ = [
 #: Version of the composite-anchor schemas in this module.
 COMPOSITE_ANCHORS_SCHEMA_VERSION = 5
 #: Method identity recorded on every candidate and set.
-COMPOSITE_ANCHORS_METHOD_VERSION = "composite-anchors-v5"
+COMPOSITE_ANCHORS_METHOD_VERSION = "composite-anchors-v6"
 #: Default configuration identity for multimodal experimental scoring.
-COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v7"
+COMPOSITE_ANCHORS_DEFAULT_CONFIG_ID = "composite-anchors-default-v8"
 #: Serialized candidate provenance value (retained output contract).
 COMPOSITE_ANCHOR_PROVENANCE = "kinematic_waveform"
 
@@ -189,7 +189,6 @@ COMPOSITE_CUE_NAMES: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "torso_verticality",
             "right_arm_extension",
             "audio_transient",
-            "racket_hoop_ball_proximity",
         ),
         "finish": (
             "right_wrist_speed_trough",
@@ -241,13 +240,12 @@ COMPOSITE_DEFAULT_WEIGHTS: Mapping[str, Mapping[str, float]] = MappingProxyType(
         ),
         "contact": MappingProxyType(
             {
-                "right_wrist_elevation_apex": 0.175,
-                "right_wrist_speed_peak": 0.04,
-                "right_wrist_acceleration_peak": 0.005,
-                "torso_verticality": 0.07,
-                "right_arm_extension": 0.07,
-                "audio_transient": 0.34,
-                "racket_hoop_ball_proximity": 0.30,
+                "right_wrist_elevation_apex": 0.25,
+                "right_wrist_speed_peak": 0.05714285714285714,
+                "right_wrist_acceleration_peak": 0.007142857142857143,
+                "torso_verticality": 0.10,
+                "right_arm_extension": 0.10,
+                "audio_transient": 0.4857142857142857,
             }
         ),
         "finish": MappingProxyType(
@@ -854,7 +852,6 @@ def _extract_raw_cues(
     if scene_features is None:
         ball_hand_onset = [None] * count
         racket_vertical = [None] * count
-        racket_ball_proximity = [None] * count
     else:
         ball_hand_onset = _forward_rise(
             scene_features.left_wrist_ball_distance, times
@@ -862,7 +859,6 @@ def _extract_raw_cues(
         racket_vertical = list(
             scene_features.racket_handle_hoop_vertical_orientation
         )
-        racket_ball_proximity = _negate(scene_features.racket_hoop_ball_distance)
 
     raw: dict[str, dict[str, list[float | None]]] = {
         "start": {
@@ -901,7 +897,6 @@ def _extract_raw_cues(
             "torso_verticality": list(torso),
             "right_arm_extension": _directional_arm_extension(wrist_dy, wrist_dist),
             "audio_transient": list(audio_cue),
-            "racket_hoop_ball_proximity": racket_ball_proximity,
         },
         "finish": {
             "right_wrist_speed_trough": list(_series(track, "right_wrist_speed_trough")),

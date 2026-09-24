@@ -770,6 +770,16 @@ def test_av_shadow_tail_logged_separately_attempts_schema_unchanged(
     assert run_payload["shadow_count"] == 1
     assert run_payload["decoder_config"] == DecoderConfig().to_dict()
     assert run_payload["decoder_schema_version"] == DecoderConfig().schema_version
+    diagnostics = json.loads(
+        (session / "detection-diagnostics.json").read_text(encoding="utf-8")
+    )
+    assert diagnostics["diagnostics_source"] == "decoder"
+    assert diagnostics["audio"]["qualified_transient_times_seconds"]
+    candidate_trace = next(
+        item for item in diagnostics["hypotheses"] if item["outcome"] == "candidate"
+    )
+    assert candidate_trace["acceleration_trigger_times_seconds"]
+    assert candidate_trace["audio_gate_witnesses"]
 
 
 def test_av_silent_session_stays_honest_empty(tmp_path: Path) -> None:

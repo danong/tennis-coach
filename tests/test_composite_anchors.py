@@ -157,15 +157,15 @@ def test_scene_features_are_aligned_and_available_to_candidate_scoring() -> None
     assert anchor_set.for_stage("cocking")[0].cue_values[
         "racket_handle_hoop_vertical_orientation"
     ] == pytest.approx(0.0)
-    assert anchor_set.for_stage("contact")[0].cue_values[
-        "racket_hoop_ball_proximity"
-    ] == pytest.approx(0.0)
+    assert "racket_hoop_ball_proximity" not in anchor_set.for_stage(
+        "contact"
+    )[0].cue_values
     eligible = {
         stage: [candidate for candidate in anchor_set.for_stage(stage) if candidate.coverage > 0]
         for stage in six_module.SIX_ANCHOR_STAGES
     }
     solution = six_module.solve_six_anchors(eligible, SixAnchorSolverConfig())
-    assert hashlib.sha256(anchor_set.to_json().encode()).hexdigest() == "355bb983b70a7c248a862a5b0c9ed09fa7c65566a2a048107d0e33488aac53e7"
+    assert hashlib.sha256(anchor_set.to_json().encode()).hexdigest() == "5a77deaa183de653555f0dfca5138f91edd6f229cac033c2fa35e9ad2c34cf2b"
     assert dict(solution.choice) == {
         "start": 0,
         "release": None,
@@ -220,13 +220,12 @@ def test_default_weights_match_exact_initial_generic_values() -> None:
         "racket_handle_hoop_vertical_orientation": 0.05,
     }
     assert dict(config.weight_for("contact")) == {
-        "right_wrist_elevation_apex": 0.175,
-        "right_wrist_speed_peak": 0.04,
-        "right_wrist_acceleration_peak": 0.005,
-        "torso_verticality": 0.07,
-        "right_arm_extension": 0.07,
-        "audio_transient": 0.34,
-        "racket_hoop_ball_proximity": 0.30,
+        "right_wrist_elevation_apex": 0.25,
+        "right_wrist_speed_peak": 0.05714285714285714,
+        "right_wrist_acceleration_peak": 0.007142857142857143,
+        "torso_verticality": 0.10,
+        "right_arm_extension": 0.10,
+        "audio_transient": 0.4857142857142857,
     }
     assert dict(config.weight_for("finish")) == {
         "right_wrist_speed_trough": 0.60,
@@ -602,7 +601,7 @@ def test_contact_audio_cue_unavailable_without_audio() -> None:
         assert candidate.cue_values["audio_transient"] is None
     # The audio and unavailable visual cue weights are absent.
     for candidate in rows:
-        assert candidate.coverage == pytest.approx(0.36, abs=1e-12)
+            assert candidate.coverage == pytest.approx(0.5142857142857142, abs=1e-12)
 
 
 def test_contact_audio_cue_rewards_transient_and_shifts_score() -> None:
@@ -634,9 +633,9 @@ def test_contact_audio_cue_rewards_transient_and_shifts_score() -> None:
     assert loud_rows[10].cue_values["audio_transient"] == pytest.approx(1.0)
     assert loud_rows[0].cue_values["audio_transient"] == pytest.approx(0.0)
     assert all(c.cue_values["audio_transient"] is None for c in silent_rows)
-    # Audio is present; the unavailable visual cue leaves 0.70 coverage.
-    assert loud_rows[10].coverage == pytest.approx(0.70, abs=1e-12)
-    assert silent_rows[10].coverage == pytest.approx(0.36, abs=1e-12)
+    # Audio is present; contact-stage coverage is complete.
+    assert loud_rows[10].coverage == pytest.approx(1.0, abs=1e-12)
+    assert silent_rows[10].coverage == pytest.approx(0.5142857142857142, abs=1e-12)
     # The coincident transient deterministically raises the contact score.
     assert loud_rows[10].score > silent_rows[10].score
     # Diagnostic helper exposes the same normalized cue series.

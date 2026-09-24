@@ -779,35 +779,26 @@ def _is_stillness_exit(frame: FeatureFrame, config: DecoderConfig) -> bool:
     return frame.overhead_evidence == 0.0
 
 
-def _has_validating_transient(
-    accel_time: float,
-    audio: Sequence[AudioEnergy],
-    config: DecoderConfig,
-) -> bool:
-    """Return True when a scale-invariant transient validates acceleration.
-
-    Qualifies session-level transients with the shared
-    :func:`serve_review.media.audio.qualify_audio_transients` policy
-    (session-median baseline computed once, threshold
-    ``max(audio_transient_floor,
-    baseline * audio_transient_ratio)``) and returns True when a
-    qualified transient lies within ``|t - accel| <= audio_window``
-    (1e-9 tolerance). Empty or missing audio yields False (unknown,
-    never fabricated).
-    """
-    qualified = qualify_audio_transients(
-        tuple(audio),
-        float(config.audio_transient_ratio),
-        float(config.audio_transient_floor),
+def _transients_near(
+    acceleration_time: float,
+    qualified_transients: Sequence[float],
+    window_seconds: float,
+) -> tuple[float, ...]:
+    """Return qualified transient PTS values that validate one trigger."""
+    window = float(window_seconds) + 1e-9
+    return tuple(
+        moment
+        for moment in qualified_transients
+        if abs(moment - acceleration_time) <= window
     )
-    window = float(config.audio_window_seconds) + 1e-9
-    return any(abs(moment - accel_time) <= window for moment in qualified)
 
 
 def decode_sequence(
     features: Sequence[FeatureFrame],
     audio: Sequence[AudioEnergy],
     config: DecoderConfig | None = None,
+    *,
+    diagnostics_out: dict[str, Any] | None = None,
 ) -> DecodeResult:
     """Decode frame-aligned features plus audio into ranges and shadows.
 
@@ -829,6 +820,26 @@ def decode_sequence(
     pair_frames(features, audio)
     frame_list = list(features)
     audio_list = list(audio)
+    qualified_transients = tuple(
+        qualify_audio_transients(
+            tuple(audio_list),
+            float(cfg.audio_transient_ratio),
+            float(cfg.audio_transient_floor),
+        )
+    )
+    if diagnostics_out is not None:
+        if not isinstance(diagnostics_out, dict):
+            raise DecoderError("decoder: diagnostics_out must be a dict or None.")
+        diagnostics_out.clear()
+        diagnostics_out.update({
+            "audio": {
+                "qualified_transient_times_seconds": list(qualified_transients),
+                "transient_ratio": float(cfg.audio_transient_ratio),
+                "transient_floor": float(cfg.audio_transient_floor),
+                "acceleration_window_seconds": float(cfg.audio_window_seconds),
+            },
+            "hypotheses": [],
+        })
     if not frame_list:
         return DecodeResult(ranges=(), shadows=())
 
@@ -838,6 +849,33 @@ def decode_sequence(
     prep_start: float | None = None
     accel_time: float | None = None
     dropout = 0
+    current_trace: dict[str, Any] | None = None
+
+    def _finish_trace(end: float, outcome: str, reason: str | None = None) -> None:
+        nonlocal current_trace
+        if diagnostics_out is None or current_trace is None or end <= current_trace["start_seconds"]:
+            current_trace = None
+            return
+        current_trace.update({"end_seconds": end, "outcome": outcome, "reason": reason})
+        current_trace["qualifying_audio_transient_times_seconds"] = sorted(
+            set(current_trace["qualifying_audio_transient_times_seconds"])
+        )
+        diagnostics_out["hypotheses"].append(current_trace)
+        current_trace = None
+
+    def _note_acceleration_trigger(moment: float) -> None:
+        if current_trace is not None:
+            current_trace["acceleration_trigger_times_seconds"].append(moment)
+
+    def _has_logged_validating_transient(moment: float) -> bool:
+        nearby = _transients_near(moment, qualified_transients, cfg.audio_window_seconds)
+        if nearby and current_trace is not None:
+            current_trace["qualifying_audio_transient_times_seconds"].extend(nearby)
+            current_trace["audio_gate_witnesses"].append({
+                "acceleration_trigger_seconds": moment,
+                "audio_transient_seconds": list(nearby),
+            })
+        return bool(nearby)
 
     def _close_shadow(start: float, end: float, reason: str) -> None:
         if end > start:
@@ -858,12 +896,20 @@ def decode_sequence(
                 prep_start = moment
                 accel_time = None
                 dropout = 0
+                if diagnostics_out is not None:
+                    current_trace = {
+                        "start_seconds": moment,
+                        "acceleration_trigger_times_seconds": [],
+                        "qualifying_audio_transient_times_seconds": [],
+                        "audio_gate_witnesses": [],
+                    }
         elif state == "preparation":
             assert prep_start is not None
             if drop:
                 dropout += 1
                 if dropout > cfg.dropout_hysteresis_frames:
                     _close_shadow(prep_start, moment, REASON_ABORTED)
+                    _finish_trace(moment, "shadow", REASON_ABORTED)
                     state = "idle"
                     prep_start = None
                     accel_time = None
@@ -873,10 +919,12 @@ def decode_sequence(
             if _is_acceleration_trigger(frame, cfg):
                 state = "acceleration"
                 accel_time = moment
-                if _has_validating_transient(moment, audio_list, cfg):
+                _note_acceleration_trigger(moment)
+                if _has_logged_validating_transient(moment):
                     state = "follow_through"
             elif _is_stillness_exit(frame, cfg):
                 _close_shadow(prep_start, moment, REASON_ABORTED)
+                _finish_trace(moment, "shadow", REASON_ABORTED)
                 state = "idle"
                 prep_start = None
                 accel_time = None
@@ -886,6 +934,7 @@ def decode_sequence(
                 dropout += 1
                 if dropout > cfg.dropout_hysteresis_frames:
                     _close_shadow(prep_start, moment, REASON_SHADOW)
+                    _finish_trace(moment, "shadow", REASON_SHADOW)
                     state = "idle"
                     prep_start = None
                     accel_time = None
@@ -894,11 +943,13 @@ def decode_sequence(
             dropout = 0
             if _is_acceleration_trigger(frame, cfg):
                 accel_time = moment
-            if _has_validating_transient(accel_time, audio_list, cfg):
+                _note_acceleration_trigger(moment)
+            if _has_logged_validating_transient(accel_time):
                 state = "follow_through"
                 continue
             if _is_stillness_exit(frame, cfg):
                 _close_shadow(prep_start, moment, REASON_SHADOW)
+                _finish_trace(moment, "shadow", REASON_SHADOW)
                 state = "idle"
                 prep_start = None
                 accel_time = None
@@ -908,6 +959,7 @@ def decode_sequence(
                 dropout += 1
                 if dropout > cfg.dropout_hysteresis_frames:
                     _close_shadow(prep_start, moment, REASON_SHADOW)
+                    _finish_trace(moment, "shadow", REASON_SHADOW)
                     state = "idle"
                     prep_start = None
                     accel_time = None
@@ -921,6 +973,7 @@ def decode_sequence(
                             start_seconds=prep_start, end_seconds=moment
                         )
                     )
+                    _finish_trace(moment, "candidate")
                 state = "idle"
                 prep_start = None
                 accel_time = None
@@ -929,10 +982,13 @@ def decode_sequence(
 
     if state == "preparation" and prep_start is not None:
         _close_shadow(prep_start, frame_list[-1].time_seconds, REASON_ABORTED)
+        _finish_trace(frame_list[-1].time_seconds, "shadow", REASON_ABORTED)
     elif state == "acceleration" and prep_start is not None:
         _close_shadow(prep_start, frame_list[-1].time_seconds, REASON_SHADOW)
+        _finish_trace(frame_list[-1].time_seconds, "shadow", REASON_SHADOW)
     elif state == "follow_through" and prep_start is not None:
         _close_shadow(prep_start, frame_list[-1].time_seconds, REASON_SHADOW)
+        _finish_trace(frame_list[-1].time_seconds, "shadow", REASON_SHADOW)
 
     ranges.sort(key=lambda item: (item.start_seconds, item.end_seconds))
     shadows.sort(key=lambda item: (item.start_seconds, item.end_seconds))
