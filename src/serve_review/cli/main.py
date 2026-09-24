@@ -1,6 +1,7 @@
 """Click command surface for serve-review workflows."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,47 @@ def annotate(directory: Path, port: int) -> None:
         serve(directory, port)
     except (ReviewError, OSError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+@cli.command("evaluate")
+@click.argument("directory", type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--video", "videos", multiple=True, help="Score only this reviewed video; repeatable.")
+@click.option("--json", "as_json", is_flag=True, help="Print the full machine-readable report.")
+def evaluate(directory: Path, videos: tuple[str, ...], as_json: bool) -> None:
+    """Score reviewed serves and focused checkpoints without reprocessing video."""
+    from serve_review.evaluation import EvaluationError, evaluate_session
+
+    try:
+        report = evaluate_session(directory, video_names=videos or None)
+    except (EvaluationError, OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return
+    detection = report.detection
+    f1_value = f"{report.f1:.3f}" if report.f1 is not None else "unavailable"
+    click.echo(
+        f"Detection: TP {detection.true_positives}, FP {detection.false_positives}, "
+        f"FN {detection.false_negatives}, F1 {f1_value} "
+        f"(IoU >= {report.iou_threshold:g})"
+    )
+    if report.false_positives_by_label:
+        breakdown = ", ".join(
+            f"{label.replace('_', ' ')} {count}"
+            for label, count in sorted(report.false_positives_by_label.items())
+        )
+        click.echo(f"False positives: {breakdown}")
+    for stage, metrics in report.phases.items():
+        mae = metrics.mean_abs_error_real_time_ms
+        value = f"{mae:.1f} ms" if mae is not None else "unavailable"
+        click.echo(
+            f"{stage.title()}: real-time MAE {value}; "
+            f"proposals {metrics.predictions}/{metrics.eligible_labels}"
+        )
+    focused = report.focused_mae_real_time_ms
+    if focused is not None:
+        click.echo(f"Focused checkpoint MAE: {focused:.1f} real-time ms")
+    click.echo("Real-time MAE assumes 4x slowdown when labeled release-to-contact exceeds 2 s.")
 
 
 @cli.command("cut")

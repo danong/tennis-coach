@@ -125,6 +125,12 @@ and automatic advance keep this stage review quick. Each focused checkpoint
 can be accepted, set at the playhead, marked unsure/not visible, or cleared,
 and can be revisited to change its label.
 
+To score the saved review without rerunning models, use
+`mise run evaluate -- SESSION_DIR`. It reports serve detection F1 and real-time
+MAE for release, cocking, and contact under the pilot's per-serve 1×/4×
+playback assumption; see [detection evaluation](docs/evaluation/detection.md)
+and [phase evaluation](docs/evaluation/phases.md) for the baseline and limits.
+
 Historical iOS-first and superseded remediation plans are retained in [`docs/archive/`](docs/archive/) for reference only; they are not active implementation specifications. For current stage-checkpoint behavior, use [Serve stage-checkpoint analysis](docs/reference/serve-stage-checkpoint-analysis.md).
 
 ## Footage and local storage

@@ -17,12 +17,24 @@ separate from regenerable `metadata/` artifacts. Each video annotation records
 its source fingerprint, camera view, full-scan flag, labeled source-time ranges,
 and checkpoint status/time. A source change requires relabeling that video.
 
-The saved times are video playback timestamps. Google Photos slow-motion exports
-can contain baked speed ramps, so these labels can evaluate visual event timing
-on the exported timeline, but elapsed time and derived velocity or acceleration
-must not be treated as physical capture-time measurements. Use original captures
-when validating physical-time metrics.
+The saved times are video playback timestamps and must never be rewritten as
+estimated capture timestamps. For the September pilot, assume each serve is
+entirely at either normal playback speed (slowdown factor `1`) or quarter-speed
+playback (slowdown factor `4`): 120 fps capture encoded for 30 fps playback.
+Different serves in the same video can have different factors. Under that
+assumption, an interval wholly inside a serve has estimated capture duration
+`(playback_end - playback_start) / slowdown_factor`; a video-wide factor or
+absolute capture timestamp does not follow from the annotations. Record the
+per-serve factor and its assumed/inferred provenance alongside labels when an
+evaluator needs capture-time intervals, while retaining source PTS as the
+canonical annotation coordinate. Original captures remain preferable for
+validating physical-time metrics, especially near speed-ramp boundaries.
+
+The current evaluator infers `1` or `4` from each serve's reviewed
+release-to-contact playback interval using a two-second dividing line. This
+rule is specific to the clear two-group September pilot and is labeled
+exploratory in its output; it is not a reviewed field in the annotation JSON.
 
 The current pilot's review counts and remaining evaluation work are in the
-[project handoff](../development/2026-09-23-handoff.md). The detection and phase
-evaluation protocols have not yet been implemented.
+[project handoff](../development/2026-09-23-handoff.md). Current measured
+baselines are in [detection](detection.md) and [phase evaluation](phases.md).

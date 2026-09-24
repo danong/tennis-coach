@@ -30,12 +30,13 @@ from serve_review.evaluation import (
     evaluate_manifest,
     evaluate_ranges,
     evaluate_report,
-    group_ambiguous_by_session,
-    group_truth_by_session,
+    group_ambiguous_by_recording,
+    group_truth_by_recording,
     intersection_seconds,
     iou,
     match_ranges,
     validate_session_disjoint,
+    evaluate_session,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "annotations"
@@ -504,16 +505,18 @@ def test_evaluate_manifest_groups_by_session() -> None:
             ann("sess-b", "sess-b/cap.mov", 5.0, 7.0),
         ],
     )
-    assert set(group_truth_by_session(doc)) == {"sess-a", "sess-b"}
-    assert set(group_ambiguous_by_session(doc)) == {"sess-a"}
+    assert set(group_truth_by_recording(doc)) == {("sess-a", "sess-a/cap.mov"), ("sess-b", "sess-b/cap.mov")}
+    assert set(group_ambiguous_by_recording(doc)) == {("sess-a", "sess-a/cap.mov")}
     report = evaluate_manifest(
         doc,
         {
-            "sess-a": [rng(10.5, 12.5)],
-            "sess-b": [rng(5.0, 7.0)],
+            ("sess-a", "sess-a/cap.mov"): [rng(10.5, 12.5)],
+            ("sess-b", "sess-b/cap.mov"): [rng(5.0, 7.0)],
         },
     )
-    assert [entry.stratum for entry in report.strata] == ["sess-a", "sess-b"]
+    assert [entry.stratum for entry in report.strata] == [
+        '["sess-a","sess-a/cap.mov"]', '["sess-b","sess-b/cap.mov"]'
+    ]
     assert report.overall.true_positives == 2
     assert report.overall.false_negatives == 0
     assert report.overall.false_positives == 0
@@ -533,9 +536,9 @@ def test_evaluate_manifest_missing_session_scores_misses() -> None:
 def test_evaluate_manifest_rejects_unknown_sessions() -> None:
     doc = manifest("dev", [ann("sess-a", "sess-a/cap.mov", 10.0, 12.0)])
     with pytest.raises(EvaluationError, match="sess-ghost"):
-        evaluate_manifest(doc, {"sess-ghost": [rng(0.0, 1.0)]})
+        evaluate_manifest(doc, {("sess-ghost", "ghost.mov"): [rng(0.0, 1.0)]})
     with pytest.raises(EvaluationError):
-        evaluate_manifest(doc, {"sess-a": ["nope"]})  # type: ignore[list-item]
+        evaluate_manifest(doc, {("sess-a", "sess-a/cap.mov"): ["nope"]})  # type: ignore[list-item]
     with pytest.raises(EvaluationError):
         evaluate_manifest("nope", {})  # type: ignore[arg-type]
     with pytest.raises(EvaluationError):
@@ -557,8 +560,8 @@ def test_fixture_manifests_are_valid_and_disjoint() -> None:
     report = evaluate_manifest(
         dev,
         {
-            "sess-a": [rng(10.5, 12.5), rng(40.0, 41.0)],
-            "sess-b": [rng(5.0, 7.0)],
+            ("sess-a", "sess-a/cap01.mov"): [rng(10.5, 12.5), rng(40.0, 41.0)],
+            ("sess-b", "sess-b/cap02.mov"): [rng(5.0, 7.0)],
         },
     )
     assert report.overall.num_truth == 3
@@ -567,6 +570,22 @@ def test_fixture_manifests_are_valid_and_disjoint() -> None:
     assert report.overall.false_negatives == 1
     assert report.overall.precision == pytest.approx(2.0 / 3.0)
     assert report.overall.recall == pytest.approx(2.0 / 3.0)
+
+
+def test_manifest_never_matches_two_videos_with_same_local_times() -> None:
+    doc = manifest("dev", [
+        ann("day", "a.mov", 3.0, 5.0),
+        ann("day", "b.mov", 3.0, 5.0),
+        ann("day", "b.mov", 7.0, 9.0, "shadow_swing"),
+    ])
+    report = evaluate_manifest(doc, {
+        ("day", "a.mov"): [rng(3.0, 5.0)],
+        ("day", "b.mov"): [rng(7.0, 9.0)],
+    })
+    assert report.overall.true_positives == 1
+    assert report.overall.false_negatives == 1
+    assert report.overall.false_positives == 1
+    assert report.stratum('["day","b.mov"]').metrics.true_positives == 0
 
 
 # --- Report codec ------------------------------------------------------------
@@ -659,4 +678,69 @@ def test_metrics_and_match_codecs_reject_bad_shapes() -> None:
     with pytest.raises(EvaluationError):
         StratumInput(truth=["nope"])  # type: ignore[list-item]
     with pytest.raises(EvaluationError):
-        group_truth_by_session("nope")  # type: ignore[arg-type]
+        group_truth_by_recording("nope")  # type: ignore[arg-type]
+
+
+def test_evaluate_session_scores_reviewed_video_and_real_time_phase_mae(tmp_path: Path) -> None:
+    import json
+
+    (tmp_path / "annotations").mkdir()
+    annotation = {
+        "schema_version": 1,
+        "session_id": tmp_path.name,
+        "videos": {
+            "one.MOV": {
+                "fully_reviewed": True,
+                "labels": [{
+                    "id": "human-1", "source_id": "attempt:old-1",
+                    "start_seconds": 10.0, "end_seconds": 14.0, "label": "serve",
+                    "checkpoints": {
+                        "release": {"status": "accepted", "time_seconds": 10.5},
+                        "cocking": {"status": "accepted", "time_seconds": 11.5},
+                        "contact": {"status": "corrected", "time_seconds": 13.0},
+                    },
+                }, {
+                    "label": "shadow_swing", "start_seconds": 20.0,
+                    "end_seconds": 21.0,
+                }],
+            },
+            "unreviewed.MOV": {"fully_reviewed": False, "labels": []},
+        },
+    }
+    annotation_path = tmp_path / "annotations" / "review-annotations-v1.json"
+    annotation_path.write_text(json.dumps(annotation), encoding="utf-8")
+    metadata = tmp_path / "metadata" / "one"
+    checkpoint = metadata / "attempts" / "old-1"
+    checkpoint.mkdir(parents=True)
+    (metadata / "attempts.json").write_text(json.dumps({"attempts": []}), encoding="utf-8")
+    (checkpoint / "checkpoints.json").write_text(json.dumps({"attempts": [{
+        "attempt_id": "crop-local-1",
+        "stages": {
+            "release": {"keyframe_seconds": 10.6},
+            "contact": {"keyframe_seconds": 12.6},
+        },
+    }]}), encoding="utf-8")
+
+    report = evaluate_session(tmp_path, {"one.MOV": [rng(10.0, 14.0), rng(20.0, 21.0)]})
+    assert report.videos == ("one.MOV",)
+    assert (report.detection.true_positives, report.detection.false_positives,
+            report.detection.false_negatives) == (1, 1, 0)
+    assert report.f1 == pytest.approx(2 / 3)
+    assert report.per_video_detection["one.MOV"].false_positives == 1
+    assert report.false_positives_by_label == {"shadow_swing": 1}
+    assert report.to_dict()["false_positives_by_label"] == {"shadow_swing": 1}
+    assert report.phases["release"].mean_abs_error_playback_seconds == pytest.approx(0.1)
+    assert report.phases["release"].mean_abs_error_real_time_ms == pytest.approx(25.0)
+    assert report.phases["contact"].mean_abs_error_real_time_ms == pytest.approx(100.0)
+    assert report.focused_mae_real_time_ms == pytest.approx(62.5)
+    assert report.phases["cocking"].missing_predictions == 1
+    assert report.phase_abstentions == 1
+    assert report.phase_unlabeled_or_uncertain == 0
+    filtered = evaluate_session(
+        tmp_path,
+        {"one.MOV": [rng(10.0, 14.0), rng(20.0, 21.0)]},
+        video_names={"one.MOV"},
+    )
+    assert filtered.videos == ("one.MOV",)
+    with pytest.raises(EvaluationError, match="fully reviewed"):
+        evaluate_session(tmp_path, video_names={"unreviewed.MOV"})

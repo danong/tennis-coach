@@ -18,6 +18,8 @@ range with a label:
 - ``"ambiguous"``: an excluded region (e.g. a borderline motion). It never
   counts as ground truth, and an unmatched prediction overlapping one with
   IoU ``>=`` threshold is excused from the false-positive count.
+- ``"shadow_swing"``, ``"toss_abort"``, ``"other"``: reviewed negatives.
+  They never excuse a prediction.
 
 Session discipline: development and held-out manifests must not share a
 ``session_id``. Use :func:`validate_session_disjoint` to enforce this;
@@ -32,8 +34,8 @@ IoU matching at :data:`IOU_THRESHOLD` (0.5, per ``docs/design.md`` §8).
 All candidate pairs with IoU ``>=`` threshold are considered in order of
 decreasing IoU; ties break by lower truth index, then lower prediction
 index. Each truth and each prediction participates in at most one match.
-Matching is performed independently within each stratum (recording
-session), never across sessions.
+Matching is performed independently within each recording, never across
+videos that share a session or across sessions.
 
 Reported scalars (see :class:`RangeMetrics` / :class:`OverallMetrics`):
 
@@ -61,6 +63,8 @@ import math
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
+from collections.abc import Collection
 from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
@@ -72,6 +76,9 @@ __all__ = [
     "IOU_THRESHOLD",
     "LABEL_SERVE",
     "LABEL_AMBIGUOUS",
+    "LABEL_SHADOW_SWING",
+    "LABEL_TOSS_ABORT",
+    "LABEL_OTHER",
     "ALLOWED_LABELS",
     "SPLIT_DEV",
     "SPLIT_HELDOUT",
@@ -91,8 +98,11 @@ __all__ = [
     "evaluate_ranges",
     "evaluate_report",
     "evaluate_manifest",
-    "group_truth_by_session",
-    "group_ambiguous_by_session",
+    "SessionEvaluationReport",
+    "PhaseStageMetrics",
+    "evaluate_session",
+    "group_truth_by_recording",
+    "group_ambiguous_by_recording",
     "validate_session_disjoint",
 ]
 
@@ -110,9 +120,12 @@ LABEL_SERVE = "serve"
 
 #: Excluded-region label: never ground truth; may excuse predictions.
 LABEL_AMBIGUOUS = "ambiguous"
+LABEL_SHADOW_SWING = "shadow_swing"
+LABEL_TOSS_ABORT = "toss_abort"
+LABEL_OTHER = "other"
 
 #: Labels accepted on annotations.
-ALLOWED_LABELS = frozenset({LABEL_SERVE, LABEL_AMBIGUOUS})
+ALLOWED_LABELS = frozenset({LABEL_SERVE, LABEL_AMBIGUOUS, LABEL_SHADOW_SWING, LABEL_TOSS_ABORT, LABEL_OTHER})
 
 #: Development split name.
 SPLIT_DEV = "dev"
@@ -1076,7 +1089,7 @@ class OverallMetrics:
 
 @dataclass(frozen=True, slots=True)
 class StratumInput:
-    """Caller-supplied truth/predictions for one stratum (session)."""
+    """Caller-supplied truth/predictions for one stratum (recording)."""
 
     truth: tuple[MediaRange, ...] = field(default_factory=tuple)
     predictions: tuple[MediaRange, ...] = field(default_factory=tuple)
@@ -1290,8 +1303,8 @@ def evaluate_report(
 ) -> EvaluationReport:
     """Score each stratum independently and pool overall scalars.
 
-    ``strata`` maps a non-blank stratum name (typically a recording
-    session) to its truth/predictions/ambiguous ranges. Matching never
+    ``strata`` maps a non-blank stratum name (typically a recording)
+    to its truth/predictions/ambiguous ranges. Matching never
     crosses strata. Overall scalars pool per-stratum matches and counts
     with :func:`math.fsum` over strata sorted by name.
     """
@@ -1402,64 +1415,61 @@ def evaluate_report(
     )
 
 
-def group_truth_by_session(
+def group_truth_by_recording(
     manifest: AnnotationManifest,
-) -> dict[str, tuple[MediaRange, ...]]:
-    """Map each manifest session to its positive ranges.
+) -> dict[tuple[str, str], tuple[MediaRange, ...]]:
+    """Map each (session, media) recording to its positive ranges.
 
     Ranges within a session are sorted by ``(media, start, end)`` so
     match indices are stable regardless of authoring order.
     """
-    return _group_by_session(manifest, LABEL_SERVE)
+    return _group_by_recording(manifest, LABEL_SERVE)
 
 
-def group_ambiguous_by_session(
+def group_ambiguous_by_recording(
     manifest: AnnotationManifest,
-) -> dict[str, tuple[MediaRange, ...]]:
-    """Map each manifest session to its ambiguous ranges (sorted)."""
-    return _group_by_session(manifest, LABEL_AMBIGUOUS)
+) -> dict[tuple[str, str], tuple[MediaRange, ...]]:
+    """Map each (session, media) recording to ambiguous ranges (sorted)."""
+    return _group_by_recording(manifest, LABEL_AMBIGUOUS)
 
 
-def _group_by_session(
+def _group_by_recording(
     manifest: AnnotationManifest, label: str
-) -> dict[str, tuple[MediaRange, ...]]:
-    name = "group_by_session"
+) -> dict[tuple[str, str], tuple[MediaRange, ...]]:
+    name = "group_by_recording"
     if not isinstance(manifest, AnnotationManifest):
         raise EvaluationError(
             f"{name}: manifest must be an AnnotationManifest, "
             f"got {type(manifest).__name__}."
         )
-    grouped: dict[str, list[tuple[str, float, float, MediaRange]]] = {}
+    grouped: dict[tuple[str, str], list[tuple[float, float, MediaRange]]] = {}
     for entry in manifest.annotations:
         if entry.label != label:
             continue
-        grouped.setdefault(entry.session_id, []).append(
+        grouped.setdefault((entry.session_id, entry.media), []).append(
             (
-                entry.media,
                 entry.start_seconds,
                 entry.end_seconds,
                 entry.to_range(),
             )
         )
-    ordered: dict[str, tuple[MediaRange, ...]] = {}
-    for session in sorted(grouped):
-        items = sorted(grouped[session], key=lambda item: (item[0], item[1], item[2]))
-        ordered[session] = tuple(item[3] for item in items)
+    ordered: dict[tuple[str, str], tuple[MediaRange, ...]] = {}
+    for recording in sorted(grouped):
+        items = sorted(grouped[recording], key=lambda item: (item[0], item[1]))
+        ordered[recording] = tuple(item[2] for item in items)
     return ordered
 
 
 def evaluate_manifest(
     manifest: AnnotationManifest,
-    predictions_by_session: Mapping[str, Sequence[MediaRange]] | None = None,
+    predictions_by_recording: Mapping[tuple[str, str], Sequence[MediaRange]] | None = None,
     *,
     iou_threshold: float = IOU_THRESHOLD,
 ) -> EvaluationReport:
-    """Score a manifest's sessions against per-session predictions.
+    """Score a manifest's recordings against per-recording predictions.
 
-    Sessions without predictions score zero true positives (every truth
-    range is a false negative). Prediction sessions absent from the
-    manifest raise :class:`EvaluationError` instead of silently scoring
-    as false positives, so session typos surface as errors.
+    Predictions are keyed by ``(session_id, media)``. Missing recordings
+    score their truth ranges as false negatives. Unknown recordings raise.
     """
     name = "evaluate_manifest"
     if not isinstance(manifest, AnnotationManifest):
@@ -1468,41 +1478,377 @@ def evaluate_manifest(
             f"got {type(manifest).__name__}."
         )
     threshold = _check_threshold(name, iou_threshold)
-    predictions: dict[str, tuple[MediaRange, ...]] = {}
-    if predictions_by_session is not None:
-        if not isinstance(predictions_by_session, Mapping):
+    predictions: dict[tuple[str, str], tuple[MediaRange, ...]] = {}
+    if predictions_by_recording is not None:
+        if not isinstance(predictions_by_recording, Mapping):
             raise EvaluationError(
-                f"{name}: 'predictions_by_session' must be a mapping of "
-                f"session id to ranges, got "
-                f"{type(predictions_by_session).__name__}."
+                f"{name}: 'predictions_by_recording' must map (session, media) to ranges."
             )
-        for session, ranges in predictions_by_session.items():
-            if not isinstance(session, str) or not session.strip():
+        for recording, ranges in predictions_by_recording.items():
+            if (not isinstance(recording, tuple) or len(recording) != 2
+                or not all(isinstance(part, str) and part.strip() for part in recording)):
                 raise EvaluationError(
-                    f"{name}: prediction session ids must be non-blank "
-                    f"strings, got {session!r}."
+                    f"{name}: prediction keys must be (session_id, media), got {recording!r}."
                 )
-            predictions[session] = _check_range_sequence(
-                name, f"predictions[{session!r}]", ranges
+            predictions[recording] = _check_range_sequence(
+                name, f"predictions[{recording!r}]", ranges
             )
-    known_sessions = set(manifest.sessions)
-    unknown = sorted(set(predictions) - known_sessions)
+    known_recordings = {(entry.session_id, entry.media) for entry in manifest.annotations}
+    unknown = sorted(set(predictions) - known_recordings)
     if unknown:
         raise EvaluationError(
-            f"{name}: predictions reference sessions absent from the "
+            f"{name}: predictions reference recordings absent from the "
             f"manifest: {unknown!r}."
         )
-    truth_by_session = group_truth_by_session(manifest)
-    ambiguous_by_session = group_ambiguous_by_session(manifest)
+    truth_by_recording = group_truth_by_recording(manifest)
+    ambiguous_by_recording = group_ambiguous_by_recording(manifest)
     strata: dict[str, StratumInput] = {}
-    for session in manifest.sessions:
-        strata[session] = StratumInput(
-            truth=truth_by_session.get(session, ()),
-            predictions=predictions.get(session, ()),
-            ambiguous=ambiguous_by_session.get(session, ()),
+    for recording in sorted(known_recordings):
+        strata[json.dumps(recording, separators=(",", ":"))] = StratumInput(
+            truth=truth_by_recording.get(recording, ()),
+            predictions=predictions.get(recording, ()),
+            ambiguous=ambiguous_by_recording.get(recording, ()),
         )
     if not strata:
         raise EvaluationError(
             f"{name}: manifest contains no sessions to evaluate."
         )
     return evaluate_report(strata, iou_threshold=threshold)
+
+
+# --- Local dogfood session evaluation -------------------------------------
+
+PHASE_STAGES = ("release", "cocking", "contact")
+SLOW_MOTION_FACTOR = 4
+SLOW_MOTION_PLAYBACK_GAP_SECONDS = 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseStageMetrics:
+    """Per-stage timing quality against accepted/corrected human labels."""
+
+    eligible_labels: int
+    predictions: int
+    missing_predictions: int
+    mean_abs_error_playback_seconds: float | None
+    mean_abs_error_real_time_ms: float | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "eligible_labels": self.eligible_labels,
+            "predictions": self.predictions,
+            "missing_predictions": self.missing_predictions,
+            "mean_abs_error_playback_seconds": self.mean_abs_error_playback_seconds,
+            "mean_abs_error_real_time_ms": self.mean_abs_error_real_time_ms,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SessionEvaluationReport:
+    """Offline evaluation for the fully reviewed videos in one local session."""
+
+    session: str
+    videos: tuple[str, ...]
+    detection: OverallMetrics
+    per_video_detection: Mapping[str, RangeMetrics]
+    false_positives_by_label: Mapping[str, int]
+    f1: float | None
+    phases: Mapping[str, PhaseStageMetrics]
+    phase_abstentions: int
+    phase_unlabeled_or_uncertain: int
+    iou_threshold: float
+
+    @property
+    def focused_mae_real_time_ms(self) -> float | None:
+        """Pool the three focused checkpoint errors over available proposals."""
+        measured = [
+            stage for stage in self.phases.values()
+            if stage.predictions and stage.mean_abs_error_real_time_ms is not None
+        ]
+        count = sum(stage.predictions for stage in measured)
+        if not count:
+            return None
+        return math.fsum(
+            stage.mean_abs_error_real_time_ms * stage.predictions
+            for stage in measured
+        ) / count
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session": self.session,
+            "videos": list(self.videos),
+            "iou_threshold": self.iou_threshold,
+            "detection": {**self.detection.to_dict(), "f1": self.f1},
+            "per_video_detection": {
+                key: self.per_video_detection[key].to_dict()
+                for key in sorted(self.per_video_detection)
+            },
+            "false_positives_by_label": dict(sorted(self.false_positives_by_label.items())),
+            "phases": {key: self.phases[key].to_dict() for key in PHASE_STAGES},
+            "focused_mae_real_time_ms": self.focused_mae_real_time_ms,
+            "phase_abstentions": self.phase_abstentions,
+            "phase_unlabeled_or_uncertain": self.phase_unlabeled_or_uncertain,
+            "slow_motion_rule": {
+                "factor": SLOW_MOTION_FACTOR,
+                "playback_release_to_contact_gap_seconds_gt": SLOW_MOTION_PLAYBACK_GAP_SECONDS,
+                "status": "exploratory heuristic",
+            },
+        }
+
+
+def _read_eval_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise EvaluationError(f"could not read evaluation input {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise EvaluationError(f"evaluation input {path} must contain a JSON object")
+    return value
+
+
+def _raw_range(value: Any, *, name: str) -> MediaRange:
+    if isinstance(value, MediaRange):
+        return value
+    if not isinstance(value, Mapping):
+        raise EvaluationError(f"{name} must be a range object")
+    try:
+        return MediaRange(
+            start_seconds=value["start_seconds"],
+            end_seconds=value["end_seconds"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise EvaluationError(f"{name} is not a valid media range: {exc}") from exc
+
+
+def _phase_proposals(metadata: Path, attempt_ids: set[str]) -> dict[str, dict[str, float]]:
+    """Read keyframe seconds from generated checkpoint documents, if present."""
+    proposals: dict[str, dict[str, float]] = {}
+    attempts_dir = metadata / "attempts"
+    for attempt_id in sorted(attempt_ids):
+        path = attempts_dir / attempt_id / "checkpoints.json"
+        if not path.is_file():
+            continue
+        document = _read_eval_json(path)
+        rows = document.get("attempts", [])
+        if not isinstance(rows, list):
+            continue
+        # Per-crop checkpoints use a local attempt id; the enclosing directory
+        # is the stable source-video detection id.
+        if len(rows) != 1 or not isinstance(rows[0], Mapping):
+            continue
+        stages = rows[0].get("stages", {})
+        if not isinstance(stages, Mapping):
+            continue
+        values: dict[str, float] = {}
+        for stage in PHASE_STAGES:
+            proposal = stages.get(stage)
+            if not isinstance(proposal, Mapping):
+                continue
+            moment = proposal.get("keyframe_seconds")
+            if _is_number(moment) and math.isfinite(moment):
+                values[stage] = float(moment)
+        proposals[attempt_id] = values
+    return proposals
+
+
+def evaluate_session(
+    directory: Path,
+    predictions_by_video: Mapping[str, Sequence[MediaRange]] | None = None,
+    *,
+    video_names: Collection[str] | None = None,
+    iou_threshold: float = IOU_THRESHOLD,
+) -> SessionEvaluationReport:
+    """Evaluate existing local annotations and predictions without processing media.
+
+    Only videos with ``fully_reviewed: true`` contribute to detection metrics.
+    ``predictions_by_video`` may replace generated attempt ranges for offline
+    candidate replay; keys are video basenames and ranges use source playback
+    seconds. ``video_names`` optionally restricts scoring to a video-level split.
+    Checkpoint proposals still come from generated checkpoint JSON.
+    """
+    directory = Path(directory).expanduser().resolve()
+    threshold = _check_threshold("evaluate_session", iou_threshold)
+    annotation_path = directory / "annotations" / "review-annotations-v1.json"
+    annotations = _read_eval_json(annotation_path)
+    videos_doc = annotations.get("videos")
+    if not isinstance(videos_doc, Mapping):
+        raise EvaluationError(f"{annotation_path}: expected a 'videos' object")
+    reviewed = [
+        (name, doc) for name, doc in sorted(videos_doc.items())
+        if isinstance(name, str) and isinstance(doc, Mapping) and doc.get("fully_reviewed") is True
+    ]
+    if video_names is not None:
+        if isinstance(video_names, (str, bytes)) or not isinstance(video_names, Collection):
+            raise EvaluationError("video_names must be a collection of reviewed video basenames")
+        if any(not isinstance(name, str) or not name.strip() for name in video_names):
+            raise EvaluationError("video_names must contain non-blank strings")
+        selected = set(video_names)
+        reviewed_names = {name for name, _ in reviewed}
+        unknown_videos = sorted(selected - reviewed_names)
+        if unknown_videos:
+            raise EvaluationError(f"video_names are not fully reviewed in this session: {unknown_videos!r}")
+        reviewed = [(name, doc) for name, doc in reviewed if name in selected]
+    if not reviewed:
+        raise EvaluationError("session has no fully reviewed videos")
+    if predictions_by_video is not None:
+        if not isinstance(predictions_by_video, Mapping):
+            raise EvaluationError("predictions_by_video must map video basenames to ranges")
+        unknown = sorted(set(predictions_by_video) - {name for name, _ in reviewed})
+        if unknown:
+            raise EvaluationError(f"predictions supplied for unreviewed/unknown videos: {unknown!r}")
+
+    detection_strata: dict[str, StratumInput] = {}
+    phase_errors_playback: dict[str, list[float]] = {stage: [] for stage in PHASE_STAGES}
+    phase_errors_real: dict[str, list[float]] = {stage: [] for stage in PHASE_STAGES}
+    phase_eligible = {stage: 0 for stage in PHASE_STAGES}
+    phase_predictions = {stage: 0 for stage in PHASE_STAGES}
+    phase_missing = {stage: 0 for stage in PHASE_STAGES}
+    phase_abstentions = 0
+    phase_unlabeled = 0
+    false_positives_by_label: dict[str, int] = {}
+
+    # Per-video matching prevents temporal coincidences in separate videos
+    # from ever matching. Keep a parallel list of predicted IDs for checkpoint lookup.
+    for video_name, video_doc in reviewed:
+        labels = video_doc.get("labels", [])
+        if not isinstance(labels, list):
+            raise EvaluationError(f"annotation labels for {video_name!r} must be a list")
+        serves: list[tuple[Mapping[str, Any], MediaRange]] = []
+        ambiguous_ranges: list[MediaRange] = []
+        negative_ranges: list[tuple[str, MediaRange]] = []
+        for label in labels:
+            if not isinstance(label, Mapping):
+                continue
+            if label.get("label") == "ambiguous":
+                ambiguous_ranges.append(_raw_range(label, name=f"{video_name} ambiguous label"))
+                continue
+            if label.get("label") in {LABEL_SHADOW_SWING, LABEL_TOSS_ABORT, LABEL_OTHER}:
+                negative_ranges.append((label["label"], _raw_range(label, name=f"{video_name} negative label")))
+                continue
+            if label.get("label") != "serve":
+                continue
+            truth = _raw_range(label, name=f"{video_name} serve label")
+            serves.append((label, truth))
+
+        metadata = directory / "metadata" / Path(video_name).stem
+        ids: list[str] = []
+        if predictions_by_video is not None and video_name in predictions_by_video:
+            ranges = tuple(_raw_range(item, name=f"prediction for {video_name}")
+                           for item in predictions_by_video[video_name])
+            # Candidate overrides have no checkpoint identity; phase scoring
+            # remains tied to the current generated run.
+            ids = [""] * len(ranges)
+        else:
+            attempts_doc = _read_eval_json(metadata / "attempts.json")
+            attempts = attempts_doc.get("attempts", [])
+            if not isinstance(attempts, list):
+                raise EvaluationError(f"attempts for {video_name!r} must be a list")
+            rows = []
+            for item in attempts:
+                if not isinstance(item, Mapping):
+                    continue
+                attempt_id = item.get("attempt_id")
+                detected = item.get("detected_range")
+                if not isinstance(attempt_id, str) or not isinstance(detected, Mapping):
+                    continue
+                rows.append((attempt_id, _raw_range(detected, name=f"attempt {attempt_id}")))
+            ids = [row[0] for row in rows]
+            ranges = tuple(row[1] for row in rows)
+        detection_strata[video_name] = StratumInput(
+            truth=tuple(span for _, span in serves),
+            predictions=ranges,
+            ambiguous=tuple(ambiguous_ranges),
+        )
+
+        matches = match_ranges([span for _, span in serves], ranges, iou_threshold=threshold)
+        matched_indices = {entry.pred_index for entry in matches}
+        excused_indices = set(_excused_pred_indices(ranges, matched_indices, tuple(ambiguous_ranges), threshold))
+        for index, prediction in enumerate(ranges):
+            if index in matched_indices or index in excused_indices:
+                continue
+            choices = sorted(
+                ((iou(prediction, span), label) for label, span in negative_ranges),
+                key=lambda item: (-item[0], item[1]),
+            )
+            category = choices[0][1] if choices and choices[0][0] >= threshold else "unlabeled"
+            false_positives_by_label[category] = false_positives_by_label.get(category, 0) + 1
+        source_ids = {
+            label["source_id"].removeprefix("attempt:")
+            for label, _ in serves
+            if isinstance(label.get("source_id"), str)
+            and label["source_id"].startswith("attempt:")
+        }
+        proposals = _phase_proposals(metadata, set(ids) | source_ids)
+        match_by_truth = {entry.truth_index: entry.pred_index for entry in matches}
+        for truth_index, (label, _) in enumerate(serves):
+            checkpoints = label.get("checkpoints", {})
+            if not isinstance(checkpoints, Mapping):
+                continue
+            release = checkpoints.get("release", {})
+            contact = checkpoints.get("contact", {})
+            rel_t = release.get("time_seconds") if isinstance(release, Mapping) else None
+            con_t = contact.get("time_seconds") if isinstance(contact, Mapping) else None
+            # The pilot has a clear playback-gap split around normal vs 4x;
+            # this heuristic is explicitly provisional and per serve.
+            factor = (SLOW_MOTION_FACTOR if _is_number(rel_t) and _is_number(con_t)
+                      and con_t - rel_t > SLOW_MOTION_PLAYBACK_GAP_SECONDS else 1)
+            pred_index = match_by_truth.get(truth_index)
+            source_id = label.get("source_id")
+            annotated_attempt_id = (
+                source_id.removeprefix("attempt:")
+                if isinstance(source_id, str) and source_id.startswith("attempt:")
+                else None
+            )
+            pred_id = ids[pred_index] if pred_index is not None and ids else ""
+            pred_stages = proposals.get(pred_id or annotated_attempt_id or "", {})
+            for stage in PHASE_STAGES:
+                human = checkpoints.get(stage)
+                if not isinstance(human, Mapping) or human.get("status") not in {"accepted", "corrected"}:
+                    if human is not None:
+                        phase_unlabeled += 1
+                    continue
+                moment = human.get("time_seconds")
+                if not _is_number(moment) or not math.isfinite(moment):
+                    phase_unlabeled += 1
+                    continue
+                phase_eligible[stage] += 1
+                predicted = pred_stages.get(stage)
+                if predicted is None:
+                    phase_missing[stage] += 1
+                    if pred_index is not None:
+                        phase_abstentions += 1
+                    continue
+                phase_predictions[stage] += 1
+                error = abs(predicted - float(moment))
+                phase_errors_playback[stage].append(error)
+                phase_errors_real[stage].append(error * 1000.0 / factor)
+
+    detection_report = evaluate_report(detection_strata, iou_threshold=threshold)
+    detection = detection_report.overall
+    per_video_detection = {row.stratum: row.metrics for row in detection_report.strata}
+    f1 = (2 * detection.precision * detection.recall / (detection.precision + detection.recall)
+          if detection.precision is not None and detection.recall is not None
+          and detection.precision + detection.recall > 0 else
+          (0.0 if detection.num_truth or detection.num_predictions else None))
+    phase_metrics = {}
+    for stage in PHASE_STAGES:
+        count = len(phase_errors_playback[stage])
+        phase_metrics[stage] = PhaseStageMetrics(
+            eligible_labels=phase_eligible[stage],
+            predictions=phase_predictions[stage],
+            missing_predictions=phase_missing[stage],
+            mean_abs_error_playback_seconds=(math.fsum(phase_errors_playback[stage]) / count if count else None),
+            mean_abs_error_real_time_ms=(math.fsum(phase_errors_real[stage]) / count if count else None),
+        )
+    return SessionEvaluationReport(
+        session=directory.name,
+        videos=tuple(name for name, _ in reviewed),
+        detection=detection,
+        per_video_detection=per_video_detection,
+        false_positives_by_label=false_positives_by_label,
+        f1=f1,
+        phases=phase_metrics,
+        phase_abstentions=phase_abstentions,
+        phase_unlabeled_or_uncertain=phase_unlabeled,
+        iou_threshold=threshold,
+    )

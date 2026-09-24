@@ -36,6 +36,10 @@ run = "uv run --locked serve-review process \"$@\""
 description = "Review and correct one processed recording session locally"
 run = "uv run --locked serve-review annotate \"$@\""
 
+[tasks.evaluate]
+description = "Score reviewed serves and focused checkpoints in one session"
+run = "uv run --locked serve-review evaluate \"$@\""
+
 [tasks.help]
 description = "Show serve-review command help"
 run = "uv run --locked serve-review --help"
