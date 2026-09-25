@@ -234,6 +234,7 @@ def test_generate_uses_argument_array_without_shell(
 ) -> None:
     import media_factory as factory
 
+    monkeypatch.setattr(factory.shutil, "which", lambda _exe: "/fake/ffmpeg")
     captured: dict = {}
 
     def _fake_run(args, **kwargs):

@@ -1216,9 +1216,20 @@ def test_native_iteration_seeks_to_nonzero_range_start(
 def test_native_iteration_empty_range_and_cancellation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import io
+    import subprocess as subprocess_module
+    from unittest.mock import Mock
+
     grid = [0.0, 0.5, 0.9]
     _patch_native_listing(monkeypatch, tmp_path, grid)
-    import subprocess as subprocess_module
+    monkeypatch.setattr(frames_module, "_ensure_tool", lambda *_args: None)
+    proc = Mock()
+    proc.stdout = io.BytesIO()
+    proc.stderr = io.BytesIO()
+    proc.poll.return_value = 0
+    monkeypatch.setattr(
+        subprocess_module, "Popen", lambda *_args, **_kwargs: proc
+    )
 
     from serve_review.media.frames import iter_native_frames
 
@@ -1229,8 +1240,6 @@ def test_native_iteration_empty_range_and_cancellation(
         iter_native_frames(video, 0.0, 1.0, is_cancelled=42)  # type: ignore[arg-type]
     with pytest.raises(FrameCancelled):
         list(iter_native_frames(video, 0.0, 1.0, is_cancelled=lambda: True))
-    real_popen = subprocess_module.Popen
-    monkeypatch.setattr(subprocess_module, "Popen", real_popen)
 
 
 @NEEDS_TOOLS

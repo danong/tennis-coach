@@ -68,6 +68,9 @@ def _patch_run(monkeypatch, payload: dict | None = None, *, stdout=None, stderr=
         return _completed(stdout=stdout, stderr=stderr, returncode=returncode)
 
     monkeypatch.setattr(probe_module.subprocess, "run", _fake)
+    monkeypatch.setattr(
+        probe_module.shutil, "which", lambda _exe: "/fake/ffprobe"
+    )
     return captured
 
 

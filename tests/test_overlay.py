@@ -378,6 +378,12 @@ def _fake_popen_ok(args, **kwargs):
     return _FakeProc(0, output=args[-1])
 
 
+def _pretend_ffmpeg_is_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        overlay_module.shutil, "which", lambda _exe: "/fake/ffmpeg"
+    )
+
+
 def _annotated_frames(count: int, width: int = 16, height: int = 16):
     frames = []
     for _ in range(count):
@@ -421,6 +427,7 @@ def test_write_overlay_rejects_bad_paths(tmp_path: Path) -> None:
 
 
 def test_write_overlay_rejects_dimension_mismatch(tmp_path: Path, monkeypatch) -> None:
+    _pretend_ffmpeg_is_installed(monkeypatch)
     monkeypatch.setattr(overlay_module.subprocess, "Popen", _fake_popen_ok)
     dest = tmp_path / "overlay.mp4"
     frames = _annotated_frames(1) + [
@@ -435,6 +442,7 @@ def test_write_overlay_rejects_dimension_mismatch(tmp_path: Path, monkeypatch) -
 
 
 def test_write_overlay_reports_progress(tmp_path: Path, monkeypatch) -> None:
+    _pretend_ffmpeg_is_installed(monkeypatch)
     monkeypatch.setattr(overlay_module.subprocess, "Popen", _fake_popen_ok)
     seen: list[tuple[int, int | None]] = []
     dest = tmp_path / "sub" / "overlay.mp4"
@@ -452,6 +460,7 @@ def test_write_overlay_reports_progress(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_write_overlay_ffmpeg_failure_cleans_up(tmp_path: Path, monkeypatch) -> None:
+    _pretend_ffmpeg_is_installed(monkeypatch)
     monkeypatch.setattr(
         overlay_module.subprocess, "Popen", lambda *a, **k: _FakeProc(1)
     )
@@ -480,6 +489,7 @@ def test_write_overlay_missing_ffmpeg_cleans_up(tmp_path: Path) -> None:
 
 
 def test_write_overlay_cancelled_before_start(tmp_path: Path, monkeypatch) -> None:
+    _pretend_ffmpeg_is_installed(monkeypatch)
     calls: list = []
     monkeypatch.setattr(
         overlay_module.subprocess,
@@ -503,6 +513,7 @@ def test_write_overlay_cancelled_before_start(tmp_path: Path, monkeypatch) -> No
 def test_write_overlay_cancelled_midstream_cleans_up(
     tmp_path: Path, monkeypatch
 ) -> None:
+    _pretend_ffmpeg_is_installed(monkeypatch)
     monkeypatch.setattr(overlay_module.subprocess, "Popen", _fake_popen_ok)
     state = {"done": 0}
 
@@ -740,7 +751,11 @@ def test_extract_overlay_rejects_bad_destinations(tmp_path: Path) -> None:
     assert backend.calls == []
 
 
-def test_extract_overlay_cancelled_on_cache_hit(tmp_path: Path) -> None:
+def test_extract_overlay_cancelled_on_cache_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pretend_ffmpeg_is_installed(monkeypatch)
+    monkeypatch.setattr(overlay_module.subprocess, "Popen", _fake_popen_ok)
     video = _touch_video(tmp_path)
     cache = tmp_path / "pose-v1.jsonl"
     extract_poses(
@@ -795,6 +810,7 @@ def test_extract_overlay_time_misalignment_is_rejected(tmp_path: Path) -> None:
 def test_extract_overlay_no_person_frames_render_unannotated(
     tmp_path: Path, monkeypatch
 ) -> None:
+    _pretend_ffmpeg_is_installed(monkeypatch)
     rendered: list[np.ndarray] = []
     real_render = overlay_module.render_frame
 

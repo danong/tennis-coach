@@ -825,6 +825,7 @@ def test_build_concat_copy_args_is_stream_copy_without_reencode() -> None:
     assert again == args
 
 
+@NEEDS_TOOLS
 def test_concat_join_readiness_rejects_missing_and_mismatched(tmp_path: Path) -> None:
     missing = export_module.concat_join_readiness([tmp_path / "nope.mov"])
     assert isinstance(missing, str) and "missing" in missing.lower()

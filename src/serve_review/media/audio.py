@@ -652,8 +652,8 @@ def iter_audio_energy(
         raise AudioError(
             f"invalid is_cancelled: {is_cancelled!r}; expected a callable or None."
         )
-    _ensure_tool(ffmpeg_exe)
     window = validate_window_seconds(window_seconds)
+    _ensure_tool(ffmpeg_exe)
     info = probe_audio_stream(video_path, ffprobe=ffprobe_exe)
     schedule = validate_audio_schedule(times_seconds, info.duration_seconds)
     return _run_energy(
